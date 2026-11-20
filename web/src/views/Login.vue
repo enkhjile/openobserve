@@ -28,9 +28,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       <OButton variant="primary" @click="signout">{{ t("menu.signOut") }}</OButton>
     </div>
   </main>
-  <Login v-else-if="user.email == '' && !showInvitations && !isDexCallback" />
+  <Login v-else-if="user.email == '' && !showInvitations && !isCallbackLoading" />
   <div
-    v-else-if="isDexCallback && !showInvitations"
+    v-else-if="isCallbackLoading && !showInvitations"
     data-test="dex-callback-loading"
     class="bg-card-glass-bg flex h-[100vh] w-[100vw] flex-col items-center justify-center gap-4 max-md:h-dvh max-md:w-full"
   >
@@ -66,7 +66,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import { configQuery, isFullConfigLoaded } from "@/services/config.queries";
 import { queryClient } from "@/composables/query/queryClient";
 import { defineComponent, onBeforeMount, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, type LocationQuery } from "vue-router";
 import Login from "@/components/login/Login.vue";
 import oidc from "@/services/oidc";
 import { useLocalUserInfo } from "@/utils/storage";
@@ -96,6 +96,10 @@ import { expireSession } from "@/utils/sessionServices";
 import { isSameOriginRedirect } from "@/utils/safeUrl";
 import { withDisambiguatedOrgLabels } from "@/utils/organizationLabel";
 import { capturePrefill } from "@/components/login/firstSourceOptions";
+
+function isOidcCallback(query: LocationQuery | undefined): boolean {
+  return query?.oidc === "1";
+}
 
 export default defineComponent({
   name: "LoginPage",
@@ -163,7 +167,7 @@ export default defineComponent({
       organizationsService
         .list(0, 100000, "id", false, "")
         .then(async (res: any) => {
-          if (router.currentRoute.value.query?.oidc === "1" && !res.data.data?.length) {
+          if (isOidcCallback(router.currentRoute.value.query) && !res.data.data?.length) {
             oidcNoOrganization.value = true;
             return;
           }
@@ -268,7 +272,7 @@ export default defineComponent({
 
     // The server refused this user's organizations, so the session ends as an expired one does: the drafts stay for the next login.
     const signout = async () => {
-      if (router.currentRoute.value.query?.oidc === "1") {
+      if (isOidcCallback(router.currentRoute.value.query)) {
         try {
           await oidc.logout();
         } catch {
@@ -353,10 +357,8 @@ export default defineComponent({
   },
   data() {
     return {
-      // True while we're on the Dex (OIDC) redirect-back callback and still
-      // resolving the token in the URL hash. Shows a spinner instead of the
-      // login form so it doesn't flash before the user lands in the app.
-      isDexCallback: this.$route.query?.oidc === "1" || !!this.$route.hash,
+      // Keep the login form hidden while either callback resolves the signed-in user.
+      isCallbackLoading: isOidcCallback(this.$route.query) || !!this.$route.hash,
       user: {
         email: "",
         cognito_sub: "",
@@ -370,7 +372,7 @@ export default defineComponent({
     };
   },
   created() {
-    if (this.$route.query?.oidc === "1") {
+    if (isOidcCallback(this.$route.query)) {
       // URL flags select the UI flow; only the server session supplies identity.
       oidc
         .session()
@@ -385,7 +387,7 @@ export default defineComponent({
           useLocalUserInfo("", true);
           useLocalCurrentUser("", true);
           this.store.dispatch("logout");
-          this.isDexCallback = false;
+          this.isCallbackLoading = false;
           this.router.replace({ path: "/login", query: { oidc_error: "1" } });
         });
       return;
@@ -440,7 +442,7 @@ export default defineComponent({
           console.error("Error while fetching config:", err);
           // Fall back to the login form instead of stranding the user on
           // the spinner with no way to proceed.
-          this.isDexCallback = false;
+          this.isCallbackLoading = false;
         });
     }
   },
