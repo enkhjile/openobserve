@@ -53,6 +53,6 @@ docker compose -f deploy/oidc/compose.yaml config --quiet
 docker compose -f deploy/oidc/compose.yaml up -d
 ```
 
-Do not paste the output of unrestricted `docker compose config` into logs: it expands secrets. Adapt the existing repository Docker build to your image pipeline; the task's local verification uses debug Rust builds per repository policy.
+Do not paste the output of unrestricted `docker compose config` into logs: it expands secrets.
 
-See [Authentik setup and manual tests](authentik.md), [security review](security.md), [verification record](verification.md), and [maintenance guidance](maintenance.md).
+See [Authentik setup and manual tests](authentik.md), [security review](security.md), and [maintenance and regression checks](maintenance.md).

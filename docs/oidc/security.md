@@ -21,8 +21,6 @@ The current deployment target is a single OpenObserve process. Pending login sta
 
 Newly provisioned users have no organization membership. Add appropriate membership using the application's existing administration flow. The OIDC extension grants no roles from groups or other provider claims. The independent RBAC change must consume the validated application identity supplied by the normal HTTP middleware.
 
-## Review and test evidence
+## Validation
 
-See [verification.md](verification.md) for actual commands, results, and remaining verification limits. Use [authentik.md](authentik.md) for the operator-run MFA and provider acceptance checks.
-
-An independent static review found gaps in gRPC password policy, concurrent first-login email normalization, session cache revocation and configuration reload. The fixes apply the shared password check after gRPC token matching, normalize new email addresses before insert, read authoritative session rows and require a restart for OIDC settings. The reviewer rechecked those paths and found no remaining blocker in that scope.
+The local mock-provider tests passed against the compiled OSS server. Live Authentik federation and MFA require a deployment-specific check. [Regression checks](maintenance.md#regression-checks) · [Authentik acceptance test](authentik.md)

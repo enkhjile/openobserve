@@ -32,5 +32,3 @@ Record the application commit, provider version, issuer, signing algorithm, date
 12. Exercise existing OTLP ingestion, organization ingestion tokens, and service-account API access with their normal credentials.
 13. Restart OpenObserve and check persisted sessions and identity mappings according to the documented expiry policy. An unfinished login may need to restart because its transaction is process-local.
 14. Verify callback handling behind the intended reverse proxy and under any configured base path.
-
-Live Authentik acceptance is separate from the automated mock-provider suite. An unexecuted item is not a pass.

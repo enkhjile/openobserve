@@ -33,7 +33,34 @@ New files are grouped by function: `src/extensions/oidc` contains the protocol a
 3. Rebase a candidate branch on the chosen upstream tag or commit. With a published branch used by multiple people, merge the upstream release into the candidate branch to preserve shared history. Resolve conflicts at the adapter boundary.
 4. Coordinate with the RBAC branch owner before resolving changes in the validator or HTTP middleware. The existing validated identity passed to handlers is the integration contract. Keep claim verification, user provisioning and cookie handling outside RBAC.
 5. Regenerate the Cargo lockfile using the repository's pinned toolchain and review dependency changes. Inspect the diff against the new upstream baseline to catch accidental upstream formatting or feature changes.
-6. Run the checks in [verification.md](verification.md), including disabled local login, ingestion credentials, session revocation, and the mock-provider browser flow. Repeat the [Authentik acceptance test](authentik.md) before deploying an upgraded release.
+6. Run the checks in [Regression checks](#regression-checks), including disabled local login, ingestion credentials, session revocation, and the mock-provider browser flow. Repeat the [Authentik acceptance test](authentik.md) before deploying an upgraded release.
 7. Record the new upstream commit, diff and test results. Back up the SQLite metadata and configuration before deployment. Account bindings and sessions must move with the user database.
 
 Disabling OIDC removes interactive OIDC access. Before doing this, verify an operator can authenticate with existing local credentials under the intended policy. Existing accounts and organization memberships remain in the metadata store.
+
+## Regression checks
+
+Install frontend dependencies with `npm ci` in `web/`, then build the UI before compiling the server so the binary embeds the login page.
+
+```sh
+npm run format:check
+npm run lint:ci
+NODE_OPTIONS="--max-old-space-size=8192" npm run build
+NODE_OPTIONS="--no-experimental-webstorage" npm run test:unit -- --run components/login/Login.spec.ts views/Login.spec.ts services/oidc.spec.ts utils/drafts/signOutFlow.spec.ts composables/shared/router.spec.ts layouts/MainLayout.signOutDrafts.spec.ts
+```
+
+Start the Vite development server and run the isolated Cypress OIDC spec against it. Its assertions cover rendered UI and navigation with stubbed endpoints.
+
+From the Rust workspace, set `PROTOC_INCLUDE` to the protobuf include directory if required by your system. Debug builds with `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0` reduce disk use. Run:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -W clippy::too_many_lines -W clippy::cognitive_complexity -W clippy::excessive_nesting -D warnings
+cargo test -p openobserve-oidc
+cargo test -p openobserve-core --test oidc_lifecycle
+cargo test -p config -p openobserve-api-common -p openobserve-api-grpc -p openobserve-api-http -p openobserve-core --lib oidc
+cargo build
+uv run tests/oidc/browser_flow.py target/debug/openobserve
+```
+
+The last command launches three successive configurations of the actual binary with a temporary local SQLite store and a loopback RSA-signing mock provider. It checks the browser redirects and cookies, signed login and logout, hard expiry, account collision, local-login policy, ingestion and service credentials. The script generates fresh test credentials and removes the temporary database on exit.
