@@ -1,0 +1,30 @@
+services:
+  openobserve:
+    image: ${OPENOBSERVE_OIDC_IMAGE:?Set an image built from feature/oidc}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5080:5080"
+    volumes:
+      - openobserve-data:/data
+    environment:
+      ZO_LOCAL_MODE: "true"
+      ZO_DATA_DIR: /data
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:?Set the emergency root email}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:?Set a strong root password}
+      ZO_WEB_URL: ${ZO_WEB_URL:?Set the public HTTPS URL}
+      ZO_OIDC_ENABLED: "true"
+      ZO_OIDC_ISSUER: ${ZO_OIDC_ISSUER:?Set the exact discovery issuer}
+      ZO_OIDC_CLIENT_ID: ${ZO_OIDC_CLIENT_ID:?Set the provider client ID}
+      ZO_OIDC_CLIENT_SECRET: ${ZO_OIDC_CLIENT_SECRET:?Set the provider client secret}
+      ZO_OIDC_REDIRECT_URI: ${ZO_OIDC_REDIRECT_URI:?Set the exact public HTTPS callback URL}
+      ZO_OIDC_SCOPES: "openid email profile"
+      ZO_OIDC_ACCOUNT_LINKS: ${ZO_OIDC_ACCOUNT_LINKS:-[]}
+      ZO_OIDC_PROVISIONING_ENABLED: "false"
+      ZO_OIDC_ONLY: "true"
+      ZO_OIDC_EMERGENCY_USER: ${ZO_ROOT_USER_EMAIL:?Set the emergency root email}
+      ZO_OIDC_SESSION_MAX_AGE: "3600"
+      ZO_OIDC_COOKIE_SECURE: "true"
+      ZO_OIDC_ALLOW_INSECURE_HTTP: "false"
+
+volumes:
+  openobserve-data:

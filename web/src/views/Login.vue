@@ -15,7 +15,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 -->
 
 <template>
-  <Login v-if="user.email == '' && !showInvitations && !isDexCallback" />
+  <main
+    v-if="oidcNoOrganization"
+    class="bg-card-glass-bg flex min-h-dvh items-center justify-center p-6"
+  >
+    <div class="flex max-w-lg flex-col gap-4">
+      <OBanner
+        variant="info"
+        :content="t('login.oidcNoOrganization')"
+        data-test="oidc-no-organization"
+      />
+      <OButton variant="primary" @click="signout">{{ t("menu.signOut") }}</OButton>
+    </div>
+  </main>
+  <Login v-else-if="user.email == '' && !showInvitations && !isDexCallback" />
   <div
     v-else-if="isDexCallback && !showInvitations"
     data-test="dex-callback-loading"
@@ -55,8 +68,13 @@ import { queryClient } from "@/composables/query/queryClient";
 import { defineComponent, onBeforeMount, ref } from "vue";
 import { useRouter } from "vue-router";
 import Login from "@/components/login/Login.vue";
+import oidc from "@/services/oidc";
+import { useLocalUserInfo } from "@/utils/storage";
+import { b64EncodeStandard } from "@/utils/formatters";
 import InvitationList from "@/components/iam/users/InvitationList.vue";
 import OSpinner from "@/lib/feedback/Spinner/OSpinner.vue";
+import OButton from "@/lib/core/Button/OButton.vue";
+import OBanner from "@/lib/feedback/Banner/OBanner.vue";
 import config from "@/aws-exports";
 import { useStore } from "vuex";
 import { useTheme } from "@/composables/useTheme";
@@ -85,6 +103,8 @@ export default defineComponent({
     Login,
     InvitationList,
     OSpinner,
+    OButton,
+    OBanner,
   },
   setup() {
     const store = useStore();
@@ -94,6 +114,7 @@ export default defineComponent({
     const selectedOrg = ref({});
     const router: any = useRouter();
     const showInvitations = ref(false);
+    const oidcNoOrganization = ref(false);
     const { identify } = useReo();
     const invitedOrg = ref<{ identifier: string; name: string }>({
       identifier: "",
@@ -142,6 +163,10 @@ export default defineComponent({
       organizationsService
         .list(0, 100000, "id", false, "")
         .then(async (res: any) => {
+          if (router.currentRoute.value.query?.oidc === "1" && !res.data.data?.length) {
+            oidcNoOrganization.value = true;
+            return;
+          }
           const localOrg: any = useLocalOrganization();
           let tempDefaultOrg = {};
           let localOrgFlag = false;
@@ -242,8 +267,15 @@ export default defineComponent({
     };
 
     // The server refused this user's organizations, so the session ends as an expired one does: the drafts stay for the next login.
-    const signout = () => {
-      if (config?.isEnterprise == "true" || config?.isCloud == "true") {
+    const signout = async () => {
+      if (router.currentRoute.value.query?.oidc === "1") {
+        try {
+          await oidc.logout();
+        } catch {
+          toast({ variant: "error", message: t("login.oidcLogoutError") });
+          return;
+        }
+      } else if (config?.isEnterprise == "true" || config?.isCloud == "true") {
         invalidateLoginData();
       }
       // A reload here could re-run the login callback, so this goes to the login page instead.
@@ -313,6 +345,7 @@ export default defineComponent({
       redirectUser,
       getDefaultOrganization,
       showInvitations,
+      oidcNoOrganization,
       handleInvitationsProcessed,
       getImageURL,
       signout,
@@ -323,7 +356,7 @@ export default defineComponent({
       // True while we're on the Dex (OIDC) redirect-back callback and still
       // resolving the token in the URL hash. Shows a spinner instead of the
       // login form so it doesn't flash before the user lands in the app.
-      isDexCallback: !!this.$route.hash,
+      isDexCallback: this.$route.query?.oidc === "1" || !!this.$route.hash,
       user: {
         email: "",
         cognito_sub: "",
@@ -337,6 +370,26 @@ export default defineComponent({
     };
   },
   created() {
+    if (this.$route.query?.oidc === "1") {
+      // URL flags select the UI flow; only the server session supplies identity.
+      oidc
+        .session()
+        .then((profile) => {
+          useLocalUserInfo(b64EncodeStandard(JSON.stringify(profile)));
+          useLocalCurrentUser(JSON.stringify(profile));
+          this.store.dispatch("setCurrentUser", profile);
+          this.store.dispatch("login", { loginState: true, userInfo: profile });
+          this.getDefaultOrganization();
+        })
+        .catch(() => {
+          useLocalUserInfo("", true);
+          useLocalCurrentUser("", true);
+          this.store.dispatch("logout");
+          this.isDexCallback = false;
+          this.router.replace({ path: "/login", query: { oidc_error: "1" } });
+        });
+      return;
+    }
     /**
      * Get the user info from the url hash
      * if user info is not null and user email is not null

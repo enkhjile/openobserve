@@ -139,16 +139,32 @@ fn check_auth_inner(
         return Err(Status::unauthenticated("No valid auth token[4]"));
     };
 
-    if user.token.eq(&credentials.password) {
-        return attach_user_id(req, &user_id);
-    }
-    if user_id.eq(&user.email)
-        && try_get_hash(&credentials.password, &user.salt).is_some_and(|h| h == user.password)
-    {
+    if user_credentials_match(&user, &user_id, &credentials.password, &cfg.oidc) {
         attach_user_id(req, &user_id)
     } else {
         Err(Status::unauthenticated("No valid auth token[5]"))
     }
+}
+
+fn user_credentials_match(
+    user: &config::meta::user::User,
+    user_id: &str,
+    password: &str,
+    oidc: &config::oidc::Oidc,
+) -> bool {
+    if password.is_empty() {
+        return false;
+    }
+    if user.token == password {
+        return true;
+    }
+    user_id == user.email
+        && openobserve_core::extensions::oidc::password_allowed(
+            oidc,
+            &user.email,
+            user.role == config::meta::user::UserRole::Root,
+        )
+        && try_get_hash(password, &user.salt).is_some_and(|hash| hash == user.password)
 }
 
 fn auth_token(metadata: &MetadataMap) -> Result<&str, Status> {
@@ -754,5 +770,62 @@ pub(crate) mod tests {
         );
         assert!(check_internal_auth(request).is_err());
         ORG_INGESTION_TOKENS.remove(&key);
+    }
+    #[test]
+    fn oidc_only_blocks_grpc_passwords_but_preserves_ingestion_tokens() {
+        let mut user = User {
+            email: "person@example.com".into(),
+            password: get_hash(ROOT_PASSWORD, ROOT_SALT),
+            role: UserRole::Admin,
+            salt: ROOT_SALT.into(),
+            first_name: String::new(),
+            last_name: String::new(),
+            token: "ingestion-token".into(),
+            rum_token: None,
+            org: "default".into(),
+            is_external: false,
+            password_ext: None,
+        };
+        let mut policy = config::oidc::Oidc::default();
+        assert!(user_credentials_match(
+            &user,
+            &user.email,
+            ROOT_PASSWORD,
+            &policy
+        ));
+        policy.enabled = true;
+        policy.only = true;
+        assert!(!user_credentials_match(
+            &user,
+            &user.email,
+            ROOT_PASSWORD,
+            &policy
+        ));
+        assert!(user_credentials_match(
+            &user,
+            &user.email,
+            "ingestion-token",
+            &policy
+        ));
+        policy.emergency_user = user.email.clone();
+        assert!(!user_credentials_match(
+            &user,
+            &user.email,
+            ROOT_PASSWORD,
+            &policy
+        ));
+        user.role = UserRole::Root;
+        assert!(user_credentials_match(
+            &user,
+            &user.email,
+            ROOT_PASSWORD,
+            &policy
+        ));
+        assert!(!user_credentials_match(
+            &user,
+            &user.email,
+            "wrong",
+            &policy
+        ));
     }
 }

@@ -1030,7 +1030,11 @@ pub fn basic_routes() -> Router {
     // Auth routes (no authentication required)
     let auth_routes = Router::new()
         .route("/login", post(users::authentication).get(users::get_auth))
-        .route("/presigned-url", get(users::get_presigned_url));
+        .route("/presigned-url", get(users::get_presigned_url))
+        .route("/oidc/login", get(crate::oidc::login))
+        .route("/oidc/callback", get(crate::oidc::callback))
+        .route("/oidc/session", get(crate::oidc::session))
+        .route("/oidc/logout", post(crate::oidc::logout));
     router = router.nest("/auth", auth_routes);
 
     let node_routes = node_routes()
@@ -4722,6 +4726,9 @@ mod tests {
                 "custom_logo_text",
                 "editor_suggest_mode",
                 "native_login_enabled",
+                "oidc_emergency_login_enabled",
+                "oidc_enabled",
+                "oidc_only",
                 "sso_enabled",
                 "telemetry_enabled",
             ],

@@ -33,7 +33,7 @@ import {
 import { PA_ROUTES, redirectHeatmaps } from "@/utils/rum/productAnalyticsRoutes";
 import { ALERT_LIST_ALL_FOLDERS } from "@/utils/alerts/alertListLink";
 import { PUBLIC_LINKS_FOLDER_ID } from "@/utils/dashboard/pseudoFolders";
-import { endSignedInSession } from "@/utils/drafts/signOutFlow";
+import { endSignedInSession, reportSignOutFailure } from "@/utils/drafts/signOutFlow";
 import { silenceUnloadPrompts } from "@/utils/sessionServices";
 import {
   PLAYLIST_TV_PATH,
@@ -277,16 +277,18 @@ const useRoutes = () => {
       // hard-navigates first), it only keeps the record registrable.
       component: Login,
       beforeEnter(_to: any, _from: any, _next: any) {
-        // Clear backend auth cookies before redirecting to login. The redirect
-        // must run even if a clear throws, and must respect the app base —
-        // a bare "/login" 404s when the app is served under /web/.
-        try {
-          // Only the menu's sign-out confirms discarding drafts, so a direct link or a retried navigation keeps them, as an expired session does.
-          endSignedInSession(store, { keepDrafts: true });
-        } finally {
+        const complete = () => {
           silenceUnloadPrompts();
           window.location.href = `${getPath()}login`;
+        };
+        const pending = endSignedInSession(store, { keepDrafts: true });
+        if (pending) {
+          return pending.then(complete).catch(() => {
+            reportSignOutFailure();
+            _next(false);
+          });
         }
+        complete();
       },
     },
     {

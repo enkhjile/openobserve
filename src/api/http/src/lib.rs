@@ -23,5 +23,6 @@ use common;
 use openobserve_core as service;
 
 pub mod handler;
+pub mod oidc;
 pub mod router;
 pub mod server;

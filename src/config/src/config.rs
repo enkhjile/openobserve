@@ -41,6 +41,7 @@ use crate::{
         meta_store::MetaStore,
         stream::{DataRetentionDefaults, QueryPartitionStrategy, StreamType},
     },
+    oidc::Oidc,
     utils::{str::redact_dsn, sysinfo},
 };
 
@@ -501,6 +502,10 @@ pub fn get_config() -> Arc<Config> {
 pub fn refresh_config() -> Result<(), anyhow::Error> {
     let old = CONFIG.load_full();
     let new = Arc::new(init());
+    anyhow::ensure!(
+        old.oidc == new.oidc,
+        "OIDC configuration changes require a restart; no configuration was reloaded"
+    );
     CONFIG.store(new.clone());
 
     // Deliberately not propagated as an error. `config_watcher::reload_config`
@@ -1111,6 +1116,7 @@ impl<'de> Deserialize<'de> for FileFormatConfig {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Config {
+    pub oidc: Oidc,
     pub auth: Auth,
     pub http_streaming: HttpStreaming,
     pub report_server: ReportServer,
@@ -4182,6 +4188,15 @@ pub fn init() -> Config {
         // do nothing
     }
     let mut cfg = Config::init().expect("config init error");
+    assert!(
+        !(cfg!(feature = "enterprise") && cfg.oidc.enabled),
+        "OSS OIDC is not supported in Enterprise builds"
+    );
+
+    assert!(
+        !cfg.oidc.only || cfg.oidc.enabled,
+        "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
+    );
 
     // set local mode
     if cfg.common.local_mode {

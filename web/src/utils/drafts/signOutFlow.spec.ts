@@ -38,6 +38,8 @@ import { readEditorDraft, writeEditorDraft } from "@/utils/drafts/editorDraftSto
 import { stopSessionServices } from "@/utils/sessionServices";
 import { invalidateLoginData } from "@/utils/zincutils";
 import { signOutDraftsToConfirm, signOutThroughLeaveGuards } from "./signOutFlow";
+import oidc from "@/services/oidc";
+vi.mock("@/services/oidc", () => ({ default: { logout: vi.fn() } }));
 
 vi.mock("@/utils/sessionServices", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/sessionServices")>()),
@@ -114,6 +116,40 @@ describe("signOutThroughLeaveGuards", () => {
     } finally {
       window.removeEventListener("beforeunload", prompt);
     }
+  });
+
+  it("awaits OIDC revocation before clearing state or navigating", async () => {
+    let revoke = () => {};
+    vi.mocked(oidc.logout).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          revoke = resolve;
+        }),
+    );
+    const store = {
+      ...makeStore(),
+      state: { ...makeStore().state, zoConfig: { oidc_enabled: true } },
+    };
+    const result = signOutThroughLeaveGuards(router, store);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(oidc.logout).toHaveBeenCalledTimes(1);
+    expect(store.dispatch).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
+    revoke();
+    expect(await result).toBe(true);
+    expect(store.dispatch).toHaveBeenCalled();
+    expect(assign).toHaveBeenCalled();
+  });
+
+  it("keeps an OIDC session visible when revocation fails", async () => {
+    vi.mocked(oidc.logout).mockRejectedValue(new Error("network failure"));
+    const store = {
+      ...makeStore(),
+      state: { ...makeStore().state, zoConfig: { oidc_enabled: true } },
+    };
+    expect(await signOutThroughLeaveGuards(router, store)).toBe(false);
+    expect(store.dispatch).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("runs each leave guard once: the reload, not a redirect to /login, ends the navigation", async () => {

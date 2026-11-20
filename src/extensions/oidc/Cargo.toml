@@ -1,0 +1,23 @@
+[package]
+name = "openobserve-oidc"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0"
+publish = false
+
+[dependencies]
+openidconnect = "4.1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+subtle = "2.6"
+tokio = { version = "1", features = ["sync", "time"] }
+url = "2"
+
+[dev-dependencies]
+rsa = "0.9"
+serde_json = "1"
+axum = "0.8"
+base64 = "0.22"
+jsonwebtoken = "9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

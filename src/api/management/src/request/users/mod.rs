@@ -916,6 +916,13 @@ pub async fn get_presigned_url(
     };
 
     let cfg = get_config();
+    if !openobserve_core::extensions::oidc::password_allowed(
+        &cfg.oidc,
+        &user_id,
+        db::user::is_root_user(&user_id),
+    ) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let time = chrono::Utc::now().timestamp();
     let password_ext_salt = &config::get_ext_auth_salt();
 

@@ -16,6 +16,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import Login from "@/components/login/Login.vue";
+vi.mock("@/services/oidc", () => ({ default: { loginUrl: () => "/auth/oidc/login" } }));
 import i18n from "@/locales";
 import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";
@@ -171,6 +172,25 @@ describe("Login", () => {
   afterEach(() => {
     if (wrapper) {
       wrapper.unmount();
+    }
+  });
+
+  it("shows OSS OIDC and denies local login unless emergency login is enabled", async () => {
+    const config = (await import("@/aws-exports")).default;
+    const previous = config.isEnterprise;
+    config.isEnterprise = "false";
+    try {
+      store.state.zoConfig.oidc_enabled = true;
+      store.state.zoConfig.oidc_only = true;
+      mountComponentWithMocks();
+      expect(wrapper.vm.showSSO).toBe(true);
+      expect(wrapper.vm.showInternalLogin).toBe(false);
+      expect(wrapper.find("#login-internal-form").exists()).toBe(false);
+      store.state.zoConfig.oidc_emergency_login_enabled = true;
+      await flushPromises();
+      expect(wrapper.vm.showInternalLogin).toBe(true);
+    } finally {
+      config.isEnterprise = previous;
     }
   });
 

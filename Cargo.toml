@@ -255,6 +255,7 @@ transform.workspace = true
 
 [workspace]
 members = [
+    "src/extensions/oidc",
     "src/api/http",
     "src/api/grpc",
     "src/api/ingest",
@@ -306,6 +307,7 @@ edition = "2024"
 license = "AGPL-3.0"
 
 [workspace.dependencies]
+openobserve-oidc = { path = "src/extensions/oidc" }
 pulldown-cmark = { version = "0.13", default-features = false, features = [
     "html",
 ] }

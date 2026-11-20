@@ -310,6 +310,11 @@ where
 
 /// `url` as the access log may write it, with every known credential in it cut.
 pub fn mask_log_url(url: &str) -> String {
+    if let Some((path, _)) = url.split_once('?')
+        && path.ends_with("/auth/oidc/callback")
+    {
+        return path.to_owned();
+    }
     let masked = mask_slack_callback_query(&mask_share_tokens(url));
     if !masked.contains("api_key=") {
         return masked;
@@ -440,6 +445,14 @@ fn mask_query_values(url: &str, keys: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oidc_callback_query_is_omitted_from_request_and_referer_logs() {
+        for prefix in ["", "/observe", "https://example.test/observe"] {
+            let path = format!("{prefix}/auth/oidc/callback");
+            assert_eq!(mask_log_url(&format!("{path}?code=a&state=b")), path);
+        }
+    }
 
     static LOG_LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;

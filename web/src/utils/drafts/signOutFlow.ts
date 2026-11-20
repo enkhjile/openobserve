@@ -14,6 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import type { Router } from "vue-router";
+import oidc from "@/services/oidc";
+import { toast } from "@/lib/feedback/Toast/useToast";
+import { gt } from "@/types/i18n";
 import {
   getPath,
   useLocalCurrentUser,
@@ -34,7 +37,10 @@ import {
 } from "@/utils/sessionServices";
 
 interface SignOutStore extends SessionServicesStore {
-  state: SessionServicesStore["state"] & { userInfo?: { email?: string } };
+  state: SessionServicesStore["state"] & {
+    userInfo?: { email?: string };
+    zoConfig?: { oidc_enabled?: boolean };
+  };
   dispatch: (type: "logout", payload?: { draftsOf?: string }) => unknown;
 }
 
@@ -56,10 +62,17 @@ export const reloadToLogin = (): void => {
 export const endSignedInSession = (
   store: SignOutStore,
   { keepDrafts = false }: { keepDrafts?: boolean } = {},
-): void => {
+): void | Promise<void> => {
+  if (store.state.zoConfig?.oidc_enabled) {
+    return oidc.logout().then(() => clearSignedInSession(store, keepDrafts));
+  }
+  clearSignedInSession(store, keepDrafts);
+};
+
+const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void => {
   const userEmail = String(store.state.userInfo?.email ?? "");
   stopSessionServices(store);
-  invalidateLoginData();
+  if (!store.state.zoConfig?.oidc_enabled) invalidateLoginData();
   // A deep-link first login keeps the flag for a later Home visit; it must not pass to the next user.
   localStorage.removeItem("isFirstTimeLogin");
   // the open sample tour is this user's; the full reload that follows drops its in-memory copy
@@ -88,31 +101,47 @@ export const signOutThroughLeaveGuards = (
 ): Promise<boolean> => {
   beginDraftSignOut({ discardOnly, forced });
   let signedOut = false;
+  let ending: void | Promise<void>;
   const endSession = () => {
-    if (signedOut) return;
+    if (signedOut) return ending;
     signedOut = true;
-    endSignedInSession(store, { keepDrafts: forced });
+    ending = endSignedInSession(store, { keepDrafts: forced });
+    return ending;
   };
-  // Global guards run after the leave guards; a redirect would run every leave guard again, so the reload ends the navigation.
   const removeGuard = router.beforeEach((to) => {
     removeGuard();
     if (to.path !== "/logout") return true;
-    endSession();
-    return false;
+    const pending = endSession();
+    return pending ? pending.then(() => false) : false;
   });
-  const finish = (refused: boolean) => {
+  const finish = (refused: boolean): boolean | Promise<boolean> => {
     removeGuard();
     if (refused && !forced && !signedOut) {
       cancelDraftSignOut();
       return false;
     }
-    endSession();
+    const pending = endSession();
+    if (pending) {
+      return pending
+        .then(() => {
+          reloadToLogin();
+          return true;
+        })
+        .catch(() => {
+          cancelDraftSignOut();
+          reportSignOutFailure();
+          return false;
+        });
+    }
     reloadToLogin();
     return true;
   };
-  // A guard that throws refuses like one that returns false, so the sign-out never hangs half-done.
   return router.push("/logout").then(
     (failure) => finish(!!failure),
     () => finish(true),
   );
+};
+
+export const reportSignOutFailure = (): void => {
+  toast({ variant: "error", message: gt("login.oidcLogoutError") });
 };

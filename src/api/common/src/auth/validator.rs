@@ -762,6 +762,14 @@ pub async fn validate_credentials(
         return Ok(build_token_validation_response(&user));
     }
 
+    if !openobserve_core::extensions::oidc::password_allowed(
+        &get_config().oidc,
+        &user.email,
+        user.role == UserRole::Root,
+    ) {
+        return Ok(TokenValidationResponse::default());
+    }
+
     // Enforce native login restrictions only for password-based authentication
     // (Token authentication has already been checked above)
     #[cfg(feature = "enterprise")]
@@ -1056,6 +1064,13 @@ async fn validate_user_from_db(
     // let db_user = db::user::get_db_user(user_id).await;
     match db_user {
         Ok(mut user) => {
+            if !openobserve_core::extensions::oidc::password_allowed(
+                &get_config().oidc,
+                &user.email,
+                is_root_user(&user.email),
+            ) {
+                return Err(AuthError::Forbidden("Not allowed".to_string()));
+            }
             // Only this branch is a raw password guess; the password_ext branches below are not.
             let password_check = if req_time.is_none() {
                 enforce_lockout_and_compare_password(&user.email, !user.is_external, || {
@@ -1347,11 +1362,74 @@ async fn session_grants_token(session_id: &str, token: &str) -> bool {
     matches!(db::session::get(session_id).await, Ok(stored) if stored == token)
 }
 
+fn oidc_role(record: &DBUser, path: &str, method: &Method, is_root: bool) -> Option<UserRole> {
+    if is_root {
+        return Some(UserRole::Root);
+    }
+    let columns: Vec<_> = path.split('/').collect();
+    if is_top_level_org_route(&columns) {
+        return record
+            .organizations
+            .iter()
+            .find(|org| org.name == config::META_ORG_ID)
+            .or_else(|| record.organizations.first())
+            .map(|org| org.role.clone())
+            .or_else(|| matches!(*method, Method::GET | Method::HEAD).then_some(UserRole::User));
+    }
+    if is_org_agnostic_path(path) {
+        return Some(UserRole::User);
+    }
+    record
+        .organizations
+        .iter()
+        .find(|org| org.name == org_from_path(&columns))
+        .map(|org| org.role.clone())
+}
+
+async fn validate_oidc_session(
+    req: &RequestData,
+    auth: &AuthExtractor,
+    path_prefix: &str,
+) -> Result<AuthValidationResult, AuthError> {
+    let denied = || AuthError::Unauthorized("Unauthorized Access".into());
+    let session = openobserve_core::extensions::oidc::resolve_session(&req.headers, &req.method)
+        .await
+        .map_err(|_| denied())?;
+    let path = routed_path(
+        req.uri
+            .path()
+            .strip_prefix(path_prefix)
+            .unwrap_or(req.uri.path()),
+    );
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let record = db::user::get_db_user(&session.email)
+        .await
+        .map_err(|_| denied())?;
+    let role =
+        oidc_role(&record, path, &req.method, is_root_user(&session.email)).ok_or_else(denied)?;
+    check_and_create_org(&session.email, &req.method, path, req.route.as_deref()).await?;
+    if !auth.bypass_check
+        && !check_permissions(&session.email, auth.clone(), role.clone(), true).await
+    {
+        return Err(AuthError::RoleRefused("Unauthorized Access".into()));
+    }
+    Ok(AuthValidationResult {
+        user_email: session.email,
+        user_role: Some(role),
+        is_internal_user: !record.is_external,
+        token_name: None,
+        delegation: None,
+    })
+}
+
 async fn oo_validator_internal(
     req_data: &RequestData,
     auth_info: &AuthExtractor,
     path_prefix: &str,
 ) -> Result<AuthValidationResult, AuthError> {
+    if openobserve_core::extensions::oidc::has_session_cookie(&req_data.headers) {
+        return validate_oidc_session(req_data, auth_info, path_prefix).await;
+    }
     // Format: "Session::<session_id>::<actual_token>"
     let (is_from_session, auth_str) = match auth_info.auth.strip_prefix(SESSION_AUTH_MARKER) {
         Some(rest) => match rest.split_once("::") {
@@ -3440,7 +3518,7 @@ CN5lTowpVXP2OIiiNTGa75Fj
     fn test_role_refused_sites_are_pinned_with_no_auth_error_after_their_role_check() {
         const GUARDS: [&str; 2] = ["check_permissions(", "path.contains(\"/user\")"];
         for (file, source, sites) in [
-            ("validator.rs", include_str!("validator.rs"), 3),
+            ("validator.rs", include_str!("validator.rs"), 4),
             ("token.rs", include_str!("token.rs"), 1),
             ("delegation.rs", include_str!("delegation.rs"), 1),
         ] {
@@ -3467,5 +3545,38 @@ CN5lTowpVXP2OIiiNTGa75Fj
                 );
             }
         }
+    }
+    #[test]
+    fn oidc_without_memberships_can_only_list_its_own_organizations() {
+        let record = DBUser {
+            email: "pending@example.com".into(),
+            first_name: String::new(),
+            last_name: String::new(),
+            password: String::new(),
+            salt: String::new(),
+            organizations: vec![],
+            is_external: true,
+            password_ext: None,
+        };
+        assert_eq!(
+            oidc_role(&record, "organizations", &Method::GET, false),
+            Some(UserRole::User)
+        );
+        assert_eq!(
+            oidc_role(&record, "organizations", &Method::POST, false),
+            None
+        );
+        assert_eq!(
+            oidc_role(&record, "default/streams", &Method::GET, false),
+            None
+        );
+        assert_eq!(
+            oidc_role(&record, "v2/default/alerts", &Method::GET, false),
+            None
+        );
+        assert_eq!(
+            oidc_role(&record, "default/kv/organizations", &Method::GET, false),
+            None
+        );
     }
 }

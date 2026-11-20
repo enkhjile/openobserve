@@ -83,3 +83,8 @@ GET /services/collector/health | HEC agent protocol handshake
 GET /status/{slug} | browser-only HTML status page
 POST /webhook/azure | third-party callback from Azure Marketplace
 POST /webhook/stripe | third-party callback from Stripe
+
+GET /auth/oidc/login | browser-only OIDC redirect
+GET /auth/oidc/callback | browser-only OIDC callback
+GET /auth/oidc/session | browser-only OIDC session profile
+POST /auth/oidc/logout | browser-only OIDC logout

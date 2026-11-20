@@ -18,6 +18,7 @@ import { createMemoryHistory, createRouter, type RouteRecordRaw } from "vue-rout
 import useRoutes from "./router";
 import Login from "@/views/Login.vue";
 import store from "@/stores";
+import oidc from "@/services/oidc";
 import { routeGuard } from "@/utils/zincutils";
 import { loadSecurityAccess } from "@/composables/security/useSecurityAccess";
 import { isPaywalledDestination, shouldPaywallRoute } from "@/utils/auth";
@@ -311,6 +312,33 @@ describe("useRoutes (router.ts)", () => {
       expect(typeof logoutRoute.beforeEnter).toBe("function");
     });
 
+    it("keeps a direct OIDC logout on the page when revocation fails", async () => {
+      store.state.zoConfig = { oidc_enabled: true };
+      const revoke = vi.spyOn(oidc, "logout").mockRejectedValue(new Error("network failure"));
+      const originalLocation = window.location;
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: { href: "" },
+      });
+      try {
+        const { parentRoutes } = useRoutes();
+        const logoutRoute = parentRoutes.find((route) => route.path === "/logout");
+        const next = vi.fn();
+        await logoutRoute.beforeEnter({}, {}, next);
+        expect(next).toHaveBeenCalledWith(false);
+        expect(window.location.href).toBe("");
+      } finally {
+        revoke.mockRestore();
+        store.state.zoConfig = {};
+        Object.defineProperty(window, "location", {
+          configurable: true,
+          writable: true,
+          value: originalLocation,
+        });
+      }
+    });
+
     it("should call invalidateLoginData in /logout beforeEnter", async () => {
       const { invalidateLoginData } = await import("@/utils/zincutils");
       const { parentRoutes } = useRoutes();
@@ -427,7 +455,7 @@ describe("useRoutes (router.ts)", () => {
       const logout = (parentRoutes as RouteRecordRaw[]).find((r) => r.path === "/logout");
       const enter = logout?.beforeEnter;
       if (typeof enter !== "function") throw new Error("/logout has no beforeEnter guard");
-      enter.call(undefined, {} as never, {} as never, vi.fn());
+      await enter.call(undefined, {} as never, {} as never, vi.fn());
       window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
 
       expect(dispatch).toHaveBeenCalledWith("logout");
@@ -449,7 +477,7 @@ describe("useRoutes (router.ts)", () => {
       localStorage.clear();
     });
 
-    it("should redirect window.location.href to /login in /logout beforeEnter", () => {
+    it("should redirect window.location.href to /login in /logout beforeEnter", async () => {
       const { parentRoutes } = useRoutes();
       const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
 
@@ -460,7 +488,7 @@ describe("useRoutes (router.ts)", () => {
         value: mockLocation,
       });
 
-      logoutRoute.beforeEnter({}, {}, vi.fn());
+      await logoutRoute.beforeEnter({}, {}, vi.fn());
       expect(mockLocation.href).toBe("/login");
     });
   });

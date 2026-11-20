@@ -102,6 +102,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           {{ t("login.login") }}
         </h1>
 
+        <OBanner
+          v-if="oidcError"
+          variant="error"
+          dense
+          class="mb-3"
+          :content="t('login.oidcError')"
+          data-test="oidc-error"
+        />
         <div v-if="showSSO" class="flex justify-center">
           <OButton
             data-test="sso-login-btn"
@@ -136,7 +144,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         </div>
 
         <div
-          v-if="!showSSO || (showSSO && loginAsInternalUser && showInternalLogin)"
+          v-if="showInternalLogin && (!showSSO || loginAsInternalUser)"
           id="login-internal-form"
           class="login-inputs"
         >
@@ -211,6 +219,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <script lang="ts">
 import { defineComponent, ref, nextTick, onBeforeMount, onBeforeUnmount, computed } from "vue";
 import { useStore } from "vuex";
+import oidc from "@/services/oidc";
 import { useRouter } from "vue-router";
 
 import { raw, useI18nTyped } from "@/types/i18n";
@@ -280,6 +289,7 @@ export default defineComponent({
 
     const loginAsInternalUser = ref(false);
     const loginError = ref("");
+    const oidcError = computed(() => router.currentRoute.value.query.oidc_error === "1");
 
     const toggleInternalLogin = async () => {
       loginAsInternalUser.value = !loginAsInternalUser.value;
@@ -306,11 +316,20 @@ export default defineComponent({
     });
 
     const showSSO = computed(() => {
-      return store.state.zoConfig.sso_enabled && config.isEnterprise === "true";
+      return (
+        store.state.zoConfig.oidc_enabled === true ||
+        (store.state.zoConfig.sso_enabled && config.isEnterprise === "true")
+      );
     });
 
     const showInternalLogin = computed(() => {
-      return store.state.zoConfig.native_login_enabled;
+      if (store.state.zoConfig.oidc_enabled === true) {
+        return (
+          !store.state.zoConfig.oidc_only ||
+          store.state.zoConfig.oidc_emergency_login_enabled === true
+        );
+      }
+      return !showSSO.value || store.state.zoConfig.native_login_enabled;
     });
 
     // Dex opens on its Create account tab when the request carries screen_hint=signup.
@@ -330,6 +349,10 @@ export default defineComponent({
     };
 
     const loginWithSSo = async () => {
+      if (store.state.zoConfig.oidc_enabled === true) {
+        window.location.assign(oidc.loginUrl());
+        return;
+      }
       // index.html already asked for dex_login; a second request would overwrite the login-state cookie it set.
       const fastPath = (window as any).__o2SsoFastPath;
       delete (window as any).__o2SsoFastPath;
@@ -541,6 +564,7 @@ export default defineComponent({
       getImageURL,
       loginAsInternalUser,
       loginError,
+      oidcError,
       toggleInternalLogin,
       showSSO,
       showInternalLogin,
