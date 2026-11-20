@@ -34,13 +34,13 @@ HTTP contract (under existing API base path): `GET /auth/oidc/login`, `GET /auth
 
 ## Implementation sequence
 
-- [ ] Protocol crate + negative-token/mock-provider tests; prove tests fail before implementation then pass.
-- [ ] Metadata/session/core and HTTP adapters + bypass/provisioning/session tests.
-- [ ] Minimal Vue integration + login/callback/logout tests.
-- [ ] Configuration example, Authentik manual test, Compose example, security and maintenance docs.
-- [ ] Rust format/build/tests/clippy, Vue format/lint/type/build/tests and browser check where runnable; record all failures accurately.
-- [ ] Independent security review, confirm/fix findings, repeat review as necessary (maximum five rounds).
-- [ ] Remove Rust compilation artifacts after all active builds finish.
+- [x] Protocol crate and negative-token/mock-provider tests. See the verification record for executed checks.
+- [x] Metadata/session/core and HTTP adapters + bypass/provisioning/session tests.
+- [x] Minimal Vue integration + login/callback/logout tests.
+- [x] Configuration example, Authentik manual test, Compose example, security and maintenance docs.
+- [x] Rust format/build/tests/clippy, Vue format/lint/type/build/tests and browser check where runnable; record all failures accurately.
+- [x] Independent security review, confirm/fix findings, repeat review as necessary (maximum five rounds).
+- [x] Remove Rust compilation artifacts after all active builds finish.
 
 ## Verification focus
 

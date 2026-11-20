@@ -9,10 +9,14 @@ Baseline `c828ccec7a43f58e98cc51e0838b745544a15789`, OSS configuration, macOS ar
 | Frontend static checks | Full format check and ESLint passed. ESLint reported seven existing warnings. Application type-check passed with an 8 GiB Node heap. |
 | Vue production build | Full production build, type-check and asset copy passed. |
 | SQLite lifecycle | The database-backed lifecycle integration test passed, including collision handling, row replacement, revocation and retry of pending provisioning. |
-| Compose manifest | `docker compose -f deploy/oidc/compose.yaml config --quiet` passed with temporary test values. |
-| Python integration harness | Ruff formatting and lint checks passed. |
+| Compose manifest | `docker compose -f deploy/oidc/compose.yaml config --quiet` passed with temporary test values. Container startup was not exercised because the local Docker daemon was unavailable. |
+| Rust adapters | Nine focused tests passed across config, core and the HTTP, gRPC and shared API crates. The bootstrap-field and callback-tracing tests also passed. The macOS linker warned about the compact unwind table size in debug test binaries. |
+| Rust workspace | Formatting, all-target workspace Clippy with warnings denied, and the debug build passed. |
+| Whole-server mock acceptance | Passed against the compiled server in three configurations with a temporary SQLite database. Covered signed login, replay, rotation, revocation, hard expiry, provisioning, existing-account rejection, emergency access, JSON and OTLP HTTP ingestion, and service-account API access. Ruff formatting and lint checks passed. |
 | Independent security review | The reviewer rechecked the fixes described in [security.md](security.md) and reported no blocking finding in the paths reviewed. |
 | Authentik | Manual procedure documented in [authentik.md](authentik.md). The requested automated acceptance environment uses the local mock provider. Live Google federation and MFA were not exercised. |
+
+Testing focused on authentication and its integration points. The full Rust and Vue test suites were not run.
 
 ## Reproduce the checks
 

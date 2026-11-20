@@ -196,7 +196,7 @@ def test_flow(binary, directory, issuer):
         user = requests.post(
             base + "/api/default/users",
             auth=(ROOT, PASSWORD),
-            json={"email": HUMAN, "password": PASSWORD, "role": "user"},
+            json={"email": HUMAN, "password": PASSWORD, "role": "admin"},
             timeout=5,
         )
         assert user.ok, user.status_code

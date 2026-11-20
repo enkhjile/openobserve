@@ -10,7 +10,7 @@ Configure Google federation and MFA in the provider's authentication flow if des
 
 ## OpenObserve setup
 
-Use the configuration reference in [README.md](README.md). Keep provisioning disabled initially. Create or select a non-administrator local user, then explicitly approve its exact issuer and subject using the operator-managed account mapping. Obtain the subject from the provider's administrative tools; do not use an email address as the subject unless the provider actually defines it that way. Preserve existing memberships.
+Use the configuration reference in [README.md](README.md). Keep provisioning disabled initially. Select a dedicated existing local test user with known organization memberships. On this OSS baseline the native user-creation API assigns the organization administrator role. Explicitly approve the test user’s exact issuer and subject using the operator-managed account mapping. Obtain the subject from the provider's administrative tools; do not use an email address as the subject unless the provider actually defines it that way. Preserve existing memberships.
 
 Use HTTPS with an exact public callback URL. Match any OpenObserve API base path. Synchronize server clocks. Ensure the OpenObserve process can reach discovery, JWKS and token endpoints over trusted TLS. Keep callback query strings out of reverse-proxy access logs.
 

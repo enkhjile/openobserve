@@ -24,7 +24,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `web/cypress/e2e/tsconfig.json` | Resolve the installed Vue DOM config so browser test specs compile. |
 | Adjacent `Login.spec.ts`, `router.spec.ts`, and `signOutFlow.spec.ts` | Exercise the changed navigation, visibility, callback and logout behavior. |
 
-New files are grouped by function: `src/extensions/oidc` contains the protocol and provider tests, `src/core/src/extensions` contains account and session persistence, and `src/api/http/src/oidc.rs` handles browser requests. Configuration lives in `src/config/src/oidc.rs`. The Vue client and service tests live in `web/src/services/oidc*`. Deployment and operator material is under `deploy/oidc` and `docs/oidc`. The core lifecycle test uses SQLite, and `tests/oidc/browser_flow.py` exercises a compiled binary through its HTTP endpoints.
+New files are grouped by function: `src/extensions/oidc` contains the protocol and provider tests, `src/core/src/extensions` contains account and session persistence, and `src/api/http/src/oidc.rs` handles browser requests. Configuration lives in `src/config/src/oidc.rs`. The Vue client and service tests live in `web/src/services/oidc*`. Deployment and operator material is under `deploy/oidc` and `docs/oidc`. The browser UI tests are in `web/cypress/e2e/oidc.cy.js`. The core lifecycle test uses SQLite, and `tests/oidc/browser_flow.py` exercises a compiled binary through its HTTP endpoints.
 
 ## Updating upstream
 
