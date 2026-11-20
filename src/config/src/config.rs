@@ -501,7 +501,11 @@ pub fn get_config() -> Arc<Config> {
 
 pub fn refresh_config() -> Result<(), anyhow::Error> {
     let old = CONFIG.load_full();
-    let new = Arc::new(init());
+    // EnvConfig panics on malformed scalar values; keep the previous snapshot and watcher alive.
+    let new = Arc::new(
+        std::panic::catch_unwind(try_init)
+            .map_err(|_| anyhow::anyhow!("invalid environment configuration"))??,
+    );
     anyhow::ensure!(
         old.oidc == new.oidc,
         "OIDC configuration changes require a restart; no configuration was reloaded"
@@ -718,14 +722,13 @@ pub fn load_config() -> Result<(), anyhow::Error> {
         }
         None => {
             // Perform default .env discovery and set it in the config manager
-            if let Ok(env_path) = dotenvy::dotenv_override() {
-                log::debug!("Config init: Found .env file at {env_path:?} during boot");
-                // Set the default path in config manager
-                crate::config_path_manager::set_config_file_path(env_path)?;
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Config init: No .env file found during default discovery"
-                ));
+            match dotenvy::dotenv_override() {
+                Ok(env_path) => {
+                    log::debug!("Config init: Found .env file at {env_path:?} during boot");
+                    crate::config_path_manager::set_config_file_path(env_path)?;
+                }
+                Err(error) if error.not_found() => {}
+                Err(_) => return Err(anyhow::anyhow!("failed to load discovered .env file")),
             }
         }
     }
@@ -4183,17 +4186,19 @@ pub struct EnrichmentTable {
 }
 
 pub fn init() -> Config {
-    if let Err(e) = load_config() {
-        log::error!("Failed to load config {e}");
-        // do nothing
-    }
-    let mut cfg = Config::init().expect("config init error");
-    assert!(
+    try_init().expect("config init error")
+}
+
+fn try_init() -> anyhow::Result<Config> {
+    use anyhow::Context;
+    load_config()?;
+    let mut cfg = Config::init().map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
         !(cfg!(feature = "enterprise") && cfg.oidc.enabled),
         "OSS OIDC is not supported in Enterprise builds"
     );
 
-    assert!(
+    anyhow::ensure!(
         !cfg.oidc.only || cfg.oidc.enabled,
         "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
     );
@@ -4206,89 +4211,29 @@ pub fn init() -> Config {
     cfg.common.is_local_storage = cfg.common.local_mode
         && (cfg.common.local_mode_storage == "disk" || cfg.common.local_mode_storage == "local");
 
-    // check limit config
-    if let Err(e) = check_limit_config(&mut cfg) {
-        panic!("limit config error: {e}");
-    }
-
-    // check route config
-    if let Err(e) = check_route_config(&cfg) {
-        panic!("route config error: {e}");
-    }
-
-    // check common config
-    if let Err(e) = check_common_config(&mut cfg) {
-        panic!("common config error: {e}");
-    }
-
+    check_limit_config(&mut cfg).context("limit config error")?;
+    check_route_config(&cfg).context("route config error")?;
+    check_common_config(&mut cfg).context("common config error")?;
     check_self_profiles_config(&mut cfg);
-
-    // check grpc config
-    if let Err(e) = check_grpc_config(&mut cfg) {
-        panic!("common config error: {e}");
-    }
-
-    // check http config
-    if let Err(e) = check_http_config(&mut cfg) {
-        panic!("common config error: {e}")
-    }
-
-    // check data path config
-    if let Err(e) = check_path_config(&mut cfg) {
-        panic!("data path config error: {e}");
-    }
-
-    // check memory cache
-    if let Err(e) = check_memory_config(&mut cfg) {
-        panic!("memory cache config error: {e}");
-    }
-
-    // check disk cache
-    if let Err(e) = check_disk_cache_config(&mut cfg) {
-        panic!("disk cache config error: {e}");
-    }
-
-    // check compact config
-    if let Err(e) = check_compact_config(&mut cfg) {
-        panic!("compact config error: {e}");
-    }
-
-    // check s3 config
-    if let Err(e) = check_s3_config(&mut cfg) {
-        panic!("s3 config error: {e}");
-    }
-
-    // check sns config
-    if let Err(e) = check_sns_config(&mut cfg) {
-        panic!("sns config error: {e}");
-    }
-
-    // check health check config
-    if let Err(e) = check_health_check_config(&mut cfg) {
-        panic!("health check config error: {e}");
-    }
-
-    // check pipeline config
-    if let Err(e) = check_pipeline_config(&mut cfg) {
-        panic!("pipeline config error: {e}");
-    }
-
-    // check nats config
-    if let Err(e) = check_nats_config(&mut cfg) {
-        panic!("nats config error: {e}");
-    }
-
-    // check inverted index config
-    if let Err(e) = check_inverted_index_config(&mut cfg) {
-        panic!("inverted index config error: {e}");
-    }
+    check_grpc_config(&mut cfg).context("grpc config error")?;
+    check_http_config(&mut cfg).context("http config error")?;
+    check_path_config(&mut cfg).context("path config error")?;
+    check_memory_config(&mut cfg).context("memory config error")?;
+    check_disk_cache_config(&mut cfg).context("disk cache config error")?;
+    check_compact_config(&mut cfg).context("compact config error")?;
+    check_s3_config(&mut cfg).context("s3 config error")?;
+    check_sns_config(&mut cfg).context("sns config error")?;
+    check_health_check_config(&mut cfg).context("health check config error")?;
+    check_pipeline_config(&mut cfg).context("pipeline config error")?;
+    check_nats_config(&mut cfg).context("nats config error")?;
+    check_inverted_index_config(&mut cfg).context("inverted index config error")?;
 
     // check synthetics config — infallible on purpose, see the function
     check_synthetics_config(&mut cfg);
 
     check_public_dashboards_config(&mut cfg);
 
-    cfg
+    Ok(cfg)
 }
 
 fn check_limit_config(cfg: &mut Config) -> Result<(), anyhow::Error> {

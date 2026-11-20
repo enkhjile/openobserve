@@ -10,12 +10,14 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `.env.example` | Show the disabled configuration and operator approval format. |
 | `src/config/src/lib.rs`, `src/config/src/config.rs` | Load the dedicated OIDC configuration through the normal environment loader. |
 | `src/core/Cargo.toml`, `src/core/src/lib.rs` | Make the protocol crate available to the core adapter. |
+| `src/main.rs` | Validate static provider settings before the server accepts traffic. |
+| `src/db/src/user.rs`, `src/infra/src/table/org_users.rs` | Load the bound account and its current memberships by immutable user ID. |
 | `src/core/src/auth.rs` | Recognize the session cookie in the OSS request extractor. |
 | `src/api/common/src/auth/validator.rs` | Validate a stored OIDC session, enforce existing organization scope, and apply OIDC-only policy before accepting human passwords. |
 | `src/api/grpc/src/handler/grpc/auth/mod.rs` | Apply the human-password policy in the gRPC validator, which authenticates OTLP separately from HTTP. |
 | `src/api/http/src/handler/http/router/openapi_coverage/excluded_routes.txt` | Record browser-specific non-API routes in the existing OpenAPI coverage check. |
 | `src/api/http/src/lib.rs`, `src/api/http/src/handler/http/router/mod.rs` | Register four browser authentication endpoints and pin public bootstrap fields in tests. |
-| `src/api/management/src/request/users/mod.rs` | Enforce OIDC-only policy for password-derived presigned login URL issuance. |
+| `src/api/management/src/request/users/mod.rs` | Apply native login policy and revoke the previous OIDC session on a successful password login. |
 | `src/api/management/src/request/status/mod.rs` | Expose public login capabilities to Vue at bootstrap and after login. |
 | `src/config/src/axum/middlewares/access_log.rs`, `src/api/http/src/server.rs` | Strip callback queries in request and referer logs and omit request spans containing the callback URL. |
 | `web/src/components/login/Login.vue`, `web/src/views/Login.vue` | Show SSO and use the session endpoint to load the authenticated profile on return. |
@@ -63,4 +65,4 @@ cargo build
 uv run tests/oidc/browser_flow.py target/debug/openobserve
 ```
 
-The last command launches three successive configurations of the actual binary with a temporary local SQLite store and a loopback RSA-signing mock provider. It checks the browser redirects and cookies, signed login and logout, hard expiry, account collision, local-login policy, ingestion and service credentials. The script generates fresh test credentials and removes the temporary database on exit.
+The last command launches four successive configurations of the actual binary with a temporary local SQLite store and a loopback RSA-signing mock provider. It checks the browser redirects and cookies, overlapping login tabs, switching from OIDC to a native account, logout, hard expiry, account collision, local-login policy, ingestion and service credentials. The script generates fresh test credentials and removes the temporary database on exit.

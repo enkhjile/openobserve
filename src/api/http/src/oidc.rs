@@ -19,7 +19,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
-use openobserve_core::extensions::oidc;
+use openobserve_core::extensions::oidc::{self, browser_transactions};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -37,9 +37,15 @@ struct Profile {
     exp: i64,
 }
 
-pub async fn login() -> Response {
-    if !config::get_config().oidc.enabled {
+pub async fn login(headers: HeaderMap) -> Response {
+    let cfg = config::get_config();
+    if !cfg.oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if browser_transactions::pending_cookie_names(&headers, &cfg.oidc).len()
+        >= browser_transactions::MAX_BROWSER_TRANSACTIONS
+    {
+        return no_store(StatusCode::TOO_MANY_REQUESTS.into_response());
     }
     let binding = oidc::random_secret();
     let result = async {
@@ -53,16 +59,13 @@ pub async fn login() -> Response {
     .await;
     match result {
         Ok(request) => {
-            let cfg = config::get_config();
+            let Some(cookie_name) =
+                browser_transactions::cookie_for_state(&cfg.oidc, &request.state)
+            else {
+                return unavailable();
+            };
             let mut response = Redirect::temporary(&request.url).into_response();
-            if set_cookie(
-                &mut response,
-                oidc::transaction_cookie_name(&cfg.oidc),
-                &binding,
-                300,
-            )
-            .is_err()
-            {
+            if set_cookie(&mut response, &cookie_name, &binding, 300).is_err() {
                 return unavailable();
             }
             no_store(response)
@@ -76,8 +79,15 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
     if !cfg.oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let transaction_cookie = query
+        .state
+        .as_deref()
+        .and_then(|state| browser_transactions::cookie_for_state(&cfg.oidc, state));
     let result = async {
-        let binding = oidc::unique_cookie(&headers, oidc::transaction_cookie_name(&cfg.oidc))?
+        let name = transaction_cookie
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("invalid OIDC state"))?;
+        let binding = oidc::unique_cookie(&headers, name)?
             .ok_or_else(|| anyhow::anyhow!("missing OIDC transaction"))?;
         let code = query
             .code
@@ -120,13 +130,8 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
             Redirect::to(&format!("{}/web/login?oidc_error=1", cfg.common.base_uri)).into_response()
         }
     };
-    if set_cookie(
-        &mut response,
-        oidc::transaction_cookie_name(&cfg.oidc),
-        "",
-        0,
-    )
-    .is_err()
+    if let Some(name) = transaction_cookie
+        && set_cookie(&mut response, &name, "", 0).is_err()
     {
         return unavailable();
     }
@@ -137,24 +142,23 @@ pub async fn session(headers: HeaderMap) -> Response {
     if !config::get_config().oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = async {
-        let session = oidc::resolve_session(&headers, &Method::GET).await?;
-        let user = db::user::get_user_record(&session.email).await?;
-        Ok::<_, anyhow::Error>(Profile {
-            email: session.email,
+    let (session, user) = match oidc::resolve_session_account(&headers, &Method::GET).await {
+        Ok(account) => account,
+        Err(err) if oidc::session_unavailable(&err) => return unavailable(),
+        Err(_) => return no_store(StatusCode::UNAUTHORIZED.into_response()),
+    };
+    no_store(
+        Json(Profile {
+            email: user.email,
             name: format!("{} {}", user.first_name, user.last_name)
                 .trim()
-                .to_string(),
+                .to_owned(),
             given_name: user.first_name,
             family_name: user.last_name,
             exp: session.expires_at,
         })
-    }
-    .await;
-    no_store(match result {
-        Ok(profile) => Json(profile).into_response(),
-        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
-    })
+        .into_response(),
+    )
 }
 
 pub async fn logout(headers: HeaderMap) -> Response {
@@ -169,12 +173,10 @@ pub async fn logout(headers: HeaderMap) -> Response {
         return unavailable();
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
-    for name in [
-        oidc::cookie_name(&cfg.oidc),
-        oidc::transaction_cookie_name(&cfg.oidc),
-        "auth_tokens",
-        "auth_ext",
-    ] {
+    for name in browser_transactions::pending_cookie_names(&headers, &cfg.oidc)
+        .into_iter()
+        .chain([oidc::cookie_name(&cfg.oidc), "auth_tokens", "auth_ext"])
+    {
         if set_cookie(&mut response, name, "", 0).is_err() {
             return unavailable();
         }

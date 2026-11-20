@@ -38,11 +38,16 @@ struct Mock {
 }
 async fn discovery(State(s): State<Mock>) -> Json<Value> {
     Json(
-        json!({"issuer":s.issuer,"authorization_endpoint":format!("{}/authorize",s.issuer),"token_endpoint":format!("{}/token",s.issuer),"jwks_uri":format!("{}/jwks",s.issuer),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}),
+        json!({"issuer":s.issuer,"authorization_endpoint":format!("{}/authorize",s.issuer),"token_endpoint":format!("{}/token",s.issuer),"jwks_uri":format!("{}/jwks",s.issuer),"response_types_supported":["code"],"subject_types_supported":["public"],"token_endpoint_auth_methods_supported":["client_secret_post"],"id_token_signing_alg_values_supported":["RS256"]}),
     )
 }
 async fn token(State(s): State<Mock>, Form(form): Form<HashMap<String, String>>) -> Json<Value> {
     assert!(form.contains_key("code_verifier"));
+    assert_eq!(form.get("client_id").map(String::as_str), Some("client"));
+    assert_eq!(
+        form.get("client_secret").map(String::as_str),
+        Some("secret")
+    );
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("test-key".into());
     let mode = s.mode.lock().unwrap().clone();

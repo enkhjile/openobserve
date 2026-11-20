@@ -1379,10 +1379,15 @@ fn oidc_role(record: &DBUser, path: &str, method: &Method, is_root: bool) -> Opt
     if is_org_agnostic_path(path) {
         return Some(UserRole::User);
     }
+    let org_id = if columns.len() == 1 {
+        DEFAULT_ORG
+    } else {
+        org_from_path(&columns)
+    };
     record
         .organizations
         .iter()
-        .find(|org| org.name == org_from_path(&columns))
+        .find(|org| org.name == org_id)
         .map(|org| org.role.clone())
 }
 
@@ -1391,10 +1396,18 @@ async fn validate_oidc_session(
     auth: &AuthExtractor,
     path_prefix: &str,
 ) -> Result<AuthValidationResult, AuthError> {
+    use openobserve_core::extensions::oidc;
+
     let denied = || AuthError::Unauthorized("Unauthorized Access".into());
-    let session = openobserve_core::extensions::oidc::resolve_session(&req.headers, &req.method)
+    let (_, record) = oidc::resolve_session_account(&req.headers, &req.method)
         .await
-        .map_err(|_| denied())?;
+        .map_err(|error| {
+            if oidc::session_unavailable(&error) {
+                AuthError::Unavailable("Session store unavailable".into())
+            } else {
+                denied()
+            }
+        })?;
     let path = routed_path(
         req.uri
             .path()
@@ -1402,19 +1415,16 @@ async fn validate_oidc_session(
             .unwrap_or(req.uri.path()),
     );
     let path = path.strip_suffix('/').unwrap_or(path);
-    let record = db::user::get_db_user(&session.email)
-        .await
-        .map_err(|_| denied())?;
     let role =
-        oidc_role(&record, path, &req.method, is_root_user(&session.email)).ok_or_else(denied)?;
-    check_and_create_org(&session.email, &req.method, path, req.route.as_deref()).await?;
+        oidc_role(&record, path, &req.method, is_root_user(&record.email)).ok_or_else(denied)?;
+    check_and_create_org(&record.email, &req.method, path, req.route.as_deref()).await?;
     if !auth.bypass_check
-        && !check_permissions(&session.email, auth.clone(), role.clone(), true).await
+        && !check_permissions(&record.email, auth.clone(), role.clone(), true).await
     {
         return Err(AuthError::RoleRefused("Unauthorized Access".into()));
     }
     Ok(AuthValidationResult {
-        user_email: session.email,
+        user_email: record.email,
         user_role: Some(role),
         is_internal_user: !record.is_external,
         token_name: None,
@@ -3546,6 +3556,22 @@ CN5lTowpVXP2OIiiNTGa75Fj
             }
         }
     }
+    #[test]
+    fn oidc_clusters_uses_default_org_membership() {
+        let mut record: DBUser = serde_json::from_value(serde_json::json!({
+            "email": "viewer@example.com",
+            "password": "",
+            "organizations": [{"name": "clusters", "role": "viewer"}]
+        }))
+        .unwrap();
+        assert_eq!(oidc_role(&record, "clusters", &Method::GET, false), None);
+        record.organizations[0].name = DEFAULT_ORG.into();
+        assert_eq!(
+            oidc_role(&record, "clusters", &Method::GET, false),
+            Some(UserRole::Viewer)
+        );
+    }
+
     #[test]
     fn oidc_without_memberships_can_only_list_its_own_organizations() {
         let record = DBUser {

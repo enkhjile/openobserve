@@ -32,6 +32,7 @@ use config::{
 use openobserve_api_common::{auth::validator::AuthError, extractors::Headers};
 use openobserve_core::{
     auth::{UserEmail, generate_presigned_url, is_valid_email},
+    extensions::oidc,
     users,
 };
 use serde::Serialize;
@@ -689,7 +690,7 @@ context_path = "/auth",
     )
 )]
 pub async fn authentication(
-    #[cfg(feature = "enterprise")] headers: HeaderMap,
+    headers: HeaderMap,
     #[cfg(feature = "enterprise")] real_ip: Option<Extension<RealIp>>,
     #[cfg(feature = "enterprise")] Query(_query): Query<HashMap<String, String>>,
     auth: Option<axum::Json<SignInUser>>,
@@ -833,15 +834,35 @@ pub async fn authentication(
         } else {
             auth_cookie.set_same_site(SameSite::None);
         }
-        // audit the successful login
-        #[cfg(feature = "enterprise")]
-        audit(audit_message).await;
-        (
+        let mut response = (
             StatusCode::OK,
             [(header::SET_COOKIE, auth_cookie.to_string())],
             axum::Json(resp),
         )
-            .into_response()
+            .into_response();
+        if cfg.oidc.enabled {
+            // Retire the browser's previous identity before issuing native credentials.
+            if oidc::revoke(&headers).await.is_err() {
+                return AuthError::Unavailable("Unable to switch login session".into())
+                    .into_response();
+            }
+            let pending = oidc::browser_transactions::pending_cookie_names(&headers, &cfg.oidc);
+            for name in std::iter::once(oidc::cookie_name(&cfg.oidc)).chain(pending) {
+                let mut cookie = Cookie::new(name, "");
+                cookie.set_path("/");
+                cookie.set_http_only(true);
+                cookie.set_secure(cfg.oidc.cookie_secure);
+                cookie.set_same_site(SameSite::Lax);
+                cookie.make_removal();
+                response.headers_mut().append(
+                    header::SET_COOKIE,
+                    cookie.to_string().parse().expect("valid OIDC cookie name"),
+                );
+            }
+        }
+        #[cfg(feature = "enterprise")]
+        audit(audit_message).await;
+        response
     } else {
         #[cfg(feature = "enterprise")]
         audit_unauthorized_error(audit_message).await;

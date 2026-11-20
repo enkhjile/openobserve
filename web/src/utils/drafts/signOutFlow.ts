@@ -14,6 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import type { Router } from "vue-router";
+import { queryClient } from "@/composables/query/queryClient";
+import { configQuery } from "@/services/config.queries";
 import oidc from "@/services/oidc";
 import { toast } from "@/lib/feedback/Toast/useToast";
 import { gt } from "@/types/i18n";
@@ -63,16 +65,22 @@ export const endSignedInSession = (
   store: SignOutStore,
   { keepDrafts = false }: { keepDrafts?: boolean } = {},
 ): void | Promise<void> => {
-  if (store.state.zoConfig?.oidc_enabled) {
-    return oidc.logout().then(() => clearSignedInSession(store, keepDrafts));
+  const finish = (oidcEnabled: boolean) => {
+    if (oidcEnabled) return oidc.logout().then(() => clearSignedInSession(store, keepDrafts));
+    invalidateLoginData();
+    clearSignedInSession(store, keepDrafts);
+  };
+  const enabled = store.state.zoConfig?.oidc_enabled;
+  // A direct /logout navigation can run before main.ts has stored the bootstrap config.
+  if (enabled === undefined) {
+    return queryClient.fetchQuery(configQuery()).then((config) => finish(config.oidc_enabled));
   }
-  clearSignedInSession(store, keepDrafts);
+  return finish(enabled);
 };
 
 const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void => {
   const userEmail = String(store.state.userInfo?.email ?? "");
   stopSessionServices(store);
-  if (!store.state.zoConfig?.oidc_enabled) invalidateLoginData();
   // A deep-link first login keeps the flag for a later Home visit; it must not pass to the next user.
   localStorage.removeItem("isFirstTimeLogin");
   // the open sample tour is this user's; the full reload that follows drops its in-memory copy

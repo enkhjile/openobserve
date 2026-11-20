@@ -165,19 +165,26 @@ def app(binary, directory, port, settings):
                 process.wait()
 
 
-def flow(browser, base, success):
+def begin_flow(browser, base):
     login = browser.get(base + "/auth/oidc/login", allow_redirects=False, timeout=20)
     assert login.is_redirect, login.status_code
     consent = requests.get(login.headers["Location"], allow_redirects=False, timeout=5)
     assert consent.is_redirect
-    response = browser.get(
-        consent.headers["Location"], allow_redirects=False, timeout=20
-    )
+    return consent.headers["Location"]
+
+
+def finish_flow(browser, callback, success):
+    response = browser.get(callback, allow_redirects=False, timeout=20)
     assert response.is_redirect
     assert response.headers["Location"].endswith(
         "/web/cb?oidc=1" if success else "/web/login?oidc_error=1"
     )
-    return consent.headers["Location"]
+
+
+def flow(browser, base, success):
+    callback = begin_flow(browser, base)
+    finish_flow(browser, callback, success)
+    return callback
 
 
 ROOT = "root@example.test"
@@ -223,9 +230,34 @@ def test_flow(binary, directory, issuer):
         "ZO_OIDC_COOKIE_SECURE": "false",
         "ZO_OIDC_ONLY": "true",
         "ZO_OIDC_ACCOUNT_LINKS": json.dumps(
-            [{"issuer": issuer.issuer, "subject": "approved", "email": HUMAN}]
+            [{"issuer": issuer.issuer, "subject": "approved", "email": HUMAN.upper()}]
         ),
     }
+    # Static client errors must be reported before a server can advertise readiness.
+    invalid_env = {k: v for k, v in os.environ.items() if not k.startswith("ZO_")}
+    invalid_env.update(
+        settings,
+        ZO_OIDC_CLIENT_ID="",
+        ZO_ROOT_USER_EMAIL=ROOT,
+        ZO_ROOT_USER_PASSWORD=PASSWORD,
+        ZO_LOCAL_MODE="true",
+        ZO_HTTP_PORT=str(port),
+        ZO_GRPC_PORT=str(free_port()),
+        ZO_TELEMETRY="false",
+        ZO_DATA_DIR=str(Path(directory) / "data") + "/",
+    )
+    invalid = subprocess.run(
+        [binary],
+        cwd=directory,
+        env=invalid_env,
+        check=False,
+        capture_output=True,
+        timeout=20,
+    )
+    assert (
+        invalid.returncode != 0
+        and b"OIDC provider configuration" in invalid.stderr + invalid.stdout
+    )
     with app(binary, directory, port, settings):
         issuer.subject, issuer.email = "unapproved", HUMAN
         with requests.Session() as browser:
@@ -302,6 +334,62 @@ def test_flow(binary, directory, issuer):
             timeout=5,
         )
         assert machine.ok, machine.status_code
+
+    with (
+        app(binary, directory, port, settings | {"ZO_OIDC_ONLY": "false"}),
+        requests.Session() as browser,
+    ):
+        for reverse in (False, True):
+            tabs = [begin_flow(browser, base), begin_flow(browser, base)]
+            for callback in tabs[:: -1 if reverse else 1]:
+                finish_flow(browser, callback, True)
+        tabs = [begin_flow(browser, base) for _ in range(8)]
+        assert (
+            browser.get(
+                base + "/auth/oidc/login", allow_redirects=False, timeout=5
+            ).status_code
+            == 429
+        )
+        cancelled = urlsplit(tabs.pop())
+        state = parse_qs(cancelled.query)["state"][0]
+        finish_flow(
+            browser,
+            issuer.callback
+            + "?"
+            + urlencode({"state": state, "error": "access_denied"}),
+            False,
+        )
+        for callback in tabs:
+            finish_flow(browser, callback, True)
+        assert browser.get(base + "/api/clusters", timeout=5).ok
+        old = browser.cookies.copy()
+        pending = begin_flow(browser, base)
+        login = base + "/auth/login"
+        assert not browser.post(
+            login, json={"name": ROOT, "password": "invalid"}, timeout=5
+        ).ok
+        assert (
+            browser.get(base + "/api/default/passcode", timeout=5).json()["data"][
+                "user"
+            ]
+            == HUMAN
+        )
+        assert browser.post(
+            login, json={"name": ROOT, "password": PASSWORD}, timeout=5
+        ).ok
+        assert (
+            browser.get(base + "/api/default/passcode", timeout=5).json()["data"][
+                "user"
+            ]
+            == ROOT
+        )
+        assert (
+            requests.get(
+                base + "/auth/oidc/session", cookies=old, timeout=5
+            ).status_code
+            == 401
+        )
+        finish_flow(browser, pending, False)
 
     settings.update(
         ZO_OIDC_ACCOUNT_LINKS="[]",

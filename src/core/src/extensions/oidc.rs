@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub mod browser_transactions;
+
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
-use config::oidc::Oidc;
+use config::{meta::user::DBUser, oidc::Oidc};
 use http::{HeaderMap, Method, header};
 use infra::table::entity::users::{self, Entity as Users};
 pub use openobserve_oidc::random_secret;
@@ -29,7 +33,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 use url::Url;
 
-static PROVIDER: OnceCell<OidcProvider> = OnceCell::const_new();
+struct Runtime {
+    provider: OidcProvider,
+    // All configured links belong to the configured issuer.
+    links: HashMap<String, AccountLink>,
+}
+
+static RUNTIME: OnceCell<Runtime> = OnceCell::const_new();
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -57,11 +67,15 @@ pub struct Session {
 }
 
 pub async fn provider() -> Result<&'static OidcProvider> {
-    PROVIDER
+    Ok(&runtime().await?.provider)
+}
+
+async fn runtime() -> Result<&'static Runtime> {
+    RUNTIME
         .get_or_try_init(|| async {
             let cfg = config::get_config();
-            validate_settings(&cfg.oidc)?;
-            OidcProvider::new(ProviderSettings {
+            let links = validated_links(&cfg.oidc)?;
+            let provider = OidcProvider::new(ProviderSettings {
                 issuer: cfg.oidc.issuer.clone(),
                 client_id: cfg.oidc.client_id.clone(),
                 client_secret: (!cfg.oidc.client_secret.is_empty())
@@ -75,12 +89,13 @@ pub async fn provider() -> Result<&'static OidcProvider> {
                     .collect(),
                 allow_insecure_http: cfg.oidc.allow_insecure_http,
             })
-            .map_err(|_| anyhow::anyhow!("OIDC provider configuration failed"))
+            .context("OIDC provider configuration failed")?;
+            Ok(Runtime { provider, links })
         })
         .await
 }
 
-pub fn validate_settings(cfg: &Oidc) -> Result<()> {
+fn validated_links(cfg: &Oidc) -> Result<HashMap<String, AccountLink>> {
     ensure!(cfg.enabled, "OIDC disabled");
     ensure!(
         cfg.session_max_age > 0 && cfg.session_max_age <= 86400,
@@ -92,18 +107,20 @@ pub fn validate_settings(cfg: &Oidc) -> Result<()> {
     );
     let links: Vec<AccountLink> =
         serde_json::from_str(&cfg.account_links).context("invalid OIDC account links")?;
-    let mut identities = std::collections::HashSet::new();
+    let mut identities = HashMap::new();
     for link in links {
         ensure!(
-            !link.subject.is_empty() && !link.email.is_empty() && link.issuer == cfg.issuer,
+            !link.subject.is_empty()
+                && config::utils::str::is_valid_email(&link.email)
+                && link.issuer == cfg.issuer,
             "invalid OIDC account link"
         );
         ensure!(
-            identities.insert((link.issuer, link.subject)),
+            identities.insert(link.subject.clone(), link).is_none(),
             "duplicate OIDC account link"
         );
     }
-    Ok(())
+    Ok(identities)
 }
 
 pub fn password_allowed(cfg: &Oidc, email: &str, is_root: bool) -> bool {
@@ -167,7 +184,27 @@ pub fn check_csrf(headers: &HeaderMap, method: &Method, redirect_uri: &str) -> R
     Ok(())
 }
 
+#[derive(Debug)]
+struct SessionUnavailable;
+
+impl std::fmt::Display for SessionUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OIDC session store unavailable")
+    }
+}
+
+pub fn session_unavailable(error: &anyhow::Error) -> bool {
+    error.is::<SessionUnavailable>()
+}
+
 pub async fn resolve_session(headers: &HeaderMap, method: &Method) -> Result<Session> {
+    Ok(resolve_session_account(headers, method).await?.0)
+}
+
+pub async fn resolve_session_account(
+    headers: &HeaderMap,
+    method: &Method,
+) -> Result<(Session, DBUser)> {
     let cfg = config::get_config();
     ensure!(cfg.oidc.enabled, "OIDC disabled");
     check_csrf(headers, method, &cfg.oidc.redirect_uri)?;
@@ -175,34 +212,41 @@ pub async fn resolve_session(headers: &HeaderMap, method: &Method) -> Result<Ses
     // A cache miss racing logout must never revive a revoked session from cache.
     let stored = infra::table::entity::sessions::Entity::find_by_id(session_key(secret))
         .one(infra::db::get_orm_client_rw().await)
-        .await?
+        .await
+        .context(SessionUnavailable)?
         .context("missing OIDC session")?;
     ensure!(
         stored.expires_at > chrono::Utc::now().timestamp_micros(),
         "expired OIDC session"
     );
-    let session: Session = serde_json::from_str(&stored.access_token)?;
+    let session: Session =
+        serde_json::from_str(&stored.access_token).context(SessionUnavailable)?;
     ensure!(
         session.expires_at > chrono::Utc::now().timestamp(),
         "expired OIDC session"
     );
     ensure!(session.issuer == cfg.oidc.issuer, "OIDC issuer changed");
     let binding = load_binding(&session.issuer, &session.subject)
-        .await?
+        .await
+        .context(SessionUnavailable)?
         .context("unlinked OIDC identity")?;
     ensure!(
-        binding.identity.email == session.email && binding_allowed(&cfg.oidc, &binding)?,
+        binding.identity.issuer == session.issuer
+            && binding.identity.subject == session.subject
+            && binding.identity.email == session.email
+            && binding_allowed(
+                &cfg.oidc,
+                &runtime().await.context(SessionUnavailable)?.links,
+                &binding
+            ),
         "unapproved OIDC identity"
     );
-    ensure_human_account(&session.email).await?;
-    let user = lookup_user(&session.email)
-        .await?
-        .context("deleted OIDC account")?;
     ensure!(
-        user.id == binding.user_id && user.id == session.user_id && !binding.pending,
+        binding.user_id == session.user_id && !binding.pending,
         "OIDC account replaced"
     );
-    Ok(session)
+    let user = bound_account(&binding).await?;
+    Ok((session, user))
 }
 
 pub async fn establish(
@@ -210,12 +254,12 @@ pub async fn establish(
     headers: &HeaderMap,
 ) -> Result<(String, Session)> {
     let cfg = config::get_config();
-    validate_settings(&cfg.oidc)?;
+    let links = &runtime().await?.links;
     ensure!(
         identity.expires_at > chrono::Utc::now().timestamp(),
         "expired OIDC identity"
     );
-    let binding = resolve_identity(&cfg.oidc, &identity).await?;
+    let binding = resolve_identity(&cfg.oidc, links, &identity).await?;
     let expires_at = identity
         .expires_at
         .min(chrono::Utc::now().timestamp() + cfg.oidc.session_max_age);
@@ -270,23 +314,22 @@ async fn load_binding(issuer: &str, subject: &str) -> Result<Option<Binding>> {
         .transpose()
 }
 
-fn configured_link(cfg: &Oidc, issuer: &str, subject: &str) -> Result<Option<AccountLink>> {
-    let links: Vec<AccountLink> = serde_json::from_str(&cfg.account_links)?;
-    Ok(links
-        .into_iter()
-        .find(|link| link.issuer == issuer && link.subject == subject))
-}
-
-fn binding_allowed(cfg: &Oidc, binding: &Binding) -> Result<bool> {
-    let link = configured_link(cfg, &binding.identity.issuer, &binding.identity.subject)?;
-    Ok(match link {
-        Some(link) => link == binding.identity,
+fn binding_allowed(cfg: &Oidc, links: &HashMap<String, AccountLink>, binding: &Binding) -> bool {
+    match links.get(&binding.identity.subject) {
+        Some(link) => link == &binding.identity,
         None => binding.provisioned && cfg.provisioning_enabled,
-    })
+    }
 }
 
-async fn ensure_human_account(email: &str) -> Result<()> {
-    let user = db::user::get_db_user(email).await?;
+async fn bound_account(binding: &Binding) -> Result<DBUser> {
+    let user = db::user::get_db_user_by_id(&binding.user_id)
+        .await
+        .context(SessionUnavailable)?
+        .context("deleted OIDC account")?;
+    ensure!(
+        user.email.to_lowercase() == binding.identity.email.to_lowercase(),
+        "OIDC account renamed"
+    );
     ensure!(
         !user
             .organizations
@@ -294,7 +337,7 @@ async fn ensure_human_account(email: &str) -> Result<()> {
             .any(|org| org.role.is_service_account()),
         "service accounts cannot use interactive OIDC"
     );
-    Ok(())
+    Ok(user)
 }
 
 async fn lookup_user(email: &str) -> Result<Option<users::Model>> {
@@ -306,32 +349,36 @@ async fn lookup_user(email: &str) -> Result<Option<users::Model>> {
     Ok(matches.pop())
 }
 
-async fn resolve_identity(cfg: &Oidc, identity: &VerifiedIdentity) -> Result<Binding> {
+async fn resolve_identity(
+    cfg: &Oidc,
+    links: &HashMap<String, AccountLink>,
+    identity: &VerifiedIdentity,
+) -> Result<Binding> {
     ensure!(
         identity.issuer == cfg.issuer && !identity.subject.is_empty(),
         "invalid OIDC identity"
     );
     let key = binding_key(&identity.issuer, &identity.subject)?;
     let store = infra::db::get_db().await;
-    if load_binding(&identity.issuer, &identity.subject)
-        .await?
-        .is_none()
-    {
-        let binding = initial_binding(cfg, identity).await?;
-        // A concurrent callback owns the same immutable reservation if this CAS loses.
-        store
-            .put_if_revision(&key, Bytes::from(serde_json::to_vec(&binding)?), None)
-            .await?;
-    }
-    let (bytes, revision) = store
-        .get_with_revision(&key)
-        .await?
-        .context("missing OIDC reservation")?;
+    let (bytes, revision) = match store.get_with_revision(&key).await? {
+        Some(existing) => existing,
+        None => {
+            let binding = initial_binding(cfg, links, identity).await?;
+            // A concurrent callback owns the same immutable reservation if this CAS loses.
+            store
+                .put_if_revision(&key, Bytes::from(serde_json::to_vec(&binding)?), None)
+                .await?;
+            store
+                .get_with_revision(&key)
+                .await?
+                .context("missing OIDC reservation")?
+        }
+    };
     let mut binding: Binding = serde_json::from_slice(&bytes)?;
     ensure!(
         binding.identity.issuer == identity.issuer
             && binding.identity.subject == identity.subject
-            && binding_allowed(cfg, &binding)?,
+            && binding_allowed(cfg, links, &binding),
         "unapproved OIDC identity"
     );
     if binding.pending {
@@ -344,36 +391,40 @@ async fn resolve_identity(cfg: &Oidc, identity: &VerifiedIdentity) -> Result<Bin
         )
         .await?;
         binding.pending = false;
-        store
+        if !store
             .put_if_revision(
                 &key,
                 Bytes::from(serde_json::to_vec(&binding)?),
                 Some(revision),
             )
-            .await?;
-        let current = load_binding(&identity.issuer, &identity.subject)
             .await?
-            .context("missing OIDC binding")?;
-        ensure!(
-            !current.pending && current.user_id == binding.user_id,
-            "OIDC binding changed"
-        );
+        {
+            let current = load_binding(&identity.issuer, &identity.subject)
+                .await?
+                .context("missing OIDC binding")?;
+            ensure!(
+                !current.pending
+                    && current.user_id == binding.user_id
+                    && current.identity == binding.identity,
+                "OIDC binding changed"
+            );
+        }
     }
-    let user = lookup_user(&binding.identity.email)
-        .await?
-        .context("deleted OIDC account")?;
-    ensure!(user.id == binding.user_id, "OIDC account replaced");
-    ensure_human_account(&binding.identity.email).await?;
+    bound_account(&binding).await?;
     Ok(binding)
 }
 
-async fn initial_binding(cfg: &Oidc, identity: &VerifiedIdentity) -> Result<Binding> {
-    if let Some(link) = configured_link(cfg, &identity.issuer, &identity.subject)? {
+async fn initial_binding(
+    cfg: &Oidc,
+    links: &HashMap<String, AccountLink>,
+    identity: &VerifiedIdentity,
+) -> Result<Binding> {
+    if let Some(link) = links.get(&identity.subject) {
         let user = lookup_user(&link.email)
             .await?
             .context("linked account missing")?;
         return Ok(Binding {
-            identity: link,
+            identity: link.clone(),
             provisioned: false,
             user_id: user.id,
             pending: false,
@@ -493,8 +544,36 @@ mod tests {
     }
 
     #[test]
+    fn startup_rejects_invalid_session_settings_and_links() {
+        let mut cfg = Oidc {
+            enabled: true,
+            issuer: "https://issuer".into(),
+            cookie_secure: true,
+            account_links: "[]".into(),
+            ..Default::default()
+        };
+        assert!(validated_links(&cfg).is_err());
+        cfg.session_max_age = 3600;
+        cfg.cookie_secure = false;
+        assert!(validated_links(&cfg).is_err());
+        cfg.allow_insecure_http = true;
+        assert!(validated_links(&cfg).is_ok());
+        cfg.account_links = "invalid".into();
+        assert!(validated_links(&cfg).is_err());
+        let link = r#"{"issuer":"https://issuer","subject":"a","email":"a@example.com"}"#;
+        cfg.account_links = format!("[{link},{link}]");
+        assert!(validated_links(&cfg).is_err());
+    }
+
+    #[test]
     fn withdrawn_approval_and_email_takeover_are_rejected() {
-        let mut cfg = Oidc::default();
+        let mut cfg = Oidc {
+            enabled: true,
+            issuer: "https://issuer".into(),
+            session_max_age: 3600,
+            cookie_secure: true,
+            ..Default::default()
+        };
         let binding = Binding {
             identity: AccountLink {
                 issuer: "https://issuer".into(),
@@ -506,12 +585,24 @@ mod tests {
             pending: false,
         };
         cfg.account_links = serde_json::to_string(&vec![binding.identity.clone()]).unwrap();
-        assert!(binding_allowed(&cfg, &binding).unwrap());
+        assert!(binding_allowed(
+            &cfg,
+            &validated_links(&cfg).unwrap(),
+            &binding
+        ));
         cfg.account_links = "[]".into();
-        assert!(!binding_allowed(&cfg, &binding).unwrap());
+        assert!(!binding_allowed(
+            &cfg,
+            &validated_links(&cfg).unwrap(),
+            &binding
+        ));
         cfg.account_links =
             r#"[{"issuer":"https://issuer","subject":"attacker","email":"user@example.com"}]"#
                 .into();
-        assert!(!binding_allowed(&cfg, &binding).unwrap());
+        assert!(!binding_allowed(
+            &cfg,
+            &validated_links(&cfg).unwrap(),
+            &binding
+        ));
     }
 }

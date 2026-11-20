@@ -18,8 +18,9 @@ import { createMemoryHistory, createRouter, type RouteRecordRaw } from "vue-rout
 import useRoutes from "./router";
 import Login from "@/views/Login.vue";
 import store from "@/stores";
+import { queryClient } from "@/composables/query/queryClient";
 import oidc from "@/services/oidc";
-import { routeGuard } from "@/utils/zincutils";
+import { invalidateLoginData, routeGuard } from "@/utils/zincutils";
 import { loadSecurityAccess } from "@/composables/security/useSecurityAccess";
 import { isPaywalledDestination, shouldPaywallRoute } from "@/utils/auth";
 import { PA_ROUTES } from "@/utils/rum/productAnalyticsRoutes";
@@ -300,6 +301,10 @@ describe("useRoutes (router.ts)", () => {
   // 3. parentRoutes — /logout
   // =========================================================================
   describe("parentRoutes — /logout", () => {
+    beforeEach(() => {
+      store.state.zoConfig = { oidc_enabled: false };
+    });
+
     it("should include /logout route", () => {
       const { parentRoutes } = useRoutes();
       const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
@@ -312,8 +317,11 @@ describe("useRoutes (router.ts)", () => {
       expect(typeof logoutRoute.beforeEnter).toBe("function");
     });
 
-    it("keeps a direct OIDC logout on the page when revocation fails", async () => {
-      store.state.zoConfig = { oidc_enabled: true };
+    it("resolves the auth mode on cold logout and stays on the page when revocation fails", async () => {
+      store.state.zoConfig = {};
+      const bootstrap = vi
+        .spyOn(queryClient, "fetchQuery")
+        .mockResolvedValue({ oidc_enabled: true });
       const revoke = vi.spyOn(oidc, "logout").mockRejectedValue(new Error("network failure"));
       const originalLocation = window.location;
       Object.defineProperty(window, "location", {
@@ -326,9 +334,13 @@ describe("useRoutes (router.ts)", () => {
         const logoutRoute = parentRoutes.find((route) => route.path === "/logout");
         const next = vi.fn();
         await logoutRoute.beforeEnter({}, {}, next);
+        expect(bootstrap).toHaveBeenCalledOnce();
+        expect(revoke).toHaveBeenCalledOnce();
+        expect(invalidateLoginData).not.toHaveBeenCalled();
         expect(next).toHaveBeenCalledWith(false);
         expect(window.location.href).toBe("");
       } finally {
+        bootstrap.mockRestore();
         revoke.mockRestore();
         store.state.zoConfig = {};
         Object.defineProperty(window, "location", {

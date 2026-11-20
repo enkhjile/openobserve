@@ -6,10 +6,13 @@ use std::{
 };
 
 use openidconnect::{
-    AccessTokenHash, AuthorizationCode, AuthorizationCodeHash, ClientId, ClientSecret, CsrfToken,
-    EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpRequest, HttpResponse, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreTokenResponse},
+    AccessTokenHash, AuthType, AuthorizationCode, AuthorizationCodeHash, ClientId, ClientSecret,
+    CsrfToken, EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpRequest, HttpResponse, IssuerUrl,
+    Nonce, OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
+    core::{
+        CoreAuthenticationFlow, CoreClient, CoreClientAuthMethod, CoreProviderMetadata,
+        CoreTokenResponse,
+    },
     reqwest,
 };
 use serde::{Deserialize, Serialize};
@@ -150,11 +153,18 @@ impl OidcProvider {
     }
 
     fn client(&self, metadata: CoreProviderMetadata) -> Result<DiscoveredClient, Error> {
+        let auth_type = token_auth_type(
+            self.settings.client_secret.is_some(),
+            metadata
+                .token_endpoint_auth_methods_supported()
+                .map(Vec::as_slice),
+        )?;
         Ok(CoreClient::from_provider_metadata(
             metadata,
             ClientId::new(self.settings.client_id.clone()),
             self.settings.client_secret.clone().map(ClientSecret::new),
         )
+        .set_auth_type(auth_type)
         .set_redirect_uri(
             RedirectUrl::new(self.settings.redirect_uri.clone())
                 .map_err(|_| Error::Configuration)?,
@@ -364,6 +374,26 @@ pub struct VerifiedIdentity {
     pub expires_at: i64,
 }
 
+fn token_auth_type(
+    confidential: bool,
+    methods: Option<&[CoreClientAuthMethod]>,
+) -> Result<AuthType, Error> {
+    if !confidential {
+        return Ok(AuthType::RequestBody);
+    }
+    // Discovery defaults to client_secret_basic when the provider omits this field.
+    match methods {
+        None => Ok(AuthType::BasicAuth),
+        Some(supported) if supported.contains(&CoreClientAuthMethod::ClientSecretBasic) => {
+            Ok(AuthType::BasicAuth)
+        }
+        Some(supported) if supported.contains(&CoreClientAuthMethod::ClientSecretPost) => {
+            Ok(AuthType::RequestBody)
+        }
+        Some(_) => Err(Error::Configuration),
+    }
+}
+
 fn validate_url(value: &str, allow_http: bool, allow_query: bool) -> Result<(), Error> {
     let url = Url::parse(value).map_err(|_| Error::Configuration)?;
     if !(url.scheme() == "https" || (allow_http && url.scheme() == "http"))
@@ -376,4 +406,34 @@ fn validate_url(value: &str, allow_http: bool, allow_query: bool) -> Result<(), 
         return Err(Error::Configuration);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_auth_uses_discovered_methods() {
+        use CoreClientAuthMethod::{ClientSecretBasic, ClientSecretPost, PrivateKeyJwt};
+        assert!(matches!(
+            token_auth_type(true, None),
+            Ok(AuthType::BasicAuth)
+        ));
+        assert!(matches!(
+            token_auth_type(true, Some(&[ClientSecretPost, ClientSecretBasic])),
+            Ok(AuthType::BasicAuth)
+        ));
+        assert!(matches!(
+            token_auth_type(true, Some(&[ClientSecretPost])),
+            Ok(AuthType::RequestBody)
+        ));
+        assert!(matches!(
+            token_auth_type(true, Some(&[PrivateKeyJwt])),
+            Err(Error::Configuration)
+        ));
+        assert!(matches!(
+            token_auth_type(false, None),
+            Ok(AuthType::RequestBody)
+        ));
+    }
 }

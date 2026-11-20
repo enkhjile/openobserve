@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use config::meta::{organization::OrganizationType, user::UserRole};
 use http::{HeaderMap, Method, header};
+use infra::table::{org_users, organizations};
 use openobserve_core::extensions::oidc;
 use openobserve_oidc::VerifiedIdentity;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -52,18 +54,37 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
     std::fs::create_dir_all(dir.join("db")).unwrap();
     let env_file = dir.join("empty.env");
     std::fs::write(&env_file, "").unwrap();
-    config::config_path_manager::set_config_file_path(env_file).unwrap();
+    config::config_path_manager::set_config_file_path(env_file.clone()).unwrap();
     env("ZO_LOCAL_MODE", "true");
     env("ZO_META_STORE", "sqlite");
     env("ZO_DATA_DIR", &format!("{}/", dir.display()));
     env("ZO_DATA_DB_DIR", &format!("{}/db/", dir.display()));
     env("ZO_OIDC_ENABLED", "true");
+    env("ZO_OIDC_CLIENT_ID", "test-client");
     env("ZO_OIDC_ISSUER", "https://issuer.example");
     env(
         "ZO_OIDC_REDIRECT_URI",
         "https://observe.example/auth/oidc/callback",
     );
     env("ZO_OIDC_PROVISIONING_ENABLED", "true");
+    assert!(config::get_config().oidc.enabled);
+    env("ZO_OIDC_ONLY", "true");
+    env("ZO_OIDC_ENABLED", "false");
+    assert!(config::config::refresh_config().is_err());
+    assert!(config::get_config().oidc.enabled);
+    assert!(!config::get_config().oidc.only);
+    env("ZO_OIDC_ENABLED", "true");
+    env("ZO_OIDC_ONLY", "false");
+    env("ZO_ROUTE_STRATEGY", "invalid");
+    assert!(config::config::refresh_config().is_err());
+    env("ZO_ROUTE_STRATEGY", "workload");
+    std::fs::write(&env_file, "ZO_OIDC_COOKIE_SECURE=invalid\n").unwrap();
+    assert!(config::config::refresh_config().is_err());
+    assert!(config::get_config().oidc.cookie_secure);
+    std::fs::write(&env_file, "bad dotenv line\n").unwrap();
+    assert!(config::config::refresh_config().is_err());
+    std::fs::write(&env_file, "ZO_OIDC_COOKIE_SECURE=true\n").unwrap();
+    config::config::refresh_config().unwrap();
     infra::db::create_table().await.unwrap();
     infra::db_init().await.unwrap();
     infra::table::migrate().await.unwrap();
@@ -79,10 +100,40 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
             .user_id,
         first.user_id
     );
-    let db_user = db::user::get_db_user("one@example.com").await.unwrap();
+    let (_, db_user) = oidc::resolve_session_account(&headers, &Method::GET)
+        .await
+        .unwrap();
+    assert_eq!(db_user.email, "one@example.com");
     assert!(db_user.organizations.is_empty());
     assert!(db_user.password_ext.is_none());
     assert!(!db_user.password.is_empty());
+    organizations::add("team", "Team", OrganizationType::Custom)
+        .await
+        .unwrap();
+    org_users::add("team", &db_user.email, UserRole::Viewer, "fixture", None)
+        .await
+        .unwrap();
+    let (_, member) = oidc::resolve_session_account(&headers, &Method::GET)
+        .await
+        .unwrap();
+    assert_eq!(member.organizations.len(), 1);
+    assert_eq!(member.organizations[0].role, UserRole::Viewer);
+    org_users::remove("team", &db_user.email).await.unwrap();
+    org_users::add(
+        "team",
+        &db_user.email,
+        UserRole::ServiceAccount,
+        "fixture",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        oidc::resolve_session_account(&headers, &Method::GET)
+            .await
+            .is_err()
+    );
+    org_users::remove("team", &db_user.email).await.unwrap();
     assert!(
         oidc::establish(identity("attacker", "ONE@example.com"), &HeaderMap::new())
             .await
@@ -131,6 +182,25 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
             .await
             .is_err()
     );
+
+    let broken_key = format!("oidc_{:x}", Sha256::digest(b"broken"));
+    db::session::set_with_expiry(
+        &broken_key,
+        "malformed",
+        (chrono::Utc::now().timestamp() + 300) * 1_000_000,
+    )
+    .await
+    .unwrap();
+    let error = oidc::resolve_session(&cookie("broken"), &Method::GET)
+        .await
+        .err()
+        .unwrap();
+    assert!(oidc::session_unavailable(&error));
+    let error = oidc::resolve_session(&cookie("absent"), &Method::GET)
+        .await
+        .err()
+        .unwrap();
+    assert!(!oidc::session_unavailable(&error));
 
     let empty = HeaderMap::new();
     let (upper, lower) = tokio::join!(

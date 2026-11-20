@@ -291,8 +291,47 @@ describe("Login.vue", () => {
     expect(push).not.toHaveBeenCalled();
   });
 
+  it.each(["organization", "session"])(
+    "lets the user retry a temporary %s lookup failure",
+    async (failure) => {
+      vi.mocked(oidc.session).mockResolvedValue({
+        email: "approved@example.test",
+        name: "Approved",
+        given_name: "Approved",
+        family_name: "",
+        exp: 12345,
+      });
+      if (failure === "session") {
+        vi.mocked(oidc.session).mockRejectedValueOnce({
+          isAxiosError: true,
+          response: { status: 503 },
+        });
+      } else {
+        vi.mocked(organizationsService.list).mockRejectedValueOnce(new Error("network failure"));
+      }
+      vi.mocked(organizationsService.list).mockResolvedValueOnce({
+        data: { data: [] },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+      });
+      router.currentRoute = { value: { path: "/cb", query: { oidc: "1" }, hash: "" } };
+      wrapper = mount(LoginPage, {
+        global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-test="dex-callback-loading"]').exists()).toBe(false);
+      expect(store.dispatch).not.toHaveBeenCalledWith("logout");
+      await wrapper.get('[data-test="oidc-retry-callback"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="oidc-no-organization"]').exists()).toBe(true);
+      expect(oidc.session).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("does not authenticate a failed OIDC callback and shows a generic error", async () => {
-    vi.mocked(oidc.session).mockRejectedValue(new Error("private provider details"));
+    vi.mocked(oidc.session).mockRejectedValue({ isAxiosError: true, response: { status: 401 } });
     router.currentRoute = {
       value: { path: "/cb", query: { oidc: "1" }, hash: "#id_token=forged" },
     };

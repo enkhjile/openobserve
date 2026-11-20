@@ -4,7 +4,7 @@ Review scope: OIDC login on the Community Edition, from browser redirect through
 
 | Boundary | What the implementation checks |
 | --- | --- |
-| Browser to callback | A short-lived, capacity-limited server transaction binds a random state, nonce and S256 verifier to a separate HttpOnly browser cookie. Each transaction can complete once. |
+| Browser to callback | A short-lived, capacity-limited server transaction binds a random state, nonce and S256 verifier to a separate HttpOnly browser cookie. Each login tab receives its own cookie. Each transaction can complete once. A browser with eight pending cookies must finish a login or wait for a cookie to expire before starting another. |
 | Provider to application | Discovery starts at the configured issuer. The client uses TLS in production, disables redirects, limits response sizes and timeouts, verifies signed ID tokens, and checks issuer, audience, applicable authorized-party claims, nonce and token times. A failed verification can refresh signing keys under a rate limit. |
 | Provider identity to local account | The operator approves exact issuer and subject pairs. A signed email claim alone confers no access to an existing account. Automatic provisioning requires verified email, refuses collisions and creates an account without memberships. |
 | Account deletion and recreation | Each binding also records the local database row ID. Recreating the same email cannot revive an old binding. Concurrent provisioning uses a normalized email, a reserved user ID, and compare-and-swap metadata writes. |

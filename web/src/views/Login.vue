@@ -16,15 +16,22 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 <template>
   <main
-    v-if="oidcNoOrganization"
+    v-if="oidcNoOrganization || oidcCallbackFailed"
     class="bg-card-glass-bg flex min-h-dvh items-center justify-center p-6"
   >
     <div class="flex max-w-lg flex-col gap-4">
       <OBanner
+        v-if="oidcNoOrganization"
         variant="info"
         :content="t('login.oidcNoOrganization')"
         data-test="oidc-no-organization"
       />
+      <template v-else>
+        <OBanner variant="error" :content="t('login.oidcCallbackError')" />
+        <OButton variant="primary" data-test="oidc-retry-callback" @click="loadOidcSession">
+          {{ t("common.retry") }}
+        </OButton>
+      </template>
       <OButton variant="primary" @click="signout">{{ t("menu.signOut") }}</OButton>
     </div>
   </main>
@@ -65,6 +72,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <script lang="ts">
 import { configQuery, isFullConfigLoaded } from "@/services/config.queries";
 import { queryClient } from "@/composables/query/queryClient";
+import { isAxiosError } from "axios";
 import { defineComponent, onBeforeMount, ref } from "vue";
 import { useRouter, type LocationQuery } from "vue-router";
 import Login from "@/components/login/Login.vue";
@@ -119,6 +127,7 @@ export default defineComponent({
     const router: any = useRouter();
     const showInvitations = ref(false);
     const oidcNoOrganization = ref(false);
+    const oidcCallbackFailed = ref(false);
     const { identify } = useReo();
     const invitedOrg = ref<{ identifier: string; name: string }>({
       identifier: "",
@@ -164,7 +173,7 @@ export default defineComponent({
      * redirect user to the page where user was redirected from
      */
     const getDefaultOrganization = () => {
-      organizationsService
+      return organizationsService
         .list(0, 100000, "id", false, "")
         .then(async (res: any) => {
           if (isOidcCallback(router.currentRoute.value.query) && !res.data.data?.length) {
@@ -264,9 +273,8 @@ export default defineComponent({
         })
         .catch((e: any) => {
           console.log("Error while fetching organizations", e);
-          if (e.response?.status === 403) {
-            signout();
-          }
+          oidcCallbackFailed.value = isOidcCallback(router.currentRoute.value.query);
+          if (e.response?.status === 403) return signout();
         });
     };
 
@@ -350,6 +358,7 @@ export default defineComponent({
       getDefaultOrganization,
       showInvitations,
       oidcNoOrganization,
+      oidcCallbackFailed,
       handleInvitationsProcessed,
       getImageURL,
       signout,
@@ -373,23 +382,7 @@ export default defineComponent({
   },
   created() {
     if (isOidcCallback(this.$route.query)) {
-      // URL flags select the UI flow; only the server session supplies identity.
-      oidc
-        .session()
-        .then((profile) => {
-          useLocalUserInfo(b64EncodeStandard(JSON.stringify(profile)));
-          useLocalCurrentUser(JSON.stringify(profile));
-          this.store.dispatch("setCurrentUser", profile);
-          this.store.dispatch("login", { loginState: true, userInfo: profile });
-          this.getDefaultOrganization();
-        })
-        .catch(() => {
-          useLocalUserInfo("", true);
-          useLocalCurrentUser("", true);
-          this.store.dispatch("logout");
-          this.isCallbackLoading = false;
-          this.router.replace({ path: "/login", query: { oidc_error: "1" } });
-        });
+      this.loadOidcSession();
       return;
     }
     /**
@@ -447,6 +440,29 @@ export default defineComponent({
     }
   },
   methods: {
+    async loadOidcSession() {
+      this.oidcCallbackFailed = false;
+      // URL flags select the UI flow; only the server session supplies identity.
+      try {
+        const profile = await oidc.session();
+        useLocalUserInfo(b64EncodeStandard(JSON.stringify(profile)));
+        useLocalCurrentUser(JSON.stringify(profile));
+        this.store.dispatch("setCurrentUser", profile);
+        this.store.dispatch("login", { loginState: true, userInfo: profile });
+        await this.getDefaultOrganization();
+      } catch (error) {
+        const status = isAxiosError(error) ? error.response?.status : undefined;
+        if (!status || status >= 500) {
+          this.oidcCallbackFailed = true;
+          return;
+        }
+        useLocalUserInfo("", true);
+        useLocalCurrentUser("", true);
+        this.store.dispatch("logout");
+        this.isCallbackLoading = false;
+        this.router.replace({ path: "/login", query: { oidc_error: "1" } });
+      }
+    },
     /**
      * Verify the user by using user email
      * if user id is 0 then call the add new user method
