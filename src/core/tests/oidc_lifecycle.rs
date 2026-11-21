@@ -68,23 +68,39 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
     );
     env("ZO_OIDC_PROVISIONING_ENABLED", "true");
     assert!(config::get_config().oidc.enabled);
-    env("ZO_OIDC_ONLY", "true");
-    env("ZO_OIDC_ENABLED", "false");
-    assert!(config::config::refresh_config().is_err());
-    assert!(config::get_config().oidc.enabled);
-    assert!(!config::get_config().oidc.only);
-    env("ZO_OIDC_ENABLED", "true");
-    env("ZO_OIDC_ONLY", "false");
-    env("ZO_ROUTE_STRATEGY", "invalid");
-    assert!(config::config::refresh_config().is_err());
-    env("ZO_ROUTE_STRATEGY", "workload");
-    std::fs::write(&env_file, "ZO_OIDC_COOKIE_SECURE=invalid\n").unwrap();
-    assert!(config::config::refresh_config().is_err());
-    assert!(config::get_config().oidc.cookie_secure);
-    std::fs::write(&env_file, "bad dotenv line\n").unwrap();
-    assert!(config::config::refresh_config().is_err());
-    std::fs::write(&env_file, "ZO_OIDC_COOKIE_SECURE=true\n").unwrap();
+    let before_enabled = std::env::var_os("ZO_OIDC_ENABLED");
+    let before_only = std::env::var_os("ZO_OIDC_ONLY");
+    let before_secure = std::env::var_os("ZO_OIDC_COOKIE_SECURE");
+    let new_key = "O2_TEST_RELOAD_TRANSIENT";
+    assert!(std::env::var_os(new_key).is_none());
+    env("O2_TEST_RELOAD_BASE", "original");
+    for invalid in [
+        "ZO_OIDC_ENABLED=false\nZO_OIDC_ONLY=true",
+        "ZO_OIDC_ONLY=true",
+        "ZO_ROUTE_STRATEGY=invalid",
+        "ZO_OIDC_COOKIE_SECURE=invalid",
+        "bad dotenv line",
+    ] {
+        std::fs::write(
+            &env_file,
+            format!("O2_TEST_RELOAD_BASE=first\nO2_TEST_RELOAD_BASE=second\n{new_key}=candidate\n{invalid}\n"),
+        ).unwrap();
+        assert!(config::config::refresh_config().is_err());
+        assert_eq!(std::env::var("O2_TEST_RELOAD_BASE").unwrap(), "original");
+        assert!(std::env::var_os(new_key).is_none());
+        assert_eq!(std::env::var_os("ZO_OIDC_ENABLED"), before_enabled);
+        assert_eq!(std::env::var_os("ZO_OIDC_ONLY"), before_only);
+        assert_eq!(std::env::var_os("ZO_OIDC_COOKIE_SECURE"), before_secure);
+        assert!(config::get_config().oidc.enabled);
+        assert!(!config::get_config().oidc.only);
+    }
+    std::fs::write(
+        &env_file,
+        format!("\u{feff}O2_TEST_RELOAD_BASE=first\n{new_key}=${{O2_TEST_RELOAD_BASE}}\nO2_TEST_RELOAD_BASE=last\n"),
+    ).unwrap();
     config::config::refresh_config().unwrap();
+    assert_eq!(std::env::var(new_key).unwrap(), "first");
+    assert_eq!(std::env::var("O2_TEST_RELOAD_BASE").unwrap(), "last");
     infra::db::create_table().await.unwrap();
     infra::db_init().await.unwrap();
     infra::table::migrate().await.unwrap();
@@ -168,20 +184,28 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
     expired.expires_at = chrono::Utc::now().timestamp() - 1;
     assert!(oidc::establish(expired, &HeaderMap::new()).await.is_err());
 
-    let expired_secret = "expired-test-secret";
-    let expired_key = format!("oidc_{:x}", Sha256::digest(expired_secret.as_bytes()));
-    db::session::set_with_expiry(
-        &expired_key,
-        &serde_json::to_string(&first).unwrap(),
+    let (abandoned, session) =
+        oidc::establish(identity("one", "one@example.com"), &HeaderMap::new())
+            .await
+            .unwrap();
+    let key = format!("oidc_{:x}", Sha256::digest(abandoned.as_bytes()));
+    db::session::cache().await.unwrap();
+    assert!(!common::infra::config::USER_SESSIONS.contains_key(&key));
+    assert!(!common::infra::config::USER_SESSIONS_EXPIRY.contains_key(&key));
+    infra::table::sessions::set_with_expiry(
+        &key,
+        &serde_json::to_string(&session).unwrap(),
         chrono::Utc::now().timestamp_micros() - 1,
     )
     .await
     .unwrap();
     assert!(
-        oidc::resolve_session(&cookie(expired_secret), &Method::GET)
+        oidc::resolve_session(&cookie(&abandoned), &Method::GET)
             .await
             .is_err()
     );
+    infra::table::sessions::delete_expired().await.unwrap();
+    assert!(infra::table::sessions::get(&key).await.unwrap().is_none());
 
     let broken_key = format!("oidc_{:x}", Sha256::digest(b"broken"));
     db::session::set_with_expiry(

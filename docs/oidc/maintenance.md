@@ -12,6 +12,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/core/Cargo.toml`, `src/core/src/lib.rs` | Make the protocol crate available to the core adapter. |
 | `src/main.rs` | Validate static provider settings before the server accepts traffic. |
 | `src/db/src/user.rs`, `src/infra/src/table/org_users.rs` | Load the bound account and its current memberships by immutable user ID. |
+| `src/db/src/session.rs` | Exclude database-only OIDC sessions when rebuilding the native session cache. |
 | `src/core/src/auth.rs` | Recognize the session cookie in the OSS request extractor. |
 | `src/api/common/src/auth/validator.rs` | Validate a stored OIDC session, enforce existing organization scope, and apply OIDC-only policy before accepting human passwords. |
 | `src/api/grpc/src/handler/grpc/auth/mod.rs` | Apply the human-password policy in the gRPC validator, which authenticates OTLP separately from HTTP. |

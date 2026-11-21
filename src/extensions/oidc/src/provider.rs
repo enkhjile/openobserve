@@ -21,6 +21,7 @@ use url::Url;
 
 use crate::{Error, transactions::Transactions};
 
+const DISCOVERY_FAILURE_TTL: Duration = Duration::from_secs(2);
 const METADATA_TTL: Duration = Duration::from_secs(300);
 const ROTATION_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -260,6 +261,18 @@ impl OidcProvider {
     async fn metadata(&self, force: bool) -> Result<CoreProviderMetadata, Error> {
         let mut cache = self.metadata.lock().await;
         let now = Instant::now();
+        if !force
+            && let Some((loaded, value)) = &cache.value
+            && now.duration_since(*loaded) < METADATA_TTL
+        {
+            return Ok(value.clone());
+        }
+        if cache
+            .failed_at
+            .is_some_and(|failed| now.duration_since(failed) < DISCOVERY_FAILURE_TTL)
+        {
+            return Err(Error::ProviderUnavailable);
+        }
         if force {
             if cache
                 .last_rotation
@@ -268,15 +281,26 @@ impl OidcProvider {
                 return cache
                     .value
                     .as_ref()
+                    .filter(|(loaded, _)| now.duration_since(*loaded) < METADATA_TTL)
                     .map(|(_, value)| value.clone())
                     .ok_or(Error::ProviderUnavailable);
             }
             cache.last_rotation = Some(now);
-        } else if let Some((loaded, value)) = &cache.value
-            && now.duration_since(*loaded) < METADATA_TTL
-        {
-            return Ok(value.clone());
         }
+        let metadata = match self.discover_metadata().await {
+            Ok(metadata) => {
+                cache.failed_at = None;
+                metadata
+            }
+            Err(error) => {
+                cache.failed_at = Some(Instant::now());
+                return Err(error);
+            }
+        };
+        cache.value = Some((now, metadata.clone()));
+        Ok(metadata)
+    }
+    async fn discover_metadata(&self) -> Result<CoreProviderMetadata, Error> {
         let metadata = CoreProviderMetadata::discover_async(
             IssuerUrl::new(self.settings.issuer.clone()).map_err(|_| Error::Configuration)?,
             &self.http,
@@ -294,7 +318,6 @@ impl OidcProvider {
             self.settings.allow_insecure_http,
             true,
         )?;
-        cache.value = Some((now, metadata.clone()));
         Ok(metadata)
     }
 }
@@ -356,6 +379,7 @@ impl openidconnect::AdditionalClaims for TemporalClaims {}
 struct MetadataCache {
     value: Option<(Instant, CoreProviderMetadata)>,
     last_rotation: Option<Instant>,
+    failed_at: Option<Instant>,
 }
 
 pub struct AuthorizationRequest {
@@ -411,6 +435,36 @@ fn validate_url(value: &str, allow_http: bool, allow_query: bool) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_rotation_preserves_fresh_metadata_only() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let provider = OidcProvider::new(ProviderSettings {
+            issuer: issuer.clone(),
+            client_id: "client".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost/callback".into(),
+            scopes: vec![],
+            allow_insecure_http: true,
+        })
+        .unwrap();
+        let metadata = serde_json::from_value(serde_json::json!({
+            "issuer": issuer, "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"), "jwks_uri": format!("{issuer}/jwks"),
+            "response_types_supported": ["code"], "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"]
+        }))
+        .unwrap();
+        provider.metadata.lock().await.value = Some((Instant::now(), metadata));
+        assert!(provider.metadata(true).await.is_err());
+        assert!(provider.begin(&crate::random_secret()).await.is_ok());
+        provider.metadata.lock().await.value.as_mut().unwrap().0 = Instant::now() - METADATA_TTL;
+        assert!(provider.begin(&crate::random_secret()).await.is_err());
+        provider.metadata.lock().await.failed_at = Some(Instant::now() - DISCOVERY_FAILURE_TTL);
+        assert!(provider.metadata(true).await.is_err());
+    }
 
     #[test]
     fn token_auth_uses_discovered_methods() {

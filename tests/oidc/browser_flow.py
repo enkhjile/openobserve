@@ -269,7 +269,13 @@ def test_flow(binary, directory, issuer):
             callback = flow(browser, base, True)
             profile = browser.get(base + "/auth/oidc/session", timeout=5).json()
             assert profile["email"] == HUMAN and profile["exp"] > time.time()
-            assert browser.get(base + "/api/default/config", timeout=5).ok
+            assert browser.get(base + "/api/other/config", timeout=5).status_code == 403
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 200
+            )
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 200
+            )
             replay = browser.get(callback, allow_redirects=False, timeout=5)
             assert replay.headers["Location"].endswith("oidc_error=1")
             old = browser.cookies.copy()
@@ -410,7 +416,9 @@ def test_flow(binary, directory, issuer):
             issuer.email = "new@example.test"
             issuer.subject = "new-subject"
             flow(browser, base, True)
-            assert not browser.get(base + "/api/default/config", timeout=5).ok
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 403
+            )
             expiry = browser.get(base + "/auth/oidc/session", timeout=5).json()["exp"]
             time.sleep(max(0, expiry - time.time()) + 0.2)
             assert (

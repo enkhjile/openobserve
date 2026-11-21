@@ -489,6 +489,7 @@ pub static NATS_KV_WATCH_MODULES: Lazy<HashSet<String>> = Lazy::new(|| {
 });
 
 pub static CONFIG: Lazy<ArcSwap<Config>> = Lazy::new(|| ArcSwap::from(Arc::new(init())));
+static CONFIG_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 static STORED_GRPC_TOKEN: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
 static STORED_EXT_AUTH_SALT: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
@@ -500,17 +501,20 @@ pub fn get_config() -> Arc<Config> {
 }
 
 pub fn refresh_config() -> Result<(), anyhow::Error> {
-    let old = CONFIG.load_full();
-    // EnvConfig panics on malformed scalar values; keep the previous snapshot and watcher alive.
-    let new = Arc::new(
-        std::panic::catch_unwind(try_init)
-            .map_err(|_| anyhow::anyhow!("invalid environment configuration"))??,
-    );
-    anyhow::ensure!(
-        old.oidc == new.oidc,
-        "OIDC configuration changes require a restart; no configuration was reloaded"
-    );
-    CONFIG.store(new.clone());
+    // Initialization also takes the environment lock.
+    let config = Lazy::force(&CONFIG);
+    let _guard = CONFIG_ENV_LOCK.lock();
+    let old = config.load_full();
+    let new = Arc::new(with_config_environment(|| {
+        let new = config_from_env()?;
+        anyhow::ensure!(
+            old.oidc == new.oidc,
+            "OIDC configuration changes require a restart; no configuration was reloaded"
+        );
+        Ok(new)
+    })?);
+    apply_s3_environment(&new);
+    config.store(new.clone());
 
     // Deliberately not propagated as an error. `config_watcher::reload_config`
     // chains this with other refreshes and only records the new file hash when
@@ -712,28 +716,67 @@ pub fn calculate_config_file_hash(path: &PathBuf) -> Result<String, anyhow::Erro
 }
 
 pub fn load_config() -> Result<(), anyhow::Error> {
-    match crate::config_path_manager::get_config_file_path() {
-        Some(path) => {
-            log::info!("Loading config from file {:?}", path);
-            if dotenvy::from_path_override(&path).is_err() {
-                return Err(anyhow::anyhow!("Config loading from file failed"));
-            }
-            log::info!("Config loaded successfully from file {path:?}");
+    let _guard = CONFIG_ENV_LOCK.lock();
+    with_config_environment(|| Ok(()))
+}
+
+fn discover_config_file() -> anyhow::Result<Option<PathBuf>> {
+    for directory in std::env::current_dir()?.ancestors() {
+        let path = directory.join(".env");
+        match path.metadata() {
+            Ok(metadata) if metadata.is_file() => return Ok(Some(path)),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        None => {
-            // Perform default .env discovery and set it in the config manager
-            match dotenvy::dotenv_override() {
-                Ok(env_path) => {
-                    log::debug!("Config init: Found .env file at {env_path:?} during boot");
-                    crate::config_path_manager::set_config_file_path(env_path)?;
-                }
-                Err(error) if error.not_found() => {}
-                Err(_) => return Err(anyhow::anyhow!("failed to load discovered .env file")),
+    }
+    Ok(None)
+}
+
+fn with_config_environment<T>(validate: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let selected = crate::config_path_manager::get_config_file_path();
+    let path = match &selected {
+        Some(path) => Some(path.clone()),
+        None => discover_config_file()?,
+    };
+    let mut previous = BTreeMap::new();
+    // EnvConfig panics on malformed scalars. Restore both overwritten and newly introduced keys.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(path) = &path {
+            let bytes = std::fs::read(path)?;
+            let contents = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            for item in dotenvy::from_read_iter(contents) {
+                let (key, value) =
+                    item.map_err(|_| anyhow::anyhow!("invalid config file {path:?}"))?;
+                // Apply in file order so later substitutions see earlier overrides, including
+                // duplicates.
+                previous
+                    .entry(key.clone())
+                    .or_insert_with(|| std::env::var_os(&key));
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+        let value = validate()?;
+        if selected.is_none()
+            && let Some(path) = path
+        {
+            crate::config_path_manager::set_config_file_path(path)?;
+        }
+        Ok(value)
+    }))
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("invalid environment configuration")));
+
+    if result.is_err() {
+        for (key, prior) in previous {
+            match prior {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
             }
         }
     }
-    Ok(())
+    result
 }
+
 static CHROME_LAUNCHER_OPTIONS: tokio::sync::OnceCell<Option<BrowserConfig>> =
     tokio::sync::OnceCell::const_new();
 static CHROME_SEMAPHORE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
@@ -4186,12 +4229,14 @@ pub struct EnrichmentTable {
 }
 
 pub fn init() -> Config {
-    try_init().expect("config init error")
+    let _guard = CONFIG_ENV_LOCK.lock();
+    let cfg = with_config_environment(config_from_env).expect("config init error");
+    apply_s3_environment(&cfg);
+    cfg
 }
 
-fn try_init() -> anyhow::Result<Config> {
+fn config_from_env() -> anyhow::Result<Config> {
     use anyhow::Context;
-    load_config()?;
     let mut cfg = Config::init().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         !(cfg!(feature = "enterprise") && cfg.oidc.enabled),
@@ -5333,16 +5378,19 @@ fn check_s3_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
         }
     }
     cfg.s3.provider = cfg.s3.provider.to_lowercase();
-    if cfg.s3.provider.eq("swift") {
-        unsafe { std::env::set_var("AWS_EC2_METADATA_DISABLED", "true") };
-    }
-
     if cfg.s3.keepalive_timeout == 0 {
         // reset to default
         cfg.s3.keepalive_timeout = 20;
     }
 
     Ok(())
+}
+
+// Change process-wide SDK behavior only after the entire candidate has been accepted.
+fn apply_s3_environment(cfg: &Config) {
+    if cfg.s3.provider == "swift" {
+        unsafe { std::env::set_var("AWS_EC2_METADATA_DISABLED", "true") };
+    }
 }
 
 fn check_pipeline_config(cfg: &mut Config) -> Result<(), anyhow::Error> {

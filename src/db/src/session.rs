@@ -23,6 +23,8 @@ use o2_enterprise::enterprise::common::config::get_config as get_o2_config;
 
 // Key prefix for session events in coordinator
 pub const USER_SESSION_KEY: &str = "/user_sessions/";
+/// OIDC sessions are validated against the primary database on every request.
+pub const OIDC_SESSION_PREFIX: &str = "oidc_";
 
 pub async fn get(session_id: &str) -> Result<String, anyhow::Error> {
     // Check cache first for performance
@@ -242,7 +244,8 @@ pub async fn cache() -> Result<(), anyhow::Error> {
     let sessions_list = infra::table::sessions::list().await?;
 
     for session in sessions_list {
-        if !session.access_token.is_empty() {
+        if !session.session_id.starts_with(OIDC_SESSION_PREFIX) && !session.access_token.is_empty()
+        {
             USER_SESSIONS.insert(session.session_id.clone(), session.access_token);
             // Cache expiry time
             USER_SESSIONS_EXPIRY.insert(session.session_id, session.expires_at);

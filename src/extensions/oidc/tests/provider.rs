@@ -164,3 +164,58 @@ async fn signed_login_claim_rejections_and_replay() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn concurrent_discovery_outage_is_cached_and_recovers() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use axum::{http::StatusCode, response::IntoResponse};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let healthy = Arc::new(AtomicBool::new(false));
+    let app = Router::new()
+        .route("/.well-known/openid-configuration", get({
+            let requests = requests.clone();
+            let healthy = healthy.clone();
+            let issuer = issuer.clone();
+            move || {
+                let requests = requests.clone();
+                let healthy = healthy.clone();
+                let issuer = issuer.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    if !healthy.load(Ordering::SeqCst) { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/authorize"),"token_endpoint":format!("{issuer}/token"),"jwks_uri":format!("{issuer}/jwks"),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]})).into_response()
+                }
+            }
+        }))
+        .route("/jwks", get(|| async { Json(json!({"keys":[]})) }));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let provider = Arc::new(
+        OidcProvider::new(ProviderSettings {
+            issuer,
+            client_id: "client".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost/callback".into(),
+            scopes: vec!["openid".into()],
+            allow_insecure_http: true,
+        })
+        .unwrap(),
+    );
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let provider = provider.clone();
+        tasks.spawn(async move { provider.begin(&random_secret()).await.is_err() });
+    }
+    while let Some(result) = tasks.join_next().await {
+        assert!(result.unwrap());
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    healthy.store(true, Ordering::SeqCst);
+    assert!(provider.begin(&random_secret()).await.is_err());
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    assert!(provider.begin(&random_secret()).await.is_ok());
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    server.abort();
+}

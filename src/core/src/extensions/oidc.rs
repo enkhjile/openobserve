@@ -277,7 +277,7 @@ pub async fn establish(
     // Revoke first; a failed rotation must not leave a second live browser credential.
     revoke(headers).await?;
     let secret = random_secret();
-    db::session::set_with_expiry(
+    infra::table::sessions::set_with_expiry(
         &session_key(&secret),
         &serde_json::to_string(&session)?,
         expires_at * 1_000_000,
@@ -289,13 +289,17 @@ pub async fn establish(
 pub async fn revoke(headers: &HeaderMap) -> Result<()> {
     let cfg = config::get_config();
     if let Some(secret) = unique_cookie(headers, cookie_name(&cfg.oidc))? {
-        db::session::delete(&session_key(secret)).await?;
+        infra::table::sessions::delete(&session_key(secret)).await?;
     }
     Ok(())
 }
 
 fn session_key(secret: &str) -> String {
-    format!("oidc_{:x}", Sha256::digest(secret.as_bytes()))
+    format!(
+        "{}{:x}",
+        db::session::OIDC_SESSION_PREFIX,
+        Sha256::digest(secret.as_bytes())
+    )
 }
 
 fn binding_key(issuer: &str, subject: &str) -> Result<String> {

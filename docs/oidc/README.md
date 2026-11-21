@@ -22,7 +22,7 @@ Set environment variables using the existing OpenObserve configuration mechanism
 | `ZO_OIDC_COOKIE_SECURE` | `true` | Secure browser cookies; keep enabled in production. |
 | `ZO_OIDC_ALLOW_INSECURE_HTTP` | `false` | Explicit development-only HTTP opt-in. Never enable on an exposed deployment. |
 
-Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. Confidential clients support client_secret_basic and client_secret_post. Restart the server after changing any OIDC setting. Hot reload rejects OIDC changes before applying configuration, so incomplete rotations cannot mix a new approval policy with an old client. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
+Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. If discovery fails, concurrent logins share the failure and the server can retry discovery after two seconds. Confidential clients support client_secret_basic and client_secret_post. Restart the server after changing any OIDC setting. Hot reload rejects OIDC changes before applying configuration, so incomplete rotations cannot mix a new approval policy with an old client. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
 
 Example explicit mapping:
 

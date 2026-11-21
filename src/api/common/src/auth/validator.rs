@@ -1398,14 +1398,13 @@ async fn validate_oidc_session(
 ) -> Result<AuthValidationResult, AuthError> {
     use openobserve_core::extensions::oidc;
 
-    let denied = || AuthError::Unauthorized("Unauthorized Access".into());
     let (_, record) = oidc::resolve_session_account(&req.headers, &req.method)
         .await
         .map_err(|error| {
             if oidc::session_unavailable(&error) {
                 AuthError::Unavailable("Session store unavailable".into())
             } else {
-                denied()
+                AuthError::Unauthorized("Unauthorized Access".into())
             }
         })?;
     let path = routed_path(
@@ -1415,8 +1414,9 @@ async fn validate_oidc_session(
             .unwrap_or(req.uri.path()),
     );
     let path = path.strip_suffix('/').unwrap_or(path);
-    let role =
-        oidc_role(&record, path, &req.method, is_root_user(&record.email)).ok_or_else(denied)?;
+    let Some(role) = oidc_role(&record, path, &req.method, is_root_user(&record.email)) else {
+        return Err(AuthError::RoleRefused("Not allowed".into()));
+    };
     check_and_create_org(&record.email, &req.method, path, req.route.as_deref()).await?;
     if !auth.bypass_check
         && !check_permissions(&record.email, auth.clone(), role.clone(), true).await
@@ -3526,9 +3526,13 @@ CN5lTowpVXP2OIiiNTGa75Fj
     /// The source pins what may reveal a locked license; files outside this list are not read.
     #[test]
     fn test_role_refused_sites_are_pinned_with_no_auth_error_after_their_role_check() {
-        const GUARDS: [&str; 2] = ["check_permissions(", "path.contains(\"/user\")"];
+        const GUARDS: [&str; 3] = [
+            "check_permissions(",
+            "path.contains(\"/user\")",
+            "oidc_role(&record",
+        ];
         for (file, source, sites) in [
-            ("validator.rs", include_str!("validator.rs"), 4),
+            ("validator.rs", include_str!("validator.rs"), 5),
             ("token.rs", include_str!("token.rs"), 1),
             ("delegation.rs", include_str!("delegation.rs"), 1),
         ] {
