@@ -12,7 +12,7 @@ Set environment variables using the existing OpenObserve configuration mechanism
 | `ZO_OIDC_ISSUER` | empty | Exact provider issuer, including any trailing slash. |
 | `ZO_OIDC_CLIENT_ID` | empty | Registered OIDC client ID. |
 | `ZO_OIDC_CLIENT_SECRET` | empty | Confidential client secret, supplied through deployment secrets. |
-| `ZO_OIDC_REDIRECT_URI` | empty | Exact public callback URL, e.g. `https://observe.example.com/auth/oidc/callback`. Include any API base path and end the URL with `/auth/oidc/callback` without a trailing slash. |
+| `ZO_OIDC_REDIRECT_URI` | empty | Exact public callback URL, e.g. `https://observe.example.com/auth/oidc/callback`. End it with `/auth/oidc/callback` without a trailing slash, after any public path prefix (see below). |
 | `ZO_OIDC_SCOPES` | `openid email profile` | Space-separated requested scopes. Do not request offline access. |
 | `ZO_OIDC_ACCOUNT_LINKS` | `[]` | JSON array of explicit `{ "issuer", "subject", "email" }` mappings to existing local accounts. |
 | `ZO_OIDC_PROVISIONING_ENABLED` | `false` | Permit new verified identities to create non-administrator accounts without implicit organization memberships. |
@@ -23,6 +23,8 @@ Set environment variables using the existing OpenObserve configuration mechanism
 | `ZO_OIDC_ALLOW_INSECURE_HTTP` | `false` | Explicit development-only HTTP opt-in. Never enable on an exposed deployment. |
 
 Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. If discovery fails, concurrent logins share the failure and the server can retry discovery after two seconds. Confidential clients support client_secret_basic and client_secret_post. OpenObserve reads all `ZO_OIDC_*` settings at startup. If a file edit changes both an OIDC setting and a reloadable OpenObserve setting, the latter takes effect on reload. The OIDC change takes effect on the next server start. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
+
+To serve OpenObserve under a public path prefix such as `https://example.com/observe`, set the existing `ZO_BASE_URI=/observe` and forward that prefix unchanged from the proxy. The callback then lives under the prefix, so set `ZO_OIDC_REDIRECT_URI=https://example.com/observe/auth/oidc/callback` and register exactly that URL with the provider. After login the browser returns to `/observe/web/cb`.
 
 Example explicit mapping:
 
@@ -46,7 +48,7 @@ Use one application origin for UI and backend, with HTTPS terminated by the exis
 
 Use [compose.yaml](../../deploy/oidc/compose.yaml) with an image built from this branch, an existing TLS reverse proxy and an existing OIDC provider. An upstream stock image does not contain this extension. The only persistent application volume is `/data`; SQLite remains supported. The example deliberately binds the plaintext backend port to loopback and requires HTTPS callback settings.
 
-Set the required variables in a protected deployment environment, then run:
+Set the required variables in a protected deployment environment, then run the commands below. Leave `ZO_BASE_URI` unset unless the proxy serves OpenObserve under a path prefix; if it does, include the same prefix in `ZO_OIDC_REDIRECT_URI`.
 
 ```sh
 docker compose -f deploy/oidc/compose.yaml config --quiet

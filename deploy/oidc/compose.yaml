@@ -12,6 +12,7 @@ services:
       ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:?Set the emergency root email}
       ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:?Set a strong root password}
       ZO_WEB_URL: ${ZO_WEB_URL:?Set the public HTTPS URL}
+      ZO_BASE_URI: ${ZO_BASE_URI:-}
       ZO_OIDC_ENABLED: "true"
       ZO_OIDC_ISSUER: ${ZO_OIDC_ISSUER:?Set the exact discovery issuer}
       ZO_OIDC_CLIENT_ID: ${ZO_OIDC_CLIENT_ID:?Set the provider client ID}

@@ -12,7 +12,7 @@ Configure Google federation and MFA in the provider's authentication flow if des
 
 Use the configuration reference in [README.md](README.md). Keep provisioning disabled initially. Select a dedicated existing local test user with known organization memberships. On this OSS baseline the native user-creation API assigns the organization administrator role. Explicitly approve the test user’s exact issuer and subject using the operator-managed account mapping. Obtain the subject from the provider's administrative tools; do not use an email address as the subject unless the provider actually defines it that way. Preserve existing memberships.
 
-Use HTTPS with an exact public callback URL. Match any OpenObserve API base path. Synchronize server clocks. Ensure the OpenObserve process can reach discovery, JWKS and token endpoints over trusted TLS. Keep callback query strings out of reverse-proxy access logs.
+Use HTTPS with an exact public callback URL. If `ZO_BASE_URI` sets a public path prefix, the callback URL must include it, as described in [README.md](README.md). Synchronize server clocks. Ensure the OpenObserve process can reach discovery, JWKS and token endpoints over trusted TLS. Keep callback query strings out of reverse-proxy access logs.
 
 ## Manual test record
 
@@ -25,7 +25,7 @@ Record the application commit, provider version, issuer, signing algorithm, date
 5. Enable provisioning in a test installation. Verify that a fresh verified identity creates no administrator privilege or implicit membership. Assign membership through the existing administration mechanism and retry.
 6. Inspect browser storage: provider tokens must not appear in localStorage or URL fragments. Inspect the session cookie's Secure, HttpOnly and SameSite attributes.
 7. Try a callback copied into another browser and replay the original callback. Both must fail. A failed login must not replace the existing account session.
-8. Submit an unsafe authenticated request from another origin. Verify rejection. Verify that a normal same-origin edit still works.
+8. Submit an unsafe authenticated request from another origin. Verify it is refused with 403 and that the browser stays signed in. Verify that a normal same-origin edit still works.
 9. Log out, then reuse the old cookie in a direct API request. Verify rejection. Also verify rejection after the configured session lifetime and after approval is removed.
 10. Rotate the provider signing key. Verify that a subsequent login succeeds with the new key; verify that an unrelated signing key does not.
 11. Enable OIDC-only mode. Try native login and direct Basic human-password access. Both must fail except for the explicitly configured emergency root account. Verify the emergency password must still be correct. After an emergency browser login over HTTPS, check that the native `auth_tokens` cookie has `Secure` and `HttpOnly`; the Compose example sets `ZO_COOKIE_SECURE_ONLY=true` for this cookie.

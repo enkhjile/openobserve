@@ -36,14 +36,17 @@ import {
 } from "@/utils/drafts/draftSession";
 import { readEditorDraft, writeEditorDraft } from "@/utils/drafts/editorDraftStore";
 import { stopSessionServices } from "@/utils/sessionServices";
-import { invalidateLoginData } from "@/utils/zincutils";
+import { getDecodedUserInfo, invalidateLoginData } from "@/utils/zincutils";
 import {
   endSignedInSession,
   signOutDraftsToConfirm,
   signOutThroughLeaveGuards,
 } from "./signOutFlow";
 import oidc from "@/services/oidc";
-vi.mock("@/services/oidc", () => ({ default: { logout: vi.fn() } }));
+import userService from "@/services/users";
+const authClient = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/services/oidc", () => ({ default: { logout: vi.fn() }, authClient: () => authClient }));
+vi.mock("@/services/users", () => ({ default: { logout: vi.fn() } }));
 
 vi.mock("@/utils/sessionServices", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/sessionServices")>()),
@@ -91,6 +94,7 @@ describe("signOutThroughLeaveGuards", () => {
     vi.stubGlobal("location", realLocation);
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
     resumeDraftSession();
   });
 
@@ -186,6 +190,52 @@ describe("signOutThroughLeaveGuards", () => {
       }
     },
   );
+
+  it("confirms a native logout without the global session handler and keeps drafts", async () => {
+    vi.mocked(userService.logout).mockResolvedValue({} as any);
+    const store = makeStore();
+    await endSignedInSession(store, { keepDrafts: true, awaitNativeLogout: true });
+    expect(userService.logout).toHaveBeenCalledWith(authClient);
+    expect(invalidateLoginData).not.toHaveBeenCalled();
+    expect(store.dispatch).toHaveBeenCalledWith("logout");
+  });
+
+  it.each([401, 503])(
+    "keeps the native session for a retry when confirmed logout gets %i",
+    async (status) => {
+      vi.mocked(userService.logout).mockRejectedValue({ response: { status } });
+      localStorage.setItem("userInfo", btoa(JSON.stringify({ email })));
+      const store = makeStore();
+      await expect(
+        endSignedInSession(store, { keepDrafts: true, awaitNativeLogout: true }),
+      ).rejects.toEqual({ response: { status } });
+      expect(store.dispatch).not.toHaveBeenCalled();
+      expect(getDecodedUserInfo()).toBe(JSON.stringify({ email }));
+    },
+  );
+
+  it("never restores a signed-out profile that storage refused to delete", async () => {
+    vi.mocked(oidc.logout).mockResolvedValue();
+    const stale = btoa(JSON.stringify({ email }));
+    localStorage.setItem("userInfo", stale);
+    const store = makeStore();
+    store.state.zoConfig.oidc_enabled = true;
+    const removeItem = Storage.prototype.removeItem;
+    const removal = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (key) {
+      if (key === "userInfo") throw new DOMException("Storage blocked", "SecurityError");
+      removeItem.call(this, key);
+    });
+    try {
+      await endSignedInSession(store, { keepDrafts: true });
+    } finally {
+      removal.mockRestore();
+    }
+    expect(localStorage.getItem("userInfo")).toBe(stale);
+    expect(getDecodedUserInfo()).toBeNull();
+    const next = JSON.stringify({ email: "next@x.io" });
+    localStorage.setItem("userInfo", btoa(next));
+    expect(getDecodedUserInfo()).toBe(next);
+  });
 
   it("keeps an OIDC session visible when revocation fails", async () => {
     vi.mocked(oidc.logout).mockRejectedValue(new Error("network failure"));

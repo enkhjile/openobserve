@@ -194,8 +194,21 @@ impl std::fmt::Display for SessionUnavailable {
     }
 }
 
+#[derive(Debug)]
+struct CrossOriginRequest;
+
+impl std::fmt::Display for CrossOriginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cross-origin OIDC request")
+    }
+}
+
 pub fn session_unavailable(error: &anyhow::Error) -> bool {
     error.is::<SessionUnavailable>()
+}
+
+pub fn cross_origin_refused(error: &anyhow::Error) -> bool {
+    error.is::<CrossOriginRequest>()
 }
 
 pub async fn resolve_session(headers: &HeaderMap, method: &Method) -> Result<Session> {
@@ -208,7 +221,7 @@ pub async fn resolve_session_account(
 ) -> Result<(Session, DBUser)> {
     let cfg = config::get_config();
     ensure!(cfg.oidc.enabled, "OIDC disabled");
-    check_csrf(headers, method, &cfg.oidc.redirect_uri)?;
+    check_csrf(headers, method, &cfg.oidc.redirect_uri).context(CrossOriginRequest)?;
     let secret = unique_cookie(headers, cookie_name(&cfg.oidc))?.context("no OIDC session")?;
     // A cache miss racing logout must never revive a revoked session from cache.
     let stored = infra::table::entity::sessions::Entity::find_by_id(session_key(secret))

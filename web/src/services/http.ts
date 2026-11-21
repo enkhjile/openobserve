@@ -129,7 +129,7 @@ const recordRefusal = (error: any) =>
     routeKey: error.config?.accessRouteKey,
   });
 
-const http = ({ headers, handleSessionErrors = true } = {} as any) => {
+const http = ({ headers } = {} as any) => {
   let instance: AxiosInstance;
 
   headers = {
@@ -160,7 +160,6 @@ const http = ({ headers, handleSessionErrors = true } = {} as any) => {
       return response;
     },
     function (error) {
-      if (!handleSessionErrors) return Promise.reject(error);
       // Ahead of the status switch: a reset-required 403 is a policy state, not an authorization failure.
       if (isPasswordResetError(error)) {
         usePasswordReset().open(error.response.data.reason);

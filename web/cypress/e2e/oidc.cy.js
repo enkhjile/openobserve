@@ -149,6 +149,86 @@ describe("OSS OIDC login", () => {
     cy.get('[data-test="sso-login-btn"]').should("be.visible");
   });
 
+  it("stays on login after a confirmed logout that could not delete the cached profile", () => {
+    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204 }).as("revoke");
+    cy.intercept({ method: "GET", pathname: /^\/api\// }, { statusCode: 401 }).as("api");
+    cy.visit("/web/logout", {
+      onBeforeLoad(win) {
+        const profile = { email: "member@example.test", exp: Math.floor(Date.now() / 1000) + 600 };
+        win.localStorage.setItem("userInfo", win.btoa(JSON.stringify(profile)));
+      },
+    });
+    cy.window().then((win) => {
+      const removeItem = win.Storage.prototype.removeItem;
+      cy.stub(win.Storage.prototype, "removeItem").callsFake(function (key) {
+        if (key === "userInfo") throw new win.DOMException("Storage blocked", "SecurityError");
+        removeItem.call(this, key);
+      });
+    });
+    cy.get('[data-test="confirm-sign-out"]').click();
+    cy.wait("@revoke");
+    cy.location("pathname").should("eq", "/web/login");
+    cy.get('[data-test="sso-login-btn"]').should("be.visible");
+    cy.window().then((win) => expect(win.localStorage.getItem("userInfo")).not.to.be.null);
+    cy.reload();
+    cy.get('[data-test="sso-login-btn"]').should("be.visible");
+    cy.location("pathname").should("eq", "/web/login");
+    cy.get("@api.all").should("have.length", 0);
+  });
+
+  it("removes the previous account's cached results when another account signs in", () => {
+    const key = 'o2q-heavy-["org","default","panels","folder","dashboard","panel"]';
+    const withCache = (win, mode, use) =>
+      new Cypress.Promise((resolve, reject) => {
+        const open = win.indexedDB.open("o2Cache", 1);
+        open.onupgradeneeded = () => {
+          const store = open.result.createObjectStore("kv", { keyPath: "key" });
+          store.createIndex("by_expires", "expiresAt");
+          store.createIndex("by_updated", "updatedAt");
+        };
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const tx = open.result.transaction("kv", mode);
+          const request = use(tx.objectStore("kv"));
+          tx.oncomplete = () => {
+            open.result.close();
+            resolve(request.result);
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("GET", "**/auth/oidc/session", {
+      email: "second@example.test",
+      name: "Second",
+      given_name: "Second",
+      family_name: "",
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+    cy.intercept("GET", "**/api/organizations?*", { data: [] });
+    cy.visit("/web/login");
+    cy.window().then((win) => {
+      const first = { email: "first@example.test", exp: Math.floor(Date.now() / 1000) + 600 };
+      win.localStorage.setItem("userInfo", win.btoa(JSON.stringify(first)));
+      const now = Date.now();
+      const value = { queryKey: key, state: { data: { rows: ["first user's result"] } } };
+      return withCache(win, "readwrite", (store) =>
+        store.put({ key, value, updatedAt: now, expiresAt: now + 3_600_000 }),
+      );
+    });
+    cy.visit("/web/cb?oidc=1");
+    cy.get('[data-test="oidc-no-organization"]').should("be.visible");
+    cy.window().then((win) => {
+      expect(JSON.parse(win.atob(win.localStorage.getItem("userInfo"))).email).to.equal(
+        "second@example.test",
+      );
+      return withCache(win, "readonly", (store) => store.get(key)).then((record) =>
+        expect(record).to.equal(undefined),
+      );
+    });
+  });
+
   it("shows a generic failure without echoing provider error details", () => {
     openLogin({}, "?oidc_error=1&error_description=private-provider-details");
     cy.get('[data-test="oidc-error"]').should("be.visible").and("contain", "SSO sign-in failed");

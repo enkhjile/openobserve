@@ -1403,6 +1403,8 @@ async fn validate_oidc_session(
         .map_err(|error| {
             if oidc::session_unavailable(&error) {
                 AuthError::Unavailable("Session store unavailable".into())
+            } else if oidc::cross_origin_refused(&error) {
+                AuthError::Forbidden("Cross-origin request refused".into())
             } else {
                 AuthError::Unauthorized("Unauthorized Access".into())
             }

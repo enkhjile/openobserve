@@ -45,7 +45,14 @@ pub async fn login(headers: HeaderMap) -> Response {
     if browser_transactions::pending_cookie_names(&headers, &cfg.oidc).len()
         >= browser_transactions::MAX_BROWSER_TRANSACTIONS
     {
-        return no_store(StatusCode::TOO_MANY_REQUESTS.into_response());
+        return no_store(
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many sign-ins are open in this browser. Finish one of them, or wait up to \
+                 five minutes for one to expire, then try again.",
+            )
+                .into_response(),
+        );
     }
     let binding = oidc::random_secret();
     let result = async {

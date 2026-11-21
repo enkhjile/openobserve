@@ -2,7 +2,10 @@
 # requires-python = ">=3.11"
 # dependencies = ["PyJWT[crypto]>=2.10,<3", "requests>=2.32,<3"]
 # ///
-"""Run with uv run tests/oidc/browser_flow.py target/debug/openobserve."""
+"""Run with uv run tests/oidc/browser_flow.py target/debug/openobserve.
+
+Set OIDC_TEST_POSTGRES_DSN to an empty database to use PostgreSQL metadata instead of SQLite.
+"""
 
 import base64
 import hashlib
@@ -140,6 +143,7 @@ def app(binary, directory, port, settings):
         ZO_ROOT_USER_EMAIL=ROOT,
         ZO_ROOT_USER_PASSWORD=PASSWORD,
         ZO_WEB_URL=base,
+        **META_STORE,
         **settings,
     )
     with open(Path(directory) / "server.log", "ab") as log:
@@ -153,7 +157,8 @@ def app(binary, directory, port, settings):
                         f"OpenObserve exited during startup ({process.returncode})"
                     )
                 try:
-                    if requests.get(base + "/healthz", timeout=1).ok:
+                    health = base + settings.get("ZO_BASE_URI", "") + "/healthz"
+                    if requests.get(health, timeout=1).ok:
                         break
                 except requests.ConnectionError:
                     pass
@@ -192,6 +197,12 @@ def flow(browser, base, success):
     return callback
 
 
+POSTGRES_DSN = os.environ.get("OIDC_TEST_POSTGRES_DSN", "")
+META_STORE = (
+    {"ZO_META_STORE": "postgres", "ZO_META_POSTGRES_DSN": POSTGRES_DSN}
+    if POSTGRES_DSN
+    else {}
+)
 ROOT = "root@example.test"
 HUMAN = "member@example.test"
 PASSWORD = "T3st!" + secrets.token_urlsafe(24)
@@ -240,6 +251,7 @@ def test_flow(binary, directory, issuer):
     config_file.write_text(f"ZO_OIDC_ACCOUNT_LINKS='{json.dumps(links)}'\n")
     # Static client errors must be reported before a server can advertise readiness.
     invalid_env = {k: v for k, v in os.environ.items() if not k.startswith("ZO_")}
+    invalid_env.update(META_STORE)
     invalid_env.update(
         settings,
         ZO_ROOT_USER_EMAIL=ROOT,
@@ -278,6 +290,25 @@ def test_flow(binary, directory, issuer):
             assert (
                 browser.get(base + "/api/default/config", timeout=5).status_code == 200
             )
+            # A refused cross-origin write must not read as an ended session.
+            assert (
+                browser.post(
+                    base + "/api/default/oidc_csrf/_json",
+                    json=[{"message": "refused"}],
+                    headers={"Origin": issuer.issuer},
+                    timeout=5,
+                ).status_code
+                == 403
+            )
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 200
+            )
+            assert browser.post(
+                base + "/api/default/oidc_csrf/_json",
+                json=[{"message": "accepted"}],
+                headers={"Origin": base},
+                timeout=10,
+            ).ok
             assert (
                 browser.get(base + "/auth/oidc/session", timeout=5).status_code == 200
             )
@@ -364,7 +395,9 @@ def test_flow(binary, directory, issuer):
                     browser.get, inflight, allow_redirects=False, timeout=20
                 )
                 try:
-                    assert entered.wait(5), "callback never reached paused token exchange"
+                    assert entered.wait(5), (
+                        "callback never reached paused token exchange"
+                    )
                     logout = requests.post(
                         base + "/auth/oidc/logout",
                         cookies=logout_cookies,
@@ -378,17 +411,19 @@ def test_flow(binary, directory, issuer):
                 assert callback_response.status_code == 303
                 assert "oidc_error=1" in callback_response.headers["Location"]
             # This cookie jar still has the original session cookie.
-            assert browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+            )
         finally:
             issuer.token_pause = None
         flow(browser, base, True)
         tabs = [begin_flow(browser, base) for _ in range(8)]
-        assert (
-            browser.get(
-                base + "/auth/oidc/login", allow_redirects=False, timeout=5
-            ).status_code
-            == 429
+        refused = browser.get(
+            base + "/auth/oidc/login", allow_redirects=False, timeout=5
         )
+        assert refused.status_code == 429
+        assert refused.headers["Content-Type"].startswith("text/plain")
+        assert "Finish one" in refused.text and "expire" in refused.text
         cancelled = urlsplit(tabs.pop())
         state = parse_qs(cancelled.query)["state"][0]
         finish_flow(
@@ -449,9 +484,12 @@ def test_flow(binary, directory, issuer):
         ZO_OIDC_SESSION_MAX_AGE="2",
     )
     with app(binary, directory, port, settings):
-        assert requests.get(
-            base + "/auth/oidc/session", cookies=before_restart, timeout=5
-        ).status_code == 401
+        assert (
+            requests.get(
+                base + "/auth/oidc/session", cookies=before_restart, timeout=5
+            ).status_code
+            == 401
+        )
         emergency = requests.post(
             base + "/auth/login", json={"name": ROOT, "password": PASSWORD}, timeout=5
         )
@@ -478,6 +516,22 @@ def test_flow(binary, directory, issuer):
                 browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
             )
 
+    prefixed = base + "/observe"
+    issuer.callback = prefixed + "/auth/oidc/callback"
+    prefix_settings = settings | {
+        "ZO_BASE_URI": "/observe",
+        "ZO_OIDC_REDIRECT_URI": issuer.callback,
+        "ZO_OIDC_SESSION_MAX_AGE": "3600",
+    }
+    with app(binary, directory, port, prefix_settings), requests.Session() as browser:
+        callback = begin_flow(browser, prefixed)
+        assert callback.startswith(issuer.callback + "?")
+        landed = browser.get(callback, allow_redirects=False, timeout=20)
+        assert landed.headers["Location"] == "/observe/web/cb?oidc=1"
+        assert browser.get(base + landed.headers["Location"], timeout=5).ok
+        profile = browser.get(prefixed + "/auth/oidc/session", timeout=5)
+        assert profile.ok and profile.json()["email"] == "new@example.test"
+
 
 if __name__ == "__main__":
     binary = Path(sys.argv[1]).resolve(strict=True)
@@ -493,4 +547,5 @@ if __name__ == "__main__":
             test_flow(binary, directory, issuer)
         finally:
             issuer.shutdown()
-    print("OIDC browser flow and SQLite policy checks passed")
+    store = "PostgreSQL" if POSTGRES_DSN else "SQLite"
+    print(f"OIDC browser flow and {store} policy checks passed")

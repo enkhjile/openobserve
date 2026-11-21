@@ -16,7 +16,8 @@
 import type { Router } from "vue-router";
 import { queryClient } from "@/composables/query/queryClient";
 import { configQuery } from "@/services/config.queries";
-import oidc from "@/services/oidc";
+import oidc, { authClient } from "@/services/oidc";
+import userService from "@/services/users";
 import { toast } from "@/lib/feedback/Toast/useToast";
 import { gt } from "@/types/i18n";
 import {
@@ -24,6 +25,7 @@ import {
   useLocalCurrentUser,
   useLocalUserInfo,
   invalidateLoginData,
+  rememberRevokedProfile,
 } from "@/utils/zincutils";
 import { forgetLinkRequest } from "@/utils/slackLink";
 import {
@@ -70,10 +72,12 @@ export const endSignedInSession = (
   }: { keepDrafts?: boolean; awaitNativeLogout?: boolean } = {},
 ): void | Promise<void> => {
   const finish = (oidcEnabled: boolean) => {
-    const request = oidcEnabled ? oidc.logout() : invalidateLoginData(awaitNativeLogout);
     if (oidcEnabled || awaitNativeLogout) {
+      // The caller reports a failed revocation itself, so the global 401 handler must not reload first.
+      const request = oidcEnabled ? oidc.logout() : userService.logout(authClient());
       return request.then(() => clearSignedInSession(store, keepDrafts));
     }
+    invalidateLoginData();
     clearSignedInSession(store, keepDrafts);
   };
   const enabled = store.state.zoConfig?.oidc_enabled;
@@ -98,6 +102,7 @@ const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void =>
   }
   tryClearBrowserStorage(() => useLocalCurrentUser("", true));
   tryClearBrowserStorage(() => useLocalUserInfo("", true));
+  tryClearBrowserStorage(rememberRevokedProfile);
   forgetLinkRequest();
 };
 

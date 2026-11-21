@@ -185,7 +185,12 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
     );
     let mut bad = cookie(&secret);
     bad.insert(header::ORIGIN, "https://evil.example".parse().unwrap());
-    assert!(oidc::resolve_session(&bad, &Method::POST).await.is_err());
+    let error = oidc::resolve_session(&bad, &Method::POST)
+        .await
+        .err()
+        .unwrap();
+    assert!(oidc::cross_origin_refused(&error) && !oidc::session_unavailable(&error));
+    assert!(oidc::resolve_session(&bad, &Method::GET).await.is_ok());
     let mut bad = cookie(&secret);
     bad.append(
         header::COOKIE,
@@ -290,7 +295,7 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         .await
         .err()
         .unwrap();
-    assert!(!oidc::session_unavailable(&error));
+    assert!(!oidc::session_unavailable(&error) && !oidc::cross_origin_refused(&error));
 
     let empty = HeaderMap::new();
     let (upper, lower) = tokio::join!(

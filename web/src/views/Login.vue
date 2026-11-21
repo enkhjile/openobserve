@@ -71,7 +71,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 <script lang="ts">
 import { configQuery, isFullConfigLoaded } from "@/services/config.queries";
-import { queryClient } from "@/composables/query/queryClient";
+import { purgeAllQueries, queryClient } from "@/composables/query/queryClient";
+import { purgeAllPersisted } from "@/composables/query/persisters";
 import { isAxiosError } from "axios";
 import { defineComponent, onBeforeMount, ref } from "vue";
 import { useRouter, type LocationQuery } from "vue-router";
@@ -445,6 +446,10 @@ export default defineComponent({
       // URL flags select the UI flow; only the server session supplies identity.
       try {
         const profile = await oidc.session();
+        // Cached results carry no user in their keys, so a replaced account's must be gone first;
+        // purgeAllQueries only starts the disk purge, so await it before the new identity loads.
+        purgeAllQueries();
+        await purgeAllPersisted();
         useLocalUserInfo(b64EncodeStandard(JSON.stringify(profile)));
         useLocalCurrentUser(JSON.stringify(profile));
         this.store.dispatch("setCurrentUser", profile);

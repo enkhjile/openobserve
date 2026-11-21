@@ -11,13 +11,14 @@ export interface OidcSessionProfile {
 }
 
 // Auth failures must reach the login UI without the global 401 reload interceptor.
-const client = () => axios.create({ baseURL: store.state.API_ENDPOINT, withCredentials: true });
+export const authClient = () =>
+  axios.create({ baseURL: store.state.API_ENDPOINT, withCredentials: true });
 const oidc = {
   loginUrl: () => `${store.state.API_ENDPOINT.replace(/\/$/, "")}/auth/oidc/login`,
   session: async (): Promise<OidcSessionProfile> =>
-    (await client().get<OidcSessionProfile>("/auth/oidc/session")).data,
+    (await authClient().get<OidcSessionProfile>("/auth/oidc/session")).data,
   logout: async (): Promise<void> => {
-    await client().post("/auth/oidc/logout");
+    await authClient().post("/auth/oidc/logout");
   },
 };
 export default oidc;

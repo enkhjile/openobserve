@@ -6,10 +6,10 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 
 | Upstream file | Reason for the change |
 | --- | --- |
-| `Cargo.toml`, `Cargo.lock` | Register the protocol crate and lock the resolved dependencies. |
+| `Cargo.lock` | Lock the protocol crate's resolved dependencies. The root `Cargo.toml` is unchanged: Cargo adds a path dependency inside the workspace directory as a member automatically. |
 | `.env.example` | Show the disabled configuration and operator approval format. |
 | `src/config/src/lib.rs`, `src/config/src/config.rs` | Load the dedicated OIDC configuration through the normal environment loader. |
-| `src/core/Cargo.toml`, `src/core/src/lib.rs` | Make the protocol crate available to the core adapter. |
+| `src/core/Cargo.toml`, `src/core/src/lib.rs` | Depend on the protocol crate by path and expose the core adapter. |
 | `src/main.rs` | Validate static provider settings before the server accepts traffic. |
 | `src/db/src/user.rs`, `src/infra/src/table/org_users.rs` | Load the bound account and its current memberships by immutable user ID. |
 | `src/db/src/session.rs` | Exclude database-only OIDC sessions when rebuilding the native session cache. |
@@ -22,12 +22,13 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/api/management/src/request/users/mod.rs` | Apply native login policy and revoke the previous OIDC session on a successful password login. |
 | `src/api/management/src/request/status/mod.rs` | Expose public login capabilities to Vue at bootstrap and after login. |
 | `src/config/src/axum/middlewares/access_log.rs`, `src/api/http/src/server.rs` | Strip callback queries from logs, redact Set-Cookie response values in custom access logs, and omit request spans containing the callback URL. |
-| `web/src/components/login/Login.vue`, `web/src/views/Login.vue` | Show SSO and use the session endpoint to load the authenticated profile on return. |
+| `web/src/components/login/Login.vue`, `web/src/views/Login.vue` | Show SSO, purge the previous account's persisted query results, and use the session endpoint to load the authenticated profile on return. |
 | `web/src/utils/drafts/signOutFlow.ts`, `web/src/composables/shared/router.ts` | Expose a confirmation page for direct logout and wait for session revocation before leaving the application. |
-| `web/src/services/http.ts`, `web/src/services/users.ts`, `web/src/utils/auth.ts` | Let the confirmation page handle native logout errors locally, wait for success, and offer a retry. |
+| `web/src/services/users.ts` | Let the logout confirmation page send the one native logout request through the interceptor-free client in `services/oidc.ts`, so it can report a 401 or 503 and offer a retry. |
+| `web/src/utils/auth.ts` | Refuse to restore a cached profile that a confirmed sign-out could not delete, so the login guard cannot loop into a revoked session. |
 | `web/src/locales/languages/en-US.json` | Add SSO controls and actionable error messages. |
 | `web/cypress/e2e/tsconfig.json` | Resolve the installed Vue DOM config so browser test specs compile. |
-| `web/src/layouts/MainLayout.signOutDrafts.spec.ts` | Supply the native-login bootstrap response when testing sign-out with drafts. |
+| `web/src/layouts/MainLayout.signOutDrafts.spec.ts`, `MainLayout.signOutEditor.spec.ts`, `MainLayout.rum.spec.ts` | Supply the bootstrap config response that sign-out reads to choose OIDC or native logout. |
 | `web/src/utils/sessionServices.ts`, `web/src/utils/sessionServices.spec.ts` | Continue logout cleanup and navigation when browser storage is unavailable. |
 | Adjacent `Login.spec.ts`, `router.spec.ts`, and `signOutFlow.spec.ts` | Exercise the changed navigation, visibility, callback and logout behavior. |
 
@@ -53,7 +54,7 @@ Install frontend dependencies with `npm ci` in `web/`, then build the UI before 
 npm run format:check
 npm run lint:ci
 NODE_OPTIONS="--max-old-space-size=8192" npm run build
-NODE_OPTIONS="--no-experimental-webstorage" npm run test:unit -- --run components/login/Login.spec.ts views/Login.spec.ts services/oidc.spec.ts utils/drafts/signOutFlow.spec.ts utils/sessionServices.spec.ts composables/shared/router.spec.ts router/index.spec.ts layouts/MainLayout.signOutDrafts.spec.ts
+NODE_OPTIONS="--no-experimental-webstorage" npm run test:unit -- --run components/login/Login.spec.ts views/Login.spec.ts services/oidc.spec.ts services/users.spec.ts utils/auth.spec.ts utils/drafts/signOutFlow.spec.ts utils/sessionServices.spec.ts composables/shared/router.spec.ts router/index.spec.ts layouts/
 ```
 
 From `web/`, start the development server in one terminal:
@@ -80,4 +81,4 @@ cargo build
 uv run tests/oidc/browser_flow.py target/debug/openobserve
 ```
 
-The last command launches four successive configurations of the actual binary with a temporary local SQLite store and a loopback RSA-signing mock provider. It checks the browser redirects and cookies, overlapping login tabs, switching from OIDC to a native account, logout, hard expiry, account collision, local-login policy, ingestion and service credentials. The script generates fresh test credentials and removes the temporary database on exit.
+The last command launches five successive configurations of the actual binary with a temporary local SQLite store and a loopback RSA-signing mock provider. It checks the browser redirects and cookies, overlapping login tabs, the pending-login limit, a refused cross-origin write, login under a `ZO_BASE_URI` prefix, switching from OIDC to a native account, logout, hard expiry, account collision, local-login policy, ingestion and service credentials. The script generates fresh test credentials and removes the temporary database on exit. To repeat it with PostgreSQL metadata, set `OIDC_TEST_POSTGRES_DSN` to the DSN of an empty disposable database.

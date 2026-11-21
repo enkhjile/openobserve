@@ -52,8 +52,9 @@ export const getUserInfo = (loginString: string) => {
   }
 };
 
-export const invalidateLoginData = (awaitConfirmation = false) =>
-  userService.logout(awaitConfirmation);
+export const invalidateLoginData = () => {
+  userService.logout().then(() => {});
+};
 
 export const getDecodedAccessToken = (token: string) => {
   try {
@@ -68,10 +69,18 @@ export const getDecodedAccessToken = (token: string) => {
   }
 };
 
+const REVOKED_PROFILE_KEY = "o2_revoked_profile";
+
+/** Stops a signed-out profile that storage refused to delete from being restored as a live session. */
+export const rememberRevokedProfile = (): void => {
+  const profile = useLocalUserInfo();
+  if (profile !== null) sessionStorage.setItem(REVOKED_PROFILE_KEY, profile);
+};
+
 export const getDecodedUserInfo = () => {
   try {
-    if (useLocalUserInfo() !== null) {
-      const userinfo: any = useLocalUserInfo();
+    const userinfo: any = useLocalUserInfo();
+    if (userinfo !== null && userinfo !== sessionStorage.getItem(REVOKED_PROFILE_KEY)) {
       return b64DecodeStandard(userinfo);
     } else {
       return null;

@@ -20,7 +20,12 @@ import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";
 import LoginPage from "./Login.vue";
 import oidc from "@/services/oidc";
+import { purgeAllPersisted } from "@/composables/query/persisters";
 vi.mock("@/services/oidc", () => ({ default: { session: vi.fn(), logout: vi.fn() } }));
+vi.mock("@/composables/query/persisters", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/composables/query/persisters")>()),
+  purgeAllPersisted: vi.fn(() => Promise.resolve()),
+}));
 
 // Mock dependencies first with factory functions to avoid hoisting issues
 vi.mock("@/services/config", async (importOriginal) => {
@@ -261,6 +266,36 @@ describe("Login.vue", () => {
     expect(zincutils.getUserInfo).not.toHaveBeenCalled();
     expect(usersService.verifyUser).not.toHaveBeenCalled();
     expect(usersService.addNewUser).not.toHaveBeenCalled();
+  });
+
+  it("removes a replaced account's persisted results before installing the new identity", async () => {
+    let finishPurge = () => {};
+    vi.mocked(purgeAllPersisted).mockImplementation(
+      () => new Promise<void>((resolve) => (finishPurge = resolve)),
+    );
+    const profile = {
+      email: "second@example.test",
+      name: "Second",
+      given_name: "Second",
+      family_name: "",
+      exp: 12345,
+    };
+    vi.mocked(oidc.session).mockResolvedValue(profile);
+    router.currentRoute = { value: { path: "/cb", query: { oidc: "1" }, hash: "" } };
+    try {
+      wrapper = mount(LoginPage, {
+        global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
+      });
+      await flushPromises();
+      expect(purgeAllPersisted).toHaveBeenCalled();
+      expect(store.dispatch).not.toHaveBeenCalledWith("setCurrentUser", expect.anything());
+      expect(store.dispatch).not.toHaveBeenCalledWith("login", expect.anything());
+      finishPurge();
+      await flushPromises();
+      expect(store.dispatch).toHaveBeenCalledWith("login", { loginState: true, userInfo: profile });
+    } finally {
+      vi.mocked(purgeAllPersisted).mockImplementation(() => Promise.resolve());
+    }
   });
 
   it("shows an actionable message for an OIDC user with no organization", async () => {
