@@ -54,6 +54,7 @@ pub async fn login(headers: HeaderMap) -> Response {
             .begin(&binding)
             .await
             .map_err(|_| anyhow::anyhow!("OIDC unavailable"))?;
+        browser_transactions::register(&binding).await?;
         Ok::<_, anyhow::Error>(request)
     }
     .await;
@@ -102,7 +103,7 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
             .complete(code, state, binding)
             .await
             .map_err(|_| anyhow::anyhow!("OIDC verification failed"))?;
-        oidc::establish(identity, &headers).await
+        oidc::establish(identity, &headers, &browser_transactions::marker(binding)).await
     }
     .await;
     let mut response = match result {

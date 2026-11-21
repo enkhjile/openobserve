@@ -131,6 +131,24 @@ describe("OSS OIDC login", () => {
     });
   });
 
+  it("finishes confirmed logout when browser storage cleanup is blocked", () => {
+    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204 }).as("revoke");
+    cy.visit("/web/logout");
+    cy.window().then((win) => {
+      const removeItem = win.Storage.prototype.removeItem;
+      cy.stub(win.Storage.prototype, "removeItem").callsFake(function (key) {
+        if (key === "isFirstTimeLogin")
+          throw new win.DOMException("Storage blocked", "SecurityError");
+        removeItem.call(this, key);
+      });
+    });
+    cy.get('[data-test="confirm-sign-out"]').click();
+    cy.wait("@revoke");
+    cy.location("pathname").should("eq", "/web/login");
+    cy.get('[data-test="sso-login-btn"]').should("be.visible");
+  });
+
   it("shows a generic failure without echoing provider error details", () => {
     openLogin({}, "?oidc_error=1&error_description=private-provider-details");
     cy.get('[data-test="oidc-error"]').should("be.visible").and("contain", "SSO sign-in failed");

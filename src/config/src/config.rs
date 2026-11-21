@@ -16,6 +16,7 @@
 use std::{
     cmp::max,
     collections::BTreeMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock as Lazy},
 };
@@ -489,7 +490,10 @@ pub static NATS_KV_WATCH_MODULES: Lazy<HashSet<String>> = Lazy::new(|| {
 });
 
 pub static CONFIG: Lazy<ArcSwap<Config>> = Lazy::new(|| ArcSwap::from(Arc::new(init())));
-static CONFIG_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+// Process values shadowed by the currently applied dotenv file.
+type FileEnvironment = BTreeMap<String, Option<OsString>>;
+static FILE_ENVIRONMENT: parking_lot::Mutex<FileEnvironment> =
+    parking_lot::Mutex::new(BTreeMap::new());
 static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 static STORED_GRPC_TOKEN: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
 static STORED_EXT_AUTH_SALT: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
@@ -503,9 +507,9 @@ pub fn get_config() -> Arc<Config> {
 pub fn refresh_config() -> Result<(), anyhow::Error> {
     // Initialization also takes the environment lock.
     let config = Lazy::force(&CONFIG);
-    let _guard = CONFIG_ENV_LOCK.lock();
+    let mut baseline = FILE_ENVIRONMENT.lock();
     let old = config.load_full();
-    let new = Arc::new(with_config_environment(|| {
+    let new = Arc::new(with_config_environment(&mut baseline, || {
         config_from_env(Some(&old.oidc))
     })?);
     apply_s3_environment(&new);
@@ -711,8 +715,8 @@ pub fn calculate_config_file_hash(path: &PathBuf) -> Result<String, anyhow::Erro
 }
 
 pub fn load_config() -> Result<(), anyhow::Error> {
-    let _guard = CONFIG_ENV_LOCK.lock();
-    with_config_environment(|| Ok(()))
+    let mut baseline = FILE_ENVIRONMENT.lock();
+    with_config_environment(&mut baseline, || Ok(()))
 }
 
 fn discover_config_file() -> anyhow::Result<Option<PathBuf>> {
@@ -728,13 +732,29 @@ fn discover_config_file() -> anyhow::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn with_config_environment<T>(validate: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+fn restore_env_key(key: &str, value: Option<&OsString>) {
+    match value {
+        Some(value) => unsafe { std::env::set_var(key, value) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+}
+
+fn with_config_environment<T>(
+    baseline: &mut FileEnvironment,
+    validate: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let selected = crate::config_path_manager::get_config_file_path();
     let path = match &selected {
         Some(path) => Some(path.clone()),
         None => discover_config_file()?,
     };
-    let mut previous = BTreeMap::new();
+    let mut previous = FileEnvironment::new();
+    let mut next_baseline = FileEnvironment::new();
+    // Start from the underlying environment so deleted keys and substitutions match a fresh start.
+    for (key, value) in baseline.iter() {
+        previous.insert(key.clone(), std::env::var_os(key));
+        restore_env_key(key, value.as_ref());
+    }
     // EnvConfig panics on malformed scalars. Restore both overwritten and newly introduced keys.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let Some(path) = &path {
@@ -745,6 +765,9 @@ fn with_config_environment<T>(validate: impl FnOnce() -> anyhow::Result<T>) -> a
                     item.map_err(|_| anyhow::anyhow!("invalid config file {path:?}"))?;
                 // Apply in file order so later substitutions see earlier overrides, including
                 // duplicates.
+                next_baseline
+                    .entry(key.clone())
+                    .or_insert_with(|| std::env::var_os(&key));
                 previous
                     .entry(key.clone())
                     .or_insert_with(|| std::env::var_os(&key));
@@ -761,12 +784,11 @@ fn with_config_environment<T>(validate: impl FnOnce() -> anyhow::Result<T>) -> a
     }))
     .unwrap_or_else(|_| Err(anyhow::anyhow!("invalid environment configuration")));
 
-    if result.is_err() {
+    if result.is_ok() {
+        *baseline = next_baseline;
+    } else {
         for (key, prior) in previous {
-            match prior {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
+            restore_env_key(&key, prior.as_ref());
         }
     }
     result
@@ -4224,8 +4246,9 @@ pub struct EnrichmentTable {
 }
 
 pub fn init() -> Config {
-    let _guard = CONFIG_ENV_LOCK.lock();
-    let cfg = with_config_environment(|| config_from_env(None)).expect("config init error");
+    let mut baseline = FILE_ENVIRONMENT.lock();
+    let cfg = with_config_environment(&mut baseline, || config_from_env(None))
+        .expect("config init error");
     apply_s3_environment(&cfg);
     cfg
 }
@@ -4249,6 +4272,10 @@ fn config_from_env(running_oidc: Option<&Oidc>) -> anyhow::Result<Config> {
         !cfg.oidc.only || cfg.oidc.enabled,
         "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
     );
+
+    if cfg.oidc.enabled {
+        cfg.oidc.validate_callback_path()?;
+    }
 
     // set local mode
     if cfg.common.local_mode {

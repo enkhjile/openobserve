@@ -13,11 +13,12 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
@@ -90,6 +91,10 @@ class Issuer(BaseHTTPRequestHandler):
             base64.urlsafe_b64encode(digest).decode().rstrip("=")
             == request["code_challenge"]
         )
+        pause = getattr(server, "token_pause", None)
+        if pause is not None:
+            pause[0].set()
+            assert pause[1].wait(10), "mock token exchange was not released"
         now = int(time.time())
         claims = {
             "iss": server.issuer,
@@ -349,6 +354,34 @@ def test_flow(binary, directory, issuer):
             tabs = [begin_flow(browser, base), begin_flow(browser, base)]
             for callback in tabs[:: -1 if reverse else 1]:
                 finish_flow(browser, callback, True)
+        inflight = begin_flow(browser, base)
+        logout_cookies = browser.cookies.copy()
+        entered, release = Event(), Event()
+        issuer.token_pause = (entered, release)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                callback_result = pool.submit(
+                    browser.get, inflight, allow_redirects=False, timeout=20
+                )
+                try:
+                    assert entered.wait(5), "callback never reached paused token exchange"
+                    logout = requests.post(
+                        base + "/auth/oidc/logout",
+                        cookies=logout_cookies,
+                        headers={"Origin": base},
+                        timeout=5,
+                    )
+                    assert logout.status_code == 204
+                finally:
+                    release.set()
+                callback_response = callback_result.result()
+                assert callback_response.status_code == 303
+                assert "oidc_error=1" in callback_response.headers["Location"]
+            # This cookie jar still has the original session cookie.
+            assert browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+        finally:
+            issuer.token_pause = None
+        flow(browser, base, True)
         tabs = [begin_flow(browser, base) for _ in range(8)]
         assert (
             browser.get(

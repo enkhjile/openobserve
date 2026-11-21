@@ -48,9 +48,38 @@ pub struct Oidc {
     pub cookie_secure: bool,
 }
 
+pub const CALLBACK_PATH: &str = "/auth/oidc/callback";
+
+impl Oidc {
+    pub(crate) fn validate_callback_path(&self) -> anyhow::Result<()> {
+        let uri = url::Url::parse(&self.redirect_uri)?;
+        anyhow::ensure!(
+            uri.path().ends_with(CALLBACK_PATH),
+            "ZO_OIDC_REDIRECT_URI must end with {CALLBACK_PATH}"
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_path_allows_proxy_prefixes_and_requires_the_exact_route() {
+        for (path, valid) in [
+            ("/auth/oidc/callback", true),
+            ("/observe/auth/oidc/callback", true),
+            ("/auth/oidc/callback/", false),
+            ("/another/callback", false),
+        ] {
+            let cfg = Oidc {
+                redirect_uri: format!("https://observe.example{path}"),
+                ..Default::default()
+            };
+            assert_eq!(cfg.validate_callback_path().is_ok(), valid);
+        }
+    }
 
     #[test]
     fn private_oidc_settings_are_not_serialized_but_are_compared_on_reload() {

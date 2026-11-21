@@ -12,7 +12,7 @@ Set environment variables using the existing OpenObserve configuration mechanism
 | `ZO_OIDC_ISSUER` | empty | Exact provider issuer, including any trailing slash. |
 | `ZO_OIDC_CLIENT_ID` | empty | Registered OIDC client ID. |
 | `ZO_OIDC_CLIENT_SECRET` | empty | Confidential client secret, supplied through deployment secrets. |
-| `ZO_OIDC_REDIRECT_URI` | empty | Exact public callback URL, e.g. `https://observe.example.com/auth/oidc/callback`. Include any API base path. |
+| `ZO_OIDC_REDIRECT_URI` | empty | Exact public callback URL, e.g. `https://observe.example.com/auth/oidc/callback`. Include any API base path and end the URL with `/auth/oidc/callback` without a trailing slash. |
 | `ZO_OIDC_SCOPES` | `openid email profile` | Space-separated requested scopes. Do not request offline access. |
 | `ZO_OIDC_ACCOUNT_LINKS` | `[]` | JSON array of explicit `{ "issuer", "subject", "email" }` mappings to existing local accounts. |
 | `ZO_OIDC_PROVISIONING_ENABLED` | `false` | Permit new verified identities to create non-administrator accounts without implicit organization memberships. |

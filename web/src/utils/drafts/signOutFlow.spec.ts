@@ -161,6 +161,32 @@ describe("signOutThroughLeaveGuards", () => {
     expect(assign).toHaveBeenCalled();
   });
 
+  it.each(["isFirstTimeLogin", "o2_sample_tour", "userInfo"])(
+    "continues cleanup and navigation when storage removal fails for %s after revocation",
+    async (blockedKey) => {
+      const { rememberLinkRequest, recallLinkRequest } = await import("@/utils/slackLink");
+      rememberLinkRequest("req-1.sig", null);
+      localStorage.setItem("currentuser", JSON.stringify("old-user"));
+      vi.mocked(oidc.logout).mockResolvedValue();
+      const store = makeStore();
+      store.state.zoConfig.oidc_enabled = true;
+      const removeItem = Storage.prototype.removeItem;
+      const removal = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (key) {
+        if (key === blockedKey) throw new DOMException("Storage blocked", "SecurityError");
+        removeItem.call(this, key);
+      });
+      try {
+        await expect(signOutThroughLeaveGuards(router, store)).resolves.toBe(true);
+        expect(store.dispatch).toHaveBeenCalledWith("logout", { draftsOf: email });
+        expect(localStorage.getItem("currentuser")).toBeNull();
+        expect(recallLinkRequest()).toBeNull();
+        expect(assign).toHaveBeenCalledTimes(1);
+      } finally {
+        removal.mockRestore();
+      }
+    },
+  );
+
   it("keeps an OIDC session visible when revocation fails", async () => {
     vi.mocked(oidc.logout).mockRejectedValue(new Error("network failure"));
     const store = {

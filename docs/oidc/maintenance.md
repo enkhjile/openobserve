@@ -13,6 +13,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/main.rs` | Validate static provider settings before the server accepts traffic. |
 | `src/db/src/user.rs`, `src/infra/src/table/org_users.rs` | Load the bound account and its current memberships by immutable user ID. |
 | `src/db/src/session.rs` | Exclude database-only OIDC sessions when rebuilding the native session cache. |
+| `src/infra/src/table/sessions.rs` | Record pending sign-ins and atomically publish or revoke their sessions, including during logout. |
 | `src/core/src/auth.rs` | Recognize the session cookie in the OSS request extractor. |
 | `src/api/common/src/auth/validator.rs` | Validate a stored OIDC session, enforce existing organization scope, and apply OIDC-only policy before accepting human passwords. |
 | `src/api/grpc/src/handler/grpc/auth/mod.rs` | Apply the human-password policy in the gRPC validator, which authenticates OTLP separately from HTTP. |
@@ -27,6 +28,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `web/src/locales/languages/en-US.json` | Add SSO controls and actionable error messages. |
 | `web/cypress/e2e/tsconfig.json` | Resolve the installed Vue DOM config so browser test specs compile. |
 | `web/src/layouts/MainLayout.signOutDrafts.spec.ts` | Supply the native-login bootstrap response when testing sign-out with drafts. |
+| `web/src/utils/sessionServices.ts`, `web/src/utils/sessionServices.spec.ts` | Continue logout cleanup and navigation when browser storage is unavailable. |
 | Adjacent `Login.spec.ts`, `router.spec.ts`, and `signOutFlow.spec.ts` | Exercise the changed navigation, visibility, callback and logout behavior. |
 
 New files are grouped by function: `src/extensions/oidc` contains the protocol and provider tests, `src/core/src/extensions` contains account and session persistence, and `src/api/http/src/oidc.rs` handles browser requests. Configuration lives in `src/config/src/oidc.rs`. The direct logout page lives in `web/src/views/ConfirmSignOut.vue`. The Vue client and service tests live in `web/src/services/oidc*`. Deployment and operator material is under `deploy/oidc` and `docs/oidc`. The browser UI tests are in `web/cypress/e2e/oidc.cy.js`. The core lifecycle test uses SQLite, and `tests/oidc/browser_flow.py` exercises a compiled binary through its HTTP endpoints.
@@ -51,7 +53,7 @@ Install frontend dependencies with `npm ci` in `web/`, then build the UI before 
 npm run format:check
 npm run lint:ci
 NODE_OPTIONS="--max-old-space-size=8192" npm run build
-NODE_OPTIONS="--no-experimental-webstorage" npm run test:unit -- --run components/login/Login.spec.ts views/Login.spec.ts services/oidc.spec.ts utils/drafts/signOutFlow.spec.ts composables/shared/router.spec.ts router/index.spec.ts layouts/MainLayout.signOutDrafts.spec.ts
+NODE_OPTIONS="--no-experimental-webstorage" npm run test:unit -- --run components/login/Login.spec.ts views/Login.spec.ts services/oidc.spec.ts utils/drafts/signOutFlow.spec.ts utils/sessionServices.spec.ts composables/shared/router.spec.ts router/index.spec.ts layouts/MainLayout.signOutDrafts.spec.ts
 ```
 
 From `web/`, start the development server in one terminal:

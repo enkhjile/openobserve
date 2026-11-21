@@ -35,6 +35,7 @@ import { countAllDraftsFor, endEditorDraftSession } from "@/utils/drafts/editorD
 import {
   silenceUnloadPrompts,
   stopSessionServices,
+  tryClearBrowserStorage,
   type SessionServicesStore,
 } from "@/utils/sessionServices";
 
@@ -87,16 +88,16 @@ const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void =>
   const userEmail = String(store.state.userInfo?.email ?? "");
   stopSessionServices(store);
   // A deep-link first login keeps the flag for a later Home visit; it must not pass to the next user.
-  localStorage.removeItem("isFirstTimeLogin");
+  tryClearBrowserStorage(() => localStorage.removeItem("isFirstTimeLogin"));
   // the open sample tour is this user's; the full reload that follows drops its in-memory copy
-  localStorage.removeItem("o2_sample_tour");
+  tryClearBrowserStorage(() => localStorage.removeItem("o2_sample_tour"));
   if (keepDrafts) store.dispatch("logout");
   else {
     store.dispatch("logout", { draftsOf: userEmail });
     endEditorDraftSession(userEmail);
   }
-  useLocalCurrentUser("", true);
-  useLocalUserInfo("", true);
+  tryClearBrowserStorage(() => useLocalCurrentUser("", true));
+  tryClearBrowserStorage(() => useLocalUserInfo("", true));
   forgetLinkRequest();
 };
 

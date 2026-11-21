@@ -13,12 +13,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use anyhow::Result;
 use config::oidc::Oidc;
 use http::{HeaderMap, header};
 
 use super::transaction_cookie_name;
 
 pub const MAX_BROWSER_TRANSACTIONS: usize = 8;
+
+pub fn marker(binding: &str) -> String {
+    super::compact_key("oidc_tx_", binding)
+}
+
+pub async fn register(binding: &str) -> Result<()> {
+    infra::table::sessions::start_oidc_transaction(
+        &marker(binding),
+        chrono::Utc::now().timestamp_micros() + 300_000_000,
+    )
+    .await?;
+    Ok(())
+}
 
 fn valid_state(state: &str) -> bool {
     (1..=128).contains(&state.len())
@@ -33,6 +47,21 @@ pub fn cookie_for_state(cfg: &Oidc, state: &str) -> Option<String> {
 }
 
 pub fn pending_cookie_names<'a>(headers: &'a HeaderMap, cfg: &Oidc) -> Vec<&'a str> {
+    pending_cookies(headers, cfg)
+        .map(|(name, _)| name)
+        .collect()
+}
+
+pub(super) fn pending_markers(headers: &HeaderMap, cfg: &Oidc) -> Vec<String> {
+    pending_cookies(headers, cfg)
+        .map(|(_, binding)| marker(binding))
+        .collect()
+}
+
+fn pending_cookies<'a>(
+    headers: &'a HeaderMap,
+    cfg: &Oidc,
+) -> impl Iterator<Item = (&'a str, &'a str)> {
     let prefix = transaction_cookie_name(cfg);
     headers
         .get_all(header::COOKIE)
@@ -40,18 +69,24 @@ pub fn pending_cookie_names<'a>(headers: &'a HeaderMap, cfg: &Oidc) -> Vec<&'a s
         .filter_map(|line| line.to_str().ok())
         .flat_map(|line| line.split(';'))
         .filter_map(|part| part.trim().split_once('='))
-        .map(|(name, _)| name)
-        .filter(|name| {
+        .filter(move |(name, _)| {
             name.strip_prefix(prefix)
                 .and_then(|suffix| suffix.strip_prefix('-'))
                 .is_some_and(valid_state)
         })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_does_not_contain_browser_secret() {
+        assert!(!marker("browser-secret").contains("browser-secret"));
+        assert_ne!(marker("one"), marker("two"));
+        assert!(marker("one").starts_with("oidc_tx_"));
+        assert!(marker("one").len() <= 36);
+    }
 
     #[test]
     fn oidc_cookie_names_only_match_state_for_configured_prefix() {

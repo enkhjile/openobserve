@@ -18,6 +18,7 @@ pub mod browser_transactions;
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use config::{meta::user::DBUser, oidc::Oidc};
 use http::{HeaderMap, Method, header};
@@ -252,6 +253,7 @@ pub async fn resolve_session_account(
 pub async fn establish(
     identity: VerifiedIdentity,
     headers: &HeaderMap,
+    marker: &str,
 ) -> Result<(String, Session)> {
     let cfg = config::get_config();
     let links = &runtime().await?.links;
@@ -274,10 +276,11 @@ pub async fn establish(
         expires_at,
         user_id: binding.user_id,
     };
-    // Revoke first; a failed rotation must not leave a second live browser credential.
-    revoke(headers).await?;
-    let secret = random_secret();
-    infra::table::sessions::set_with_expiry(
+    let previous_id = unique_cookie(headers, cookie_name(&cfg.oidc))?.map(session_key);
+    let secret = format!("v1.{}", random_secret());
+    infra::table::sessions::rotate_oidc_session(
+        marker,
+        previous_id.as_deref(),
         &session_key(&secret),
         &serde_json::to_string(&session)?,
         expires_at * 1_000_000,
@@ -288,18 +291,28 @@ pub async fn establish(
 
 pub async fn revoke(headers: &HeaderMap) -> Result<()> {
     let cfg = config::get_config();
-    if let Some(secret) = unique_cookie(headers, cookie_name(&cfg.oidc))? {
-        infra::table::sessions::delete(&session_key(secret)).await?;
-    }
+    let current = unique_cookie(headers, cookie_name(&cfg.oidc))?.map(session_key);
+    let markers = browser_transactions::pending_markers(headers, &cfg.oidc);
+    infra::table::sessions::revoke_oidc_sessions(markers, current).await?;
     Ok(())
 }
 
 fn session_key(secret: &str) -> String {
+    if secret.starts_with("v1.") {
+        return compact_key("oidc_s_", secret);
+    }
+    // Sessions issued before compact keys used the full hex digest on SQLite.
     format!(
         "{}{:x}",
         db::session::OIDC_SESSION_PREFIX,
         Sha256::digest(secret.as_bytes())
     )
+}
+
+fn compact_key(prefix: &str, secret: &str) -> String {
+    // 168 bits encode to 28 characters, leaving room for the namespace in VARCHAR(36).
+    let digest = Sha256::digest(secret.as_bytes());
+    format!("{prefix}{}", URL_SAFE_NO_PAD.encode(&digest[..21]))
 }
 
 fn binding_key(issuer: &str, subject: &str) -> Result<String> {

@@ -137,7 +137,11 @@ fn otel_span_filter(path: &str) -> bool {
 
 /// The span records the raw path and query, and a hook URL may hold a pasted credential.
 fn otel_span_wanted(path: &str, enabled: bool) -> bool {
-    enabled && !path.contains("/workflows/hooks/") && !path.ends_with("/auth/oidc/callback")
+    enabled
+        && !path.contains("/workflows/hooks/")
+        && !path
+            .trim_end_matches('/')
+            .ends_with(config::oidc::CALLBACK_PATH)
 }
 
 async fn shutdown_signal() {
@@ -220,7 +224,12 @@ mod tests {
 
     #[test]
     fn credential_bearing_routes_never_get_a_request_span() {
-        assert!(!otel_span_wanted("/base/auth/oidc/callback", true));
+        for suffix in ["", "/", "//"] {
+            assert!(!otel_span_wanted(
+                &format!("/base/auth/oidc/callback{suffix}"),
+                true
+            ));
+        }
         assert!(!otel_span_wanted(
             "/api/v2/acme/workflows/hooks/o2wh_abc",
             true
