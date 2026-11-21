@@ -173,6 +173,7 @@ pub fn destination_error_response(value: DestinationError) -> Response {
 
 pub fn template_error_response(value: TemplateError) -> Response {
     match value {
+        TemplateError::AuthorizationDenied => MetaHttpResponse::forbidden("Access denied"),
         TemplateError::InfraError(err) => {
             MetaHttpResponse::internal_error(TemplateError::InfraError(err))
         }

@@ -298,6 +298,9 @@ impl<'a> DataFusionContextBuilder<'a> {
 
 pub fn register_udf(ctx: &SessionContext, org_id: &str) -> Result<()> {
     register_builtin_udfs(ctx);
+    if infra::rbac::enabled() {
+        return Ok(());
+    }
     let udf_list = get_all_transform(org_id)?;
     for udf in udf_list {
         ctx.register_udf(udf.clone());

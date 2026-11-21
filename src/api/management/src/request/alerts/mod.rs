@@ -402,6 +402,11 @@ pub async fn create_alert(
     Headers(user_email): Headers<UserEmail>,
     Json(req_body): Json<CreateAlertRequestBody>,
 ) -> Response {
+    if infra::rbac::enabled()
+        && !matches!(req_body.alert_type, None | Some(AlertTypeFilter::Scheduled))
+    {
+        return MetaHttpResponse::forbidden("Unsupported scoped alert type");
+    }
     let query_str = uri.query().unwrap_or("");
     let folder_id = get_folder(query_str);
 
@@ -464,6 +469,13 @@ pub async fn create_alert(
         guard_alert_create(&org_id, &user_email.user_id, &folder_id, &alert, overwrite).await
     {
         return resp;
+    }
+    alert.org_id = org_id.clone();
+    if openobserve_core::alerts::rbac::bind(&mut alert, &user_email.user_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Alert authorization denied");
     }
     alert.last_edited_by = Some(user_email.user_id);
 
@@ -722,13 +734,33 @@ fn composite_input(
 
 async fn composite_detail_response(
     composite: infra::table::alert_composites::CompositeWithChildren,
-    _user_id: Option<&str>,
+    user_id: &str,
 ) -> Response {
     let definition = composite.definition;
-    #[cfg(feature = "enterprise")]
-    if let Some(user_id) = _user_id
-        && composite_subject_unauthorized(&definition, user_id, "GET").await
+    let readable_ids = match infra::rbac::readable_object_ids(
+        user_id,
+        &definition.org,
+        infra::rbac::ResourceKind::Alert,
+    )
+    .await
     {
+        Ok(ids) => ids,
+        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+    };
+    let hide_condition = readable_ids.as_ref().is_some_and(|ids| {
+        definition
+            .expression
+            .split(['{', '}'])
+            .skip(1)
+            .step_by(2)
+            .any(|id| !ids.contains(id))
+            || composite
+                .children
+                .iter()
+                .any(|child| !ids.contains(&child.child_alert_id))
+    });
+    #[cfg(feature = "enterprise")]
+    if composite_subject_unauthorized(&definition, user_id, "GET").await {
         return MetaHttpResponse::forbidden("Unauthorized Access");
     }
     let locked_names = locked_target_names(
@@ -787,24 +819,25 @@ async fn composite_detail_response(
 
     let mut children = Vec::with_capacity(composite.children.len());
     for child in composite.children {
+        if readable_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&child.child_alert_id))
+        {
+            continue;
+        }
         #[cfg(feature = "enterprise")]
-        let child_authorized = match _user_id {
-            Some(user_id) => {
-                check_permissions(
-                    &child.child_alert_id,
-                    &definition.org,
-                    user_id,
-                    "alerts",
-                    "GET",
-                    None,
-                    false,
-                    true,
-                    false,
-                )
-                .await
-            }
-            None => false,
-        };
+        let child_authorized = check_permissions(
+            &child.child_alert_id,
+            &definition.org,
+            user_id,
+            "alerts",
+            "GET",
+            None,
+            false,
+            true,
+            false,
+        )
+        .await;
         #[cfg(not(feature = "enterprise"))]
         let child_authorized = true;
         if !child_authorized {
@@ -884,6 +917,10 @@ async fn composite_detail_response(
         "pending_period_sec": definition.pending_period_sec,
         "incident_title_template": definition.incident_title_template,
     });
+    if hide_condition {
+        detail["composite_condition"]["expression"] = serde_json::Value::Null;
+        detail["evaluation"] = serde_json::Value::Null;
+    }
     if !locked_names.is_empty() {
         detail["locked_target_names"] = serde_json::json!(locked_names);
     }
@@ -1958,12 +1995,8 @@ pub async fn list_alert_group_transitions(
 )]
 pub async fn get_alert(
     Path((org_id, alert_id)): Path<(String, String)>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
-    #[cfg(feature = "enterprise")]
-    let detail_user_id = Some(user_email.user_id.as_str());
-    #[cfg(not(feature = "enterprise"))]
-    let detail_user_id = None;
     let alert_id_str = alert_id.clone();
     let alert_id = match Ksuid::from_str(&alert_id) {
         Ok(id) => id,
@@ -1999,7 +2032,7 @@ pub async fn get_alert(
             if let Ok(Some(composite)) =
                 openobserve_core::alerts::composite::get_composite(&org_id, &alert_id_str).await
             {
-                return composite_detail_response(composite, detail_user_id).await;
+                return composite_detail_response(composite, &user_email.user_id).await;
             }
             #[cfg(not(feature = "enterprise"))]
             {
@@ -2434,6 +2467,11 @@ pub async fn update_alert(
     Headers(user_email): Headers<UserEmail>,
     Json(req_body): Json<UpdateAlertRequestBody>,
 ) -> Response {
+    if infra::rbac::enabled()
+        && !matches!(req_body.alert_type, None | Some(AlertTypeFilter::Scheduled))
+    {
+        return MetaHttpResponse::forbidden("Unsupported scoped alert type");
+    }
     let alert_id_str = alert_id.clone();
     let alert_id = match Ksuid::from_str(&alert_id) {
         Ok(id) => id,
@@ -2487,6 +2525,13 @@ pub async fn update_alert(
     }
     alert.last_edited_by = Some(user_email.user_id.clone());
     alert.id = Some(alert_id);
+    alert.org_id = org_id.clone();
+    if openobserve_core::alerts::rbac::bind(&mut alert, &user_email.user_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Alert authorization denied");
+    }
     #[cfg(feature = "enterprise")]
     if let Err(resp) = security::validate_detection(&org_id, None, &alert).await {
         return resp;
@@ -2761,14 +2806,25 @@ async fn readable_parent_snapshot(
     user_id: &str,
     parents: Vec<(String, String, String)>,
 ) -> (Vec<serde_json::Value>, usize) {
-    #[cfg(not(feature = "enterprise"))]
-    let _ = (org_id, user_id);
+    let readable_ids =
+        match infra::rbac::readable_object_ids(user_id, org_id, infra::rbac::ResourceKind::Alert)
+            .await
+        {
+            Ok(ids) => ids,
+            Err(_) => return (Vec::new(), 0),
+        };
     let mut references = Vec::new();
     #[cfg(feature = "enterprise")]
     let mut hidden = 0;
     #[cfg(not(feature = "enterprise"))]
     let hidden = 0;
     for (alert_id, name, folder_id) in parents {
+        if readable_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&alert_id))
+        {
+            continue;
+        }
         #[cfg(feature = "enterprise")]
         if !check_permissions(
             &alert_id,
@@ -3161,8 +3217,18 @@ pub async fn list_alerts(
     // `Vec`, which PT-3 requires for `?priority=1&priority=2`. axum's Query
     // errors with "invalid type: string, expected a sequence".
     ExtraQuery(query): ExtraQuery<ListAlertsQuery>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
+    let readable_ids = match infra::rbac::readable_object_ids(
+        &user_email.user_id,
+        &org_id,
+        infra::rbac::ResourceKind::Alert,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+    };
     #[cfg(not(feature = "enterprise"))]
     let user_id = None;
     #[cfg(feature = "enterprise")]
@@ -3225,6 +3291,13 @@ pub async fn list_alerts(
             db::alerts::alert::resolve_alert_ids_by_tags(&org_id, &requested_tags).await,
         );
     }
+    if let Some(ids) = &readable_ids {
+        if let Some(tagged) = &mut params.tag_alert_ids {
+            tagged.retain(|id| ids.contains(id));
+        } else {
+            params.tag_alert_ids = Some(ids.iter().cloned().collect());
+        }
+    }
     #[cfg(feature = "enterprise")]
     {
         params = params.without_alert_ids(
@@ -3253,7 +3326,7 @@ pub async fn list_alerts(
     // the `All` filter must merge (and so drop SQL pagination) and to build the
     // merged rows below.
     let db = get_orm_client_ro().await;
-    let composite_definitions = if matches!(
+    let mut composite_definitions = if matches!(
         alert_type,
         AlertTypeFilter::All | AlertTypeFilter::Composite
     ) {
@@ -3263,6 +3336,10 @@ pub async fn list_alerts(
     } else {
         Vec::new()
     };
+
+    if let Some(ids) = &readable_ids {
+        composite_definitions.retain(|definition| ids.contains(&definition.id));
+    }
 
     // Only force a full fetch when an extra kind is actually being merged in.
     // A single-kind list keeps SQL LIMIT/OFFSET so we don't fetch and sort
@@ -3428,6 +3505,11 @@ pub async fn list_alerts(
                 .await
                 .into_iter()
                 .filter(|item| in_listable_folder(&listable_folders, &item.folder_id))
+                .filter(|item| {
+                    readable_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&item.alert_id.to_string()))
+                })
                 .filter(|item| anomaly_row_visible(&visibility, item))
                 .filter(|item| enabled_filter.is_none_or(|enabled| item.enabled == enabled))
                 .filter(|item| match &priority_filter {
@@ -3475,7 +3557,7 @@ pub async fn list_alerts(
     // over the page that is actually being returned — not per alert.
     let mut list = list;
     let status_unavailable = enrich_with_run_state(&org_id, &mut list).await;
-    enrich_with_composite_metadata(&org_id, &visibility, &mut list).await;
+    enrich_with_composite_metadata(&org_id, &visibility, readable_ids.as_ref(), &mut list).await;
     crate::models::alerts::responses::fill_active_downtimes(&org_id, &mut list).await;
 
     // Feature-scoped fields: keep destinations/template off the default list path
@@ -3577,6 +3659,7 @@ pub(crate) fn visible_alert(
 async fn enrich_with_composite_metadata(
     org_id: &str,
     visibility: &AlertVisibility,
+    readable_ids: Option<&std::collections::BTreeSet<String>>,
     list: &mut [ListAlertsResponseBodyItem],
 ) {
     let db = get_orm_client_ro().await;
@@ -3664,7 +3747,9 @@ async fn enrich_with_composite_metadata(
             // Same gate as the reference counts above: a child the caller
             // cannot read is left out, which drops the whole summary for any
             // composite that mentions it.
-            if visible_alert(visibility, &id, &folder_id, &name) {
+            if readable_ids.is_none_or(|ids| ids.contains(&id))
+                && visible_alert(visibility, &id, &folder_id, &name)
+            {
                 visible_child_names.insert(id, name);
             }
         }
@@ -3678,7 +3763,9 @@ async fn enrich_with_composite_metadata(
         if item.alert_type == "composite" {
             // Every listed composite exists; a composite with no child rows
             // still reports zero, matching the old per-row `children.len()`.
-            item.child_count = Some(child_counts.get(&id).copied().unwrap_or(0));
+            item.child_count = readable_ids
+                .is_none()
+                .then(|| child_counts.get(&id).copied().unwrap_or(0));
             item.expression_summary = composite_expressions
                 .get(&id)
                 .and_then(|expression| name_resolved_expression(expression, &visible_child_names));
@@ -3694,7 +3781,13 @@ async fn enrich_with_composite_metadata(
                 parents
                     .iter()
                     .filter(|parent| {
-                        visible_alert(visibility, &parent.id, &parent.folder_id, &parent.name)
+                        readable_ids.is_none_or(|ids| ids.contains(&parent.id))
+                            && visible_alert(
+                                visibility,
+                                &parent.id,
+                                &parent.folder_id,
+                                &parent.name,
+                            )
                     })
                     .count()
             })

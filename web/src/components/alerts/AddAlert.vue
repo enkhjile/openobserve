@@ -409,6 +409,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 </div>
 
                 <div>
+                  <OBanner
+                    v-if="deliveryApprovalRequired"
+                    variant="info"
+                    class="mb-4"
+                    data-test="alert-approved-delivery-help"
+                  >
+                    {{ t("ossRbac.deliveryPickerHelp") }}
+                  </OBanner>
                   <AlertSettings
                     ref="step4Ref"
                     :formData="formData"
@@ -418,7 +426,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     :destinations="formData.destinations"
                     :recoveryDestinations="formData.recovery_destinations"
                     :formattedDestinations="getFormattedDestinations"
-                    :destinationObjects="destinations"
+                    :destinationObjects="deliveryDestinations"
                     :workflows="formData.workflows"
                     :destinationRequired="destinationRequired"
                     @update:trigger="updateTriggerCondition"
@@ -447,7 +455,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     :description="formData.description"
                     :rowTemplate="formData.row_template"
                     :rowTemplateType="formData.row_template_type"
-                    :destinations="destinations"
+                    :destinations="deliveryDestinations"
                     :selectedDestinations="formData.destinations"
                     :alertName="formData.name"
                     :streamName="formData.stream_name"
@@ -491,7 +499,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
               <div v-show="activeTab === 'anomaly-alerting'" data-tab-pane="anomaly-alerting">
                 <AnomalyAlerting
                   :config="anomalyConfig"
-                  :destinations="destinations as (SelectOption & { name: string })[]"
+                  :destinations="deliveryDestinations as (SelectOption & { name: string })[]"
                   @refresh:destinations="$emit('refresh:destinations')"
                 />
               </div>
@@ -640,14 +648,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 class="h-full overflow-auto"
                 v-if="isAnomalyMode"
                 :config="anomalyConfig"
-                :destinations="destinations"
+                :destinations="deliveryDestinations"
                 :wizard-step="3"
               />
               <AlertSummary
                 class="h-full"
                 v-else
                 :formData="formData"
-                :destinations="destinations"
+                :destinations="deliveryDestinations"
                 :previewQuery="previewQuery"
                 :generatedSqlQuery="generatedSqlQuery"
               />

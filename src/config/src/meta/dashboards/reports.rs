@@ -186,9 +186,21 @@ impl Default for ReportFrequency {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct ReportExecutionContext {
+    pub author_subject: String,
+    pub renderer_subject: String,
+    pub folder_id: String,
+    pub destination_names: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub execution_context: Option<ReportExecutionContext>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_destinations: Vec<String>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -234,6 +246,8 @@ pub struct Report {
 impl Default for Report {
     fn default() -> Self {
         Self {
+            execution_context: None,
+            delivery_destinations: vec![],
             name: "".to_string(),
             title: "".to_string(),
             org_id: "".to_string(),
@@ -546,6 +560,8 @@ mod tests {
             updated_at: None,
             owner: "test_owner".to_string(),
             last_edited_by: "test_editor".to_string(),
+            execution_context: None,
+            delivery_destinations: vec![],
         };
 
         assert_eq!(report.name, "test_report");
@@ -583,6 +599,8 @@ mod tests {
             updated_at: None,
             owner: "test_owner".to_string(),
             last_edited_by: "test_editor".to_string(),
+            execution_context: None,
+            delivery_destinations: vec![],
         };
 
         let serialized = serde_json::to_string(&report).unwrap();

@@ -114,7 +114,7 @@ EXAMPLE - Simple pipeline with function:
 pub async fn save_pipeline(
     Path(org_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
     Json(mut pipeline): Json<Pipeline>,
 ) -> Response {
     pipeline.name = pipeline.name.trim().to_lowercase();
@@ -129,6 +129,21 @@ pub async fn save_pipeline(
     }
     let pipeline_id = pipeline.id.to_string();
     let pipeline_name = pipeline.name.clone();
+    if infra::rbac::enabled() {
+        let subject = match infra::rbac::user_subject(&user_email.user_id).await {
+            Ok(subject) => subject,
+            Err(e) => return MetaHttpResponse::forbidden(e),
+        };
+        return match pipeline::save_user_pipeline_as_subject(pipeline, &subject).await {
+            Ok(()) => MetaHttpResponse::json(
+                MetaHttpResponse::message(StatusCode::OK, "Pipeline created successfully")
+                    .with_id(pipeline_id)
+                    .with_name(pipeline_name),
+            ),
+            Err(e) => e.into(),
+        };
+    }
+
     #[cfg(feature = "enterprise")]
     let saved = {
         let org_id = pipeline.org.clone();
@@ -180,8 +195,7 @@ pub async fn save_pipeline(
 )]
 pub async fn list_pipelines(
     Path(org_id): Path<String>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
-    #[cfg(not(feature = "enterprise"))] Headers(_user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
     let mut _permitted = None;
     // Get List of allowed objects
@@ -209,11 +223,33 @@ pub async fn list_pipelines(
         // Get List of allowed objects ends
     }
 
-    let pipelines = match pipeline::list_user_pipelines(&org_id, _permitted).await {
+    let mut pipelines = match pipeline::list_user_pipelines(&org_id, _permitted).await {
         Ok(pipelines) => pipelines,
         Err(e) => return e.into(),
     };
 
+    if infra::rbac::enabled() {
+        let resources: Vec<_> = pipelines
+            .iter()
+            .map(|p| infra::rbac::Resource::new(infra::rbac::ResourceKind::Pipeline, &p.id))
+            .collect();
+        let allowed = match infra::rbac::allowed_resources(
+            &user_email.user_id,
+            &org_id,
+            infra::rbac::Action::Read,
+            &resources,
+        )
+        .await
+        {
+            Ok(allowed) if allowed.len() == pipelines.len() => allowed,
+            _ => return MetaHttpResponse::forbidden("Pipeline listing denied"),
+        };
+        pipelines = pipelines
+            .into_iter()
+            .zip(allowed)
+            .filter_map(|(p, allowed)| allowed.then_some(p))
+            .collect();
+    }
     let pipeline_triggers = match pipeline::list_pipeline_triggers(&org_id).await {
         Ok(pipelines) => pipelines,
         Err(e) => return e.into(),
@@ -488,11 +524,25 @@ pub async fn delete_pipeline_bulk(
 )]
 pub async fn update_pipeline(
     Path(org_id): Path<String>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
     Json(mut pipeline): Json<Pipeline>,
 ) -> Response {
     pipeline.org = org_id;
     let org_id = pipeline.org.clone();
+    if infra::rbac::enabled() {
+        let subject = match infra::rbac::user_subject(&user_email.user_id).await {
+            Ok(subject) => subject,
+            Err(e) => return MetaHttpResponse::forbidden(e),
+        };
+        return match pipeline::update_user_pipeline_as_subject(&org_id, pipeline, &subject).await {
+            Ok(()) => MetaHttpResponse::json(MetaHttpResponse::message(
+                StatusCode::OK,
+                "Pipeline updated successfully",
+            )),
+            Err(e) => e.into(),
+        };
+    }
+
     #[cfg(feature = "enterprise")]
     let check = StreamReadCheck {
         org_id: &org_id,

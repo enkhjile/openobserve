@@ -25,6 +25,7 @@ use sqlx::FromRow;
 
 use crate::errors::{DbError, Result};
 
+pub mod execution;
 pub mod postgres;
 pub mod sqlite;
 
@@ -42,8 +43,8 @@ pub trait PipelineTable: Sync + Send + 'static {
     async fn create_table(&self) -> Result<()>;
     async fn create_table_index(&self) -> Result<()>;
     async fn drop_table(&self) -> Result<()>;
-    async fn put(&self, pipeline: &Pipeline) -> Result<()>;
-    async fn update(&self, pipeline: &Pipeline) -> Result<()>;
+    async fn put(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()>;
+    async fn update(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()>;
     async fn get_by_stream(&self, stream_params: &StreamParams) -> Result<Vec<Pipeline>>;
     async fn get_by_id(&self, pipeline_id: &str) -> Result<Decoded>;
     async fn get_with_same_source_stream(&self, pipeline: &Pipeline) -> Result<Vec<Pipeline>>;
@@ -107,9 +108,9 @@ pub async fn init() -> Result<()> {
 #[inline]
 pub async fn put(pipeline: &Pipeline) -> Result<()> {
     if get_by_id(&pipeline.id).await.is_ok() {
-        CLIENT.update(pipeline).await
+        CLIENT.update(pipeline, None).await
     } else {
-        CLIENT.put(pipeline).await
+        CLIENT.put(pipeline, None).await
     }
 }
 

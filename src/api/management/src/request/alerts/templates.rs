@@ -570,6 +570,15 @@ mod tests {
     }
 
     #[test]
+    fn rbac_template_denial_maps_to_forbidden() {
+        assert_eq!(
+            template_error_response(db::alerts::templates::TemplateError::AuthorizationDenied)
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
     fn test_list_query_reads_include_usage() {
         use axum::extract::Query;
         let parse = |uri: &str| {

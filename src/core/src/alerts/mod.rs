@@ -65,6 +65,7 @@ pub mod membership_provider;
 pub mod mute;
 pub mod notifications;
 mod prom_rule;
+pub mod rbac;
 #[cfg(feature = "enterprise")]
 pub mod rca_live;
 #[cfg(feature = "enterprise")]
@@ -101,6 +102,7 @@ pub trait QueryConditionExt: Sync + Send + 'static {
         search_type: Option<SearchEventType>,
         search_event_context: Option<SearchEventContext>,
         trace_id: Option<String>,
+        execution_subject: Option<&str>,
     ) -> Result<TriggerEvalResults, anyhow::Error>;
 }
 
@@ -110,6 +112,9 @@ impl QueryConditionExt for QueryCondition {
         &self,
         row: Option<&Map<String, Value>>,
     ) -> Result<TriggerEvalResults, anyhow::Error> {
+        if infra::rbac::enabled() {
+            return Err(alert::AlertError::PermissionDenied.into());
+        }
         let now = Utc::now().timestamp_micros();
         let mut eval_results = TriggerEvalResults {
             end_time: now,
@@ -142,7 +147,20 @@ impl QueryConditionExt for QueryCondition {
         search_type: Option<SearchEventType>,
         search_event_context: Option<SearchEventContext>,
         trace_id: Option<String>,
+        execution_subject: Option<&str>,
     ) -> Result<TriggerEvalResults, anyhow::Error> {
+        if infra::rbac::enabled() {
+            rbac::validate_query(self)?;
+            let subject = execution_subject.ok_or(alert::AlertError::PermissionDenied)?;
+            infra::rbac::validate_subject(subject, org_id).await?;
+            search::rbac::authorize_subject(
+                self.sql.as_deref().unwrap_or_default(),
+                org_id,
+                stream_type,
+                subject,
+            )
+            .await?;
+        }
         let trace_id = trace_id.unwrap_or_else(ider::generate_trace_id);
         // create context with trace_id
         let eval_span = setup_tracing_with_trace_id(
@@ -399,7 +417,8 @@ impl QueryConditionExt for QueryCondition {
         //  - aggregation — already exact, needs per-group rows;
         //  - VRL — transforms rows post-query, a SQL count could disagree;
         //  - multi-window — separate SQL list, out of scope v1.
-        let hybrid = self.search_event_type.is_none()
+        let hybrid = !infra::rbac::enabled()
+            && self.search_event_type.is_none()
             && self.aggregation.is_none()
             && self.vrl_function.is_none()
             && self
@@ -608,16 +627,28 @@ impl QueryConditionExt for QueryCondition {
                 "evaluate_scheduled trace_id: {trace_id}, begin to call SearchService::search, {req:?}"
             );
             // SearchService::search(&trace_id, org_id, stream_type, None, &req).await
-            SearchService::grpc_search::grpc_search(
-                &trace_id,
-                org_id,
-                stream_type,
-                None,
-                &req,
-                Some(RoleGroup::Background),
-            )
-            .instrument(eval_span)
-            .await
+            if infra::rbac::enabled() {
+                SearchService::grpc_search::grpc_search_as_subject(
+                    &trace_id,
+                    org_id,
+                    stream_type,
+                    execution_subject.ok_or(alert::AlertError::PermissionDenied)?,
+                    &req,
+                )
+                .instrument(eval_span)
+                .await
+            } else {
+                SearchService::grpc_search::grpc_search(
+                    &trace_id,
+                    org_id,
+                    stream_type,
+                    None,
+                    &req,
+                    Some(RoleGroup::Background),
+                )
+                .instrument(eval_span)
+                .await
+            }
         };
 
         // Resp hits can be of two types -
@@ -2116,6 +2147,76 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn rbac_rejects_alert_execution_without_scoped_identity() {
+        use super::alert::{AlertError, AlertExt};
+
+        if std::env::var_os("O2_ALERT_RBAC_TEST_CHILD").is_none() {
+            assert!(!infra::rbac::enabled());
+            assert!(
+                QueryCondition::default()
+                    .evaluate_realtime(None)
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                config::meta::alerts::alert::Alert::default()
+                    .send_notification("test", &[], 0, None, 0, None, None, None, &[], None)
+                    .await
+                    .is_ok()
+            );
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "alerts::tests::rbac_rejects_alert_execution_without_scoped_identity",
+                    "--nocapture",
+                ])
+                .env("O2_ALERT_RBAC_TEST_CHILD", "1")
+                .env("ZO_RBAC_ENABLED", "true")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert!(infra::rbac::enabled());
+        let query = QueryCondition::default();
+        assert!(query.evaluate_realtime(None).await.is_err());
+        assert!(
+            query
+                .evaluate_scheduled(
+                    "default",
+                    None,
+                    StreamType::Logs,
+                    &TriggerCondition::default(),
+                    (None, 0),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        let alert = config::meta::alerts::alert::Alert::default();
+        assert!(alert.evaluate(None, (None, 0), None).await.is_err());
+        assert!(matches!(
+            alert
+                .send_notification("test", &[], 0, None, 0, None, None, None, &[], None)
+                .await,
+            Err(AlertError::PermissionDenied)
+        ));
+        let recovery = serde_json::from_value(serde_json::json!({
+            "org_id": "default", "alert_id": "legacy", "group_key": "",
+            "episode_id": "queued", "opened_at": 0, "recovered_at": 1,
+            "emitted_at": 1
+        }))
+        .unwrap();
+        assert!(matches!(
+            super::alert::send_recovery_notification(&alert, &recovery).await,
+            Err(AlertError::PermissionDenied)
+        ));
+    }
 
     #[test]
     fn a_count_from_a_partial_response_is_refused_unless_its_errors_are_permissible() {

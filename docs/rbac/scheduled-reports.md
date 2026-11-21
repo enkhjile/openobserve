@@ -1,0 +1,23 @@
+# Scoped visual scheduled reports
+
+Enabled RBAC keeps standalone report-server requests denied. The local browser renderer may run only with a server-bound author UUID, an explicitly configured non-root renderer UUID belonging to exactly one organization, one exact dashboard/tab, and named approved email destinations.
+
+The renderer's complete grant set must be Viewer on that dashboard plus Exporter on explicit named streams. No other dashboards, wildcard resources, organization roles or other privileges are accepted. Every stream must also have the author's current Query and Export rights and an approval binding the recipient destination's current primary configuration. Configuration does not grant permissions automatically.
+
+The initial supported shape is a v8 dashboard with ordinary SQL charts/tables. HTML, Markdown, custom chart scripts, VRL, UDFs, annotation sources, dashboard variables, external assets/links, user-defined workers/frames and arbitrary API origins are unsupported. A fresh browser profile uses network interception before navigation, an exact same-origin route allowlist and restrictive document policy. Any denied/failed query, partial rendering, unrecognized data request, revision change or recipient drift aborts before email.
+
+Persist context as nullable SQL text; legacy reports without context remain denied until an authorized edit. Read primary report/dashboard definitions and current policy before rendering and again before dispatch. Recipients come only from primary approved email destinations; raw recipients must match them exactly. Disabled behavior remains unchanged.
+
+Deployment limitation: one configured renderer identity serves only reports compatible with its entire finite scope. Reports requiring different dashboards or source sets need separately configured renderer deployments/accounts; the application will not widen an account's grants to make a report run. The disposable report fixture verified that the rendered PDF includes the authorized row and that the scheduler stops delivering it after Export is revoked.
+
+Configure `ZO_REPORT_SERVER_URL=` explicitly for embedded rendering (the upstream default selects a standalone server), `ZO_CHROME_ENABLED=true`, a local `ZO_CHROME_PATH`, and dedicated `ZO_REPORT_USER_NAME`/`ZO_REPORT_USER_PASSWORD`. Configure SMTP separately. The destination API uses `emails` for approved recipient addresses; each recipient must be an existing organization member. Report requests use `deliveryDestinations` for approved destination names and retain `destinations: [{"email":"..."}]` as an exact-match compatibility check. A client-provided `executionContext` is ignored.
+
+Run the isolated verification with `python3 scripts/rbac/report_smoke.py --binary "$PWD/target/debug/openobserve" --acknowledge-disposable-fixture`. It starts only disposable localhost services and a local SMTP sink. A passing run must demonstrate a complete PDF plus permission-revocation denial; fixture setup alone is not proof of rendering support.
+
+The scoped local mode supports standard PDF attachments only; PNG/CSV, inline attachment and image-preview options are refused. The delivered PDF test requires `pdftotext` and checks for the authorized fixture row, in addition to validating its MIME type and PDF signature.
+
+The pinned Chromiumoxide decoder needed a compatibility patch for this workspace's arbitrary-precision JSON setting. Fractional Chrome lifecycle timestamps otherwise fail decoding and navigation stalls. The small vendored `chromiumoxide_types` crate retains its upstream licenses and revision; its README records the regression test and removal criteria. Do not disable arbitrary-precision JSON across OpenObserve to resolve a browser protocol issue.
+
+Scoped Chrome keeps its native sandbox and TLS certificate verification enabled; deployments must provide a compatible Chrome executable and operating-system user. The unsafe Chrome sandbox/TLS bypass options from legacy report mode are not used for scoped reports. Two known missing application-branding SVG requests receive an inert local SVG during scoped rendering; optional shell settings/folder requests receive a fixed denial. These exceptions never apply to dashboard definitions, schemas or query responses.
+
+The streaming parser is the sole permitted worker: its exact hashed URL comes from the embedded build inventory, and absence or ambiguity refuses rendering. The worker response uses `default-src 'none'; connect-src 'none'`; no blob/data workers or worker-origin wildcard is permitted. The post-login landing is an inert same-origin document, preventing unrelated Home data requests before the selected dashboard loads.

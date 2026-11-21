@@ -50,6 +50,7 @@ message SearchRequest {
     string          stream_type = 3;
     optional string     user_id = 4;
     bytes               request = 5;
+    optional string rbac_subject = 7;
 }
 
 message SearchResponse {

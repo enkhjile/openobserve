@@ -95,6 +95,39 @@ pub struct Sql {
 
 impl Sql {
     pub async fn new_from_req(req: &Request, query: &SearchQuery) -> Result<Sql, Error> {
+        if let Some(subject) = req.rbac_subject.as_deref() {
+            crate::rbac::authorize_subject_event(
+                &query.sql,
+                &req.org_id,
+                req.stream_type,
+                subject,
+                req.search_event_type
+                    .as_ref()
+                    .and_then(|s| s.parse::<SearchEventType>().ok()),
+            )
+            .await
+            .map_err(|e| {
+                Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+                    e.to_string(),
+                ))
+            })?;
+        } else {
+            crate::rbac::authorize(
+                &query.sql,
+                &req.org_id,
+                req.stream_type,
+                req.user_id.as_deref(),
+                req.search_event_type
+                    .as_ref()
+                    .and_then(|s| s.parse::<SearchEventType>().ok()),
+            )
+            .await
+            .map_err(|e| {
+                Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+                    e.to_string(),
+                ))
+            })?;
+        }
         let search_event_type = req
             .search_event_type
             .as_ref()
@@ -119,6 +152,23 @@ impl Sql {
         Self::new_with_options(query, org_id, stream_type, search_event_type, false).await
     }
 
+    pub async fn new_for_user(
+        query: &SearchQuery,
+        org_id: &str,
+        stream_type: StreamType,
+        search_event_type: Option<SearchEventType>,
+        user_id: Option<&str>,
+    ) -> Result<Sql, Error> {
+        crate::rbac::authorize(&query.sql, org_id, stream_type, user_id, search_event_type)
+            .await
+            .map_err(|e| {
+                Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+                    e.to_string(),
+                ))
+            })?;
+        Self::resolve(query, org_id, stream_type, search_event_type, false, None).await
+    }
+
     pub async fn new_with_options(
         query: &SearchQuery,
         org_id: &str,
@@ -126,6 +176,13 @@ impl Sql {
         search_event_type: Option<SearchEventType>,
         extract_patterns: bool,
     ) -> Result<Sql, Error> {
+        crate::rbac::authorize(&query.sql, org_id, stream_type, None, search_event_type)
+            .await
+            .map_err(|e| {
+                Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+                    e.to_string(),
+                ))
+            })?;
         Self::resolve(
             query,
             org_id,

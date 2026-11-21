@@ -267,7 +267,18 @@ impl TryFrom<SelectReportAndJoinRelationsResult> for (MetaFolder, MetaReport) {
 
         let org_id = report_folder_model.org.clone();
         let report_folder: MetaFolder = report_folder_model.into();
+        let execution_context: Option<config::meta::dashboards::reports::ReportExecutionContext> =
+            report_model
+                .execution_context
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?;
         let report = MetaReport {
+            delivery_destinations: execution_context
+                .as_ref()
+                .map(|ctx| ctx.destination_names.clone())
+                .unwrap_or_default(),
+            execution_context,
             name: report_model.name,
             title: report_model.title,
             org_id,

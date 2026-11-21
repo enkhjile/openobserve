@@ -52,6 +52,8 @@ mod hec;
 pub use hec::is_splunk_collector_route;
 use hec::{splunk_payload_too_large, splunk_server_busy};
 
+pub(crate) const RBAC_FORWARD_PREFIX: &str = "/internal/rbac/v1";
+
 /// Seconds a viewer waits after the router found no querier for a public dashboard read.
 const PUBLIC_RETRY_AFTER_SECS: &str = "5";
 
@@ -78,7 +80,7 @@ impl ProxyTarget {
     fn new(path: &str, node: &Node) -> Self {
         ProxyTarget {
             path: path.to_string(),
-            full_url: format!("{}{}", node.http_addr, path),
+            full_url: format!("{}{}", node.http_addr, forwarded_path(path)),
             node_addr: node
                 .http_addr
                 .replace("http://", "")
@@ -152,11 +154,27 @@ async fn route(req: Request, path: String, public_slug: Option<String>) -> Respo
         let group = Some(RoleGroup::Interactive);
         let payload = QuerierPayload::Empty;
         proxy_by_key(full_path, nodes, &slug, group, &headers, &payload, start).await
-    } else if cfg.common.result_cache_enabled && is_querier_route_by_body(&path) {
+    } else if !infra::rbac::enabled()
+        && cfg.common.result_cache_enabled
+        && is_querier_route_by_body(&path)
+    {
         proxy_with_body_routing(req, full_path, nodes, start).await
     } else {
         proxy_request(req, full_path, nodes, start).await
     }
+}
+
+fn forwarded_path(path: &str) -> String {
+    if !infra::rbac::enabled() {
+        return path.to_owned();
+    }
+    let base = get_config()
+        .common
+        .base_uri
+        .trim_end_matches('/')
+        .to_owned();
+    let path = path.strip_prefix(&base).unwrap_or(path);
+    format!("{base}{RBAC_FORWARD_PREFIX}{path}")
 }
 
 /// Resolves the candidate nodes for a given request path.
@@ -188,7 +206,7 @@ async fn resolve_candidates(path: &str, base_uri: &str) -> Result<(String, Vec<N
     }
 
     let nodes = order_nodes(nodes);
-    Ok((format!("{}{}", base_uri, path), nodes))
+    Ok((format!("{}{}", base_uri, api_path), nodes))
 }
 
 /// Orders the candidate nodes so the preferred node (per dispatch strategy) is
@@ -890,6 +908,12 @@ async fn read_payload_bytes(req: Request, request_type: &str) -> Result<Bytes, R
 pub fn create_router_routes() -> axum::Router {
     use axum::routing::any;
 
+    if infra::rbac::enabled() {
+        return axum::Router::new().nest(
+            "/api",
+            crate::handler::http::router::rbac_proxy_service_routes(),
+        );
+    }
     axum::Router::new()
         .route("/config", any(dispatch))
         .route("/config/{*path}", any(dispatch))

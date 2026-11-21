@@ -30,6 +30,11 @@ use tonic::{
 };
 
 pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    if infra::rbac::enabled() {
+        return Err(Status::permission_denied(
+            "RPC requires a scoped RBAC execution adapter",
+        ));
+    }
     check_auth_inner(req, false)
 }
 
@@ -39,6 +44,11 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
 /// logs, metrics, and traces services. Internal cluster RPCs use
 /// [`check_internal_auth`], so an ingestion token cannot authorize query or node APIs.
 pub fn check_otlp_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    if infra::rbac::enabled() {
+        return Err(Status::permission_denied(
+            "RPC requires a scoped RBAC execution adapter",
+        ));
+    }
     check_auth_inner(req, true)
 }
 
@@ -53,6 +63,11 @@ pub fn check_internal_auth(req: Request<()>) -> Result<Request<()>, Status> {
 
 /// Authenticate the internal ingest RPC: the internal token, or a feature writer's own org token.
 pub fn check_ingest_auth(mut req: Request<()>) -> Result<Request<()>, Status> {
+    if infra::rbac::enabled() {
+        return Err(Status::permission_denied(
+            "RPC requires a scoped RBAC execution adapter",
+        ));
+    }
     req.metadata_mut().remove(WRITER_METADATA_KEY);
     let token = auth_token(req.metadata())?;
     if is_internal_token(token) {

@@ -831,6 +831,46 @@ pub async fn handle_otlp_request(
         Some(name) => format_stream_name(name.to_string()),
         None => "default".to_owned(),
     };
+    let stream_param = StreamParams::new(org_id, &traces_stream_name, StreamType::Traces);
+    let executable_pipelines =
+        crate::ingestion::get_stream_executable_pipelines(&stream_param).await;
+    if infra::rbac::enabled() {
+        let resources = [infra::rbac::Resource::stream("traces", &traces_stream_name)];
+        let allowed = match &user {
+            IngestUser::User(email) => {
+                infra::rbac::allowed_resources(
+                    email,
+                    org_id,
+                    infra::rbac::Action::Ingest,
+                    &resources,
+                )
+                .await
+            }
+            IngestUser::OrgToken(principal) if principal.org_id == org_id => {
+                infra::rbac::allowed_ingestion_token_resources(
+                    org_id,
+                    &principal.token_id,
+                    &resources,
+                )
+                .await
+            }
+            _ => Err(anyhow::anyhow!("Scoped trace ingestion identity required")),
+        };
+        let has_pipeline =
+            infra::pipeline::execution::has_enabled_source(org_id, &traces_stream_name, "traces")
+                .await;
+        if !allowed.is_ok_and(|decisions| decisions == [true])
+            || !has_pipeline.is_ok_and(|present| !present)
+            || !executable_pipelines.is_empty()
+        {
+            return Ok(otlp_rejection_response(
+                req_type,
+                http::StatusCode::FORBIDDEN,
+                "Trace destination denied or pipeline lacks scoped execution",
+            ));
+        }
+    }
+
     // before anything that writes for the stream, so one that cannot be stored is never created
     if let Err(e) = schema::check_stream_key_len(org_id, StreamType::Traces, &traces_stream_name) {
         return Ok(otlp_rejection_response(
@@ -886,10 +926,6 @@ pub async fn handle_otlp_request(
     let mut has_db_spans = false;
     let db_enrich_opts = crate::db_monitoring::EnrichOptions::default();
 
-    // Start retrieving associated pipeline and construct pipeline params
-    let stream_param = StreamParams::new(org_id, &traces_stream_name, StreamType::Traces);
-    let executable_pipelines =
-        crate::ingestion::get_stream_executable_pipelines(&stream_param).await;
     let mut stream_pipeline_inputs = Vec::new();
     // End pipeline params construction
 
@@ -2006,7 +2042,9 @@ async fn write_traces(
     let record_schema = Arc::new(record_schema);
     let schema_key = record_schema.hash_key();
 
-    if let Err(e) = time_index::write(org_id, stream_name, &json_data).await {
+    if !infra::rbac::enabled()
+        && let Err(e) = time_index::write(org_id, stream_name, &json_data).await
+    {
         metrics::TRACE_TIME_INDEX_OPERATIONS
             .with_label_values(&[org_id, "write", "error"])
             .inc();

@@ -274,6 +274,19 @@ pub async fn search_multi(
             return res;
         }
     }
+    if let Err(response) = authorize_multi(
+        &queries,
+        &multi_req,
+        &org_id,
+        stream_type,
+        user_id,
+        search_type,
+    )
+    .await
+    {
+        return response;
+    }
+
     let queries_len = queries.len();
     let mut vrl_stream_name = "".to_string();
     let mut sqls = vec![];
@@ -318,11 +331,12 @@ pub async fn search_multi(
 
         // Validate query fields if requested
         if validate_query
-            && let Err(e) = super::utils::validate_query_fields(
+            && let Err(e) = super::utils::validate_query_fields_for_user(
                 &org_id,
                 &stream_name,
                 stream_type,
                 &req.query.sql,
+                Some(user_id),
             )
             .await
         {
@@ -794,6 +808,20 @@ pub async fn _search_partition_multi(
 
     if let Err(e) = req.decode() {
         return MetaHttpResponse::bad_request(e);
+    }
+
+    if ::search::rbac::authorize_batch(
+        req.sql.iter().map(String::as_str),
+        &org_id,
+        stream_type,
+        Some(user_id),
+        None,
+        req.query_fn.is_some(),
+    )
+    .await
+    .is_err()
+    {
+        return MetaHttpResponse::forbidden("Batch search access denied");
     }
 
     #[cfg(not(feature = "enterprise"))]
@@ -1460,6 +1488,19 @@ pub async fn search_multi_stream(
         }
     }
 
+    if let Err(response) = authorize_multi(
+        &queries,
+        &multi_req,
+        &org_id,
+        stream_type,
+        &user_id,
+        search_type,
+    )
+    .await
+    {
+        return response;
+    }
+
     #[cfg(feature = "enterprise")]
     {
         let sqls = queries
@@ -1627,6 +1668,34 @@ pub async fn report_to_audit(
         })
         .await;
     }
+}
+
+async fn authorize_multi(
+    queries: &[search::Request],
+    multi_req: &search::MultiStreamRequest,
+    org: &str,
+    stream_type: StreamType,
+    user: &str,
+    event: Option<search::SearchEventType>,
+) -> Result<(), Response> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let event = if multi_req.search_type == Some(search::SearchEventType::Download) {
+        multi_req.search_type
+    } else {
+        event
+    };
+    ::search::rbac::authorize_batch(
+        queries.iter().map(|req| req.query.sql.as_str()),
+        org,
+        stream_type,
+        Some(user),
+        event,
+        multi_req.query_fn.is_some() || multi_req.sql.iter().any(|query| query.query_fn.is_some()),
+    )
+    .await
+    .map_err(|_| MetaHttpResponse::forbidden("Batch search access denied"))
 }
 
 #[cfg(test)]

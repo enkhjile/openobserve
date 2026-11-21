@@ -112,6 +112,104 @@ fn parse_metric_value(value: &json::Value) -> Result<json::Value, anyhow::Error>
     super::metric_value(raw).ok_or_else(|| anyhow!("invalid value, not a number"))
 }
 
+fn metric_destination(
+    stream_name: Option<&str>,
+    record: &json::Map<String, json::Value>,
+) -> Result<String> {
+    let stream_name = match stream_name {
+        Some(name) => format_stream_name(name.to_string()),
+        None => match record
+            .get(NAME_LABEL)
+            .ok_or_else(|| anyhow!("missing __name__"))?
+        {
+            json::Value::String(s) => format_stream_name(s.to_string()),
+            _ => {
+                return Err(anyhow::anyhow!("invalid __name__, need to be string"));
+            }
+        },
+    };
+    Ok(stream_name)
+}
+
+fn batch_destinations(
+    stream_name: Option<&str>,
+    records: &[json::Value],
+) -> Result<Vec<infra::rbac::Resource>> {
+    let mut names = HashSet::new();
+    for record in records {
+        let json::Value::Object(record) = flatten::flatten(record.clone())? else {
+            return Err(anyhow!("Metric record must be an object"));
+        };
+        names.insert(metric_destination(stream_name, &record)?);
+    }
+    Ok(names
+        .into_iter()
+        .map(|name| infra::rbac::Resource::stream("metrics", &name))
+        .collect())
+}
+
+async fn authorize_batch(
+    org_id: &str,
+    stream_name: Option<&str>,
+    records: &[json::Value],
+    user: &ingestion_common::IngestUser,
+    lookups: &mut StreamLookups,
+) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let denial = |message: String| {
+        infra::errors::Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(message))
+    };
+    let resources = batch_destinations(stream_name, records)?;
+    let decisions = match user {
+        ingestion_common::IngestUser::User(email) => {
+            let subject = infra::rbac::user_subject(email)
+                .await
+                .map_err(|e| denial(e.to_string()))?;
+            infra::rbac::allowed_subject_resources(
+                &subject,
+                org_id,
+                infra::rbac::Action::Ingest,
+                &resources,
+            )
+            .await
+        }
+        ingestion_common::IngestUser::OrgToken(principal) if principal.org_id == org_id => {
+            infra::rbac::allowed_ingestion_token_resources(org_id, &principal.token_id, &resources)
+                .await
+        }
+        _ => return Err(denial("Metrics ingestion requires a scoped identity".into()).into()),
+    }
+    .map_err(|e| denial(e.to_string()))?;
+    if decisions.len() != resources.len() || !decisions.into_iter().all(|allow| allow) {
+        return Err(denial("Metrics destination access denied".into()).into());
+    }
+    for resource in resources {
+        if infra::pipeline::execution::has_enabled_source(org_id, &resource.name, "metrics")
+            .await
+            .map_err(|e| denial(e.to_string()))?
+        {
+            return Err(
+                denial("Metrics pipelines require a scoped execution adapter".into()).into(),
+            );
+        }
+        let pipelines = crate::ingestion::get_stream_executable_pipelines(&StreamParams::new(
+            org_id,
+            &resource.name,
+            StreamType::Metrics,
+        ))
+        .await;
+        if !pipelines.is_empty() {
+            return Err(
+                denial("Metrics pipelines require a scoped execution adapter".into()).into(),
+            );
+        }
+        lookups.pipelines.insert(resource.name, pipelines);
+    }
+    Ok(())
+}
+
 /// Queues a validated record for its pipelines or its write, or says why its stream takes none.
 async fn buffer_record(
     org_id: &str,
@@ -125,18 +223,7 @@ async fn buffer_record(
     let json::Value::Object(mut record) = flatten::flatten(record)? else {
         unreachable!("flatten only returns an object")
     };
-    let stream_name = match stream_name {
-        Some(name) => format_stream_name(name.to_string()),
-        None => match record
-            .get(NAME_LABEL)
-            .ok_or_else(|| anyhow!("missing __name__"))?
-        {
-            json::Value::String(s) => format_stream_name(s.to_string()),
-            _ => {
-                return Err(anyhow::anyhow!("invalid __name__, need to be string"));
-            }
-        },
-    };
+    let stream_name = metric_destination(stream_name, &record)?;
     // keep the `__name__` column equal to the stream the record is written to;
     // otherwise `{__name__="..."}` selectors can never match the rows (same
     // policy as the OTLP writer)
@@ -467,6 +554,7 @@ pub async fn ingest(
 
     let window = ingest::IngestWindow::now();
     let reader: Vec<json::Value> = json::from_slice(&body)?;
+    authorize_batch(org_id, stream_name, &reader, &user, &mut lookups).await?;
     for record in reader {
         let skipped = buffer_record(
             org_id,
@@ -591,6 +679,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn metrics_batch_destinations_use_the_write_normalization_and_every_record() {
+        let records = vec![
+            json!({"__name__":"allowed.metric","value":1}),
+            json!({"__name__":"secret_metric","value":2}),
+            json!({"__name__":"allowed.metric","value":3}),
+        ];
+        let resources = batch_destinations(None, &records).unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().all(|r| r.stream_type == "metrics"));
+        assert!(
+            resources
+                .iter()
+                .any(|r| r.name == format_stream_name("allowed.metric".into()))
+        );
+        assert!(resources.iter().any(|r| r.name == "secret_metric"));
+        let forced = batch_destinations(Some("forced.metric"), &records).unwrap();
+        assert_eq!(forced.len(), 1);
+        assert_eq!(forced[0].name, format_stream_name("forced.metric".into()));
+        assert!(batch_destinations(None, &[json!({"value":1})]).is_err());
+        assert!(batch_destinations(None, &[json!({"__name__":42,"value":1})]).is_err());
+    }
 
     // cloud builds reject the unknown test org at the trial check
     #[cfg(not(feature = "cloud"))]

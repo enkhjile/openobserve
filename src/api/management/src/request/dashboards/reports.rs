@@ -602,6 +602,20 @@ pub async fn create_report_v2(
     axum::Json(mut report): axum::Json<Report>,
 ) -> Response {
     let folder_id = get_folder(uri.query().unwrap_or(""));
+    if infra::rbac::enabled() {
+        if !report.org_id.is_empty() && report.org_id != org_id {
+            return MetaHttpResponse::forbidden("Report organization mismatch");
+        }
+        report.org_id = org_id.clone();
+        if reports::scoped::bind(&mut report, &user_email.user_id, &folder_id)
+            .await
+            .is_err()
+        {
+            return MetaHttpResponse::forbidden(
+                "Unsupported or unauthorized scoped report configuration",
+            );
+        }
+    }
     if report.owner.is_empty() {
         report.owner = user_email.user_id.clone();
     }
@@ -652,8 +666,18 @@ pub async fn create_report_v2(
 pub async fn list_reports_v2(
     Path(org_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
+    let readable_ids = match infra::rbac::readable_object_ids(
+        &user_email.user_id,
+        &org_id,
+        infra::rbac::ResourceKind::Report,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+    };
     // Reuse the v1 list handler logic — it already reads ?folder as a filter.
     // Re-map the query key from "folder" to "folder_id" if needed by the service.
     let folder = query.get("folder").map(|s| s.to_owned());
@@ -697,6 +721,11 @@ pub async fn list_reports_v2(
     let data = match reports::list(&org_id, filters, _permitted).await {
         Ok(data) => ListReportsResponseBody(
             data.into_iter()
+                .filter(|d| {
+                    readable_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&d.report_id))
+                })
                 .map(|d| {
                     let scheduled_job = scheduled_jobs.remove(&d.report_id);
                     match ListReportsResponseBodyItem::try_from(d) {
@@ -807,6 +836,28 @@ pub async fn update_report_v2(
             .find(|(k, _)| k == "folder")
             .map(|(_, v)| v.into_owned())
     });
+    if infra::rbac::enabled() {
+        let (folder, _) = match reports::get_by_id(&org_id, &report_id).await {
+            Ok(value) => value,
+            Err(_) => return MetaHttpResponse::forbidden("Report authorization denied"),
+        };
+        if (!report.org_id.is_empty() && report.org_id != org_id)
+            || new_folder
+                .as_ref()
+                .is_some_and(|value| value != &folder.folder_id)
+        {
+            return MetaHttpResponse::forbidden("Scoped report moves are unsupported");
+        }
+        report.org_id = org_id.clone();
+        if reports::scoped::bind(&mut report, &user_id, &folder.folder_id)
+            .await
+            .is_err()
+        {
+            return MetaHttpResponse::forbidden(
+                "Unsupported or unauthorized scoped report configuration",
+            );
+        }
+    }
     // The route gate resolves `?folder=`, which HERE names the DESTINATION, so a
     // move is authorized against the folder it lands in and never against the one
     // it leaves. Check the source before honouring the move.

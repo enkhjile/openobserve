@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";
 import AddAlertView from "./AddAlertView.vue";
+import rbac from "@/services/rbac";
 import destinationService from "@/services/alert_destination";
 import alertsService from "@/services/alerts";
 import templateService from "@/services/alert_templates";
@@ -16,6 +17,8 @@ import {
   writeEditorDraft,
   type EditorDraftScope,
 } from "@/utils/drafts/editorDraftStore";
+
+vi.mock("@/services/rbac", () => ({ default: { me: vi.fn() } }));
 
 vi.mock("@/lib/feedback/Toast/useToast", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/feedback/Toast/useToast")>()),
@@ -56,6 +59,7 @@ describe("AddAlertView.vue", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queryClient.clear();
+    vi.mocked(rbac.me).mockResolvedValue({ data: { enabled: false } } as never);
     vi.mocked(templateService.list).mockResolvedValue({ data: [] } as any);
 
     store = createStore({
@@ -85,6 +89,45 @@ describe("AddAlertView.vue", () => {
         },
       ],
     });
+  });
+
+  it("does not fetch destination or template configurations for an enabled non-admin", async () => {
+    vi.mocked(rbac.me).mockResolvedValue({ data: { enabled: true, can_manage: false } } as never);
+    const wrapper = mount(AddAlertView, {
+      global: { plugins: [store, router], stubs: { AddAlert: true } },
+    });
+    await flushPromises();
+    expect(destinationService.list).not.toHaveBeenCalled();
+    expect(templateService.list).not.toHaveBeenCalled();
+    expect(rbac.me).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("an old organization denial cannot clear the new organization's loaded configuration", async () => {
+    let resolveOld!: (value: any) => void;
+    vi.mocked(rbac.me)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOld = resolve;
+          }) as never,
+      )
+      .mockResolvedValueOnce({ data: { enabled: true, can_manage: true } } as never);
+    vi.mocked(destinationService.list).mockResolvedValue({
+      data: [{ name: "new destination" }],
+    } as any);
+    vi.mocked(templateService.list).mockResolvedValue({ data: [{ name: "new template" }] } as any);
+    const wrapper = mount(AddAlertView, {
+      global: { plugins: [store, router], stubs: { AddAlert: true } },
+    });
+    store.state.selectedOrganization.identifier = "new-org";
+    await flushPromises();
+    resolveOld({ data: { enabled: true, can_manage: false } });
+    await flushPromises();
+    const form = wrapper.findComponent({ name: "AddAlert" });
+    expect(form.props("destinations")).toEqual([{ name: "new destination" }]);
+    expect(form.props("templates")).toEqual([{ name: "new template" }]);
+    wrapper.unmount();
   });
 
   it("should render AddAlert component when destinations are loaded", async () => {

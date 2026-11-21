@@ -157,7 +157,7 @@ pub type RwBTreeMap<K, V> = tokio::sync::RwLock<BTreeMap<K, V>>;
 // 156: add alert_incidents.last_detection_at, when a new detection joined a worked case.
 // 157: add alert_incident_alerts.labels and severity, create alert_pair_verdicts, and delete
 //      service_streams rows named by the metric-name label that list no trace stream.
-pub const DB_SCHEMA_VERSION: u64 = 157;
+pub const DB_SCHEMA_VERSION: u64 = 160;
 pub const DB_SCHEMA_KEY: &str = "/db_schema_version/";
 
 // global version variables
@@ -2138,6 +2138,10 @@ pub struct Search {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Common {
+    #[env_config(name = "ZO_RBAC_ENABLED", default = false)]
+    pub rbac_enabled: bool,
+    #[env_config(name = "ZO_RBAC_POLICY_CACHE_ENTRIES", default = 64)]
+    pub rbac_policy_cache_entries: usize,
     #[env_config(name = "ZO_LOCAL_MODE", default = true)]
     pub local_mode: bool,
     // ZO_LOCAL_MODE_STORAGE is ignored when ZO_LOCAL_MODE is set to false

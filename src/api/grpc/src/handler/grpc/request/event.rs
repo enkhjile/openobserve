@@ -102,7 +102,7 @@ impl Event for Eventer {
             }
 
             // Try batch download first
-            if get_config().cache_latest_files.download_from_node {
+            if cfg.cache_latest_files.download_from_node && !infra::rbac::enabled() {
                 let failed_files = download_from_peer(&grpc_addr, files_to_download).await;
 
                 // Fallback to individual downloads for failed files
@@ -186,6 +186,11 @@ impl Event for Eventer {
         &self,
         request: Request<SimpleFileList>,
     ) -> Result<Response<Self::GetFilesStream>, Status> {
+        if infra::rbac::enabled() {
+            return Err(Status::permission_denied(
+                "Scoped execution identity required",
+            ));
+        }
         let file_list = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 

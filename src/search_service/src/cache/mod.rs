@@ -101,13 +101,37 @@ pub async fn search(
     dashboard_info: Option<DashboardInfo>,
     is_multi_stream_search: bool,
 ) -> Result<search::Response, Error> {
+    ::search::rbac::authorize(
+        &in_req.query.sql,
+        org_id,
+        stream_type,
+        user_id.as_deref(),
+        in_req.search_type,
+    )
+    .await
+    .map_err(|e| {
+        Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+            e.to_string(),
+        ))
+    })?;
+    if infra::rbac::enabled() && in_req.query.query_fn.is_some() {
+        return Err(Error::ErrorCode(
+            infra::errors::ErrorCodes::AuthorizationDenied(
+                "Query transforms require a scoped adapter".into(),
+            ),
+        ));
+    }
     let start = std::time::Instant::now();
     let started_at = Utc::now().timestamp_micros();
     let cfg = get_config();
-    let cache_mode = match CacheMode::from_request(in_req) {
-        // a streaming partition is cached as part of the merged page, never on its own
-        CacheMode::Refresh if is_http2_streaming => CacheMode::Bypass,
-        mode => mode,
+    let cache_mode = if infra::rbac::enabled() {
+        CacheMode::Bypass
+    } else {
+        match CacheMode::from_request(in_req) {
+            // a streaming partition is cached as part of the merged page, never on its own
+            CacheMode::Refresh if is_http2_streaming => CacheMode::Bypass,
+            mode => mode,
+        }
     };
 
     let mut req = in_req.clone();
@@ -136,8 +160,15 @@ pub async fn search(
     }
 
     // Result caching check start
-    let (mut c_resp, should_exec_query) =
-        prepare_cache_response(trace_id, org_id, stream_type, &mut req, cache_mode).await?;
+    let (mut c_resp, should_exec_query) = prepare_cache_response(
+        trace_id,
+        org_id,
+        stream_type,
+        &mut req,
+        cache_mode,
+        user_id.as_deref(),
+    )
+    .await?;
     let file_path = c_resp.file_path.clone();
 
     // get the modified original sql from req
@@ -500,7 +531,13 @@ pub async fn prepare_cache_response(
     stream_type: StreamType,
     req: &mut search::Request,
     cache_mode: CacheMode,
+    user_id: Option<&str>,
 ) -> Result<(MultiCachedQueryResponse, bool), Error> {
+    let cache_mode = if infra::rbac::enabled() {
+        CacheMode::Bypass
+    } else {
+        cache_mode
+    };
     let mut origin_sql = req.query.sql.clone();
     let is_complex_query = is_complex_query(&origin_sql).unwrap_or(true);
     let stream_name = match resolve_stream_names(&origin_sql) {
@@ -535,13 +572,16 @@ pub async fn prepare_cache_response(
 
     // Parse SQL first to get metadata needed for normalization
     let query: SearchQuery = req.query.clone().try_into()?;
-    let mut sql = match crate::Sql::new(&query, org_id, stream_type, req.search_type).await {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("Error parsing sql: {e}");
-            return Ok((MultiCachedQueryResponse::default(), true));
-        }
-    };
+    let mut sql =
+        match crate::Sql::new_for_user(&query, org_id, stream_type, req.search_type, user_id).await
+        {
+            Ok(v) => v,
+            Err(e) if infra::rbac::enabled() => return Err(e),
+            Err(e) => {
+                log::error!("Error parsing sql: {e}");
+                return Ok((MultiCachedQueryResponse::default(), true));
+            }
+        };
 
     // Normalize histogram interval in SQL before computing hash
     // This ensures the hash is consistent regardless of when handle_histogram is called
@@ -1310,6 +1350,196 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn rbac_cache_preparation_rejects_missing_identity() {
+        if std::env::var("O2_RBAC_CACHE_CHILD").as_deref() != Ok("1") {
+            let directory =
+                std::env::temp_dir().join(format!("rbac-cache-{}", config::ider::uuid()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "rbac_cache_preparation_rejects_missing_identity",
+                    "--nocapture",
+                ])
+                .env("O2_RBAC_CACHE_CHILD", "1")
+                .env("ZO_RBAC_ENABLED", "true")
+                .env("ZO_LOCAL_MODE", "true")
+                .env("ZO_META_STORE", "sqlite")
+                .env("ZO_DATA_DIR", directory.join("data"))
+                .current_dir(&directory)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+        let mut request = search::Request::default();
+        request.query.sql = "SELECT _timestamp FROM t ORDER BY _timestamp ASC".into();
+        assert!(
+            prepare_cache_response(
+                "rbac-cache",
+                "org",
+                StreamType::Logs,
+                &mut request,
+                CacheMode::ReadWrite,
+                None
+            )
+            .await
+            .is_err()
+        );
+        verify_scoped_cache_metadata().await;
+    }
+
+    async fn verify_scoped_cache_metadata() {
+        use arrow_schema::{DataType, Field, Schema};
+        use infra::{
+            rbac::{Grant, Resource, Role},
+            schema::{STREAM_SCHEMAS_LATEST, SchemaCache},
+        };
+
+        infra::db::create_table().await.unwrap();
+        infra::table::create_user_tables().await.unwrap();
+        infra::table::organizations::add(
+            "org",
+            "Cache fixture",
+            config::meta::organization::OrganizationType::Default,
+        )
+        .await
+        .unwrap();
+        for (email, root) in [("root@cache.test", true), ("viewer@cache.test", false)] {
+            infra::table::users::add(infra::table::users::UserRecord {
+                email: email.into(),
+                first_name: "".into(),
+                last_name: "".into(),
+                password: "".into(),
+                salt: "".into(),
+                is_root: root,
+                password_ext: None,
+                user_type: config::meta::user::UserType::Internal,
+                created_at: 0,
+                updated_at: 0,
+                must_reset_password: false,
+                password_reset_reason: None,
+                flagged_at: None,
+                password_updated_at: None,
+            })
+            .await
+            .unwrap();
+        }
+        infra::table::org_users::add(
+            "org",
+            "viewer@cache.test",
+            config::meta::user::UserRole::Viewer,
+            "fixture-token",
+            None,
+        )
+        .await
+        .unwrap();
+        let original = infra::rbac::bootstrap("root@cache.test", "org")
+            .await
+            .unwrap();
+        let mut grants = original.grants.clone();
+        grants.push(Grant {
+            subject: infra::rbac::user_subject("viewer@cache.test")
+                .await
+                .unwrap(),
+            role: Role::Viewer,
+            resources: vec![Resource::stream("logs", "t")],
+        });
+        infra::rbac::replace_policy("root@cache.test", "org", original.version, grants)
+            .await
+            .unwrap();
+        STREAM_SCHEMAS_LATEST.write().await.insert(
+            "org/logs/t".into(),
+            SchemaCache::new(Schema::new(vec![Field::new(
+                TIMESTAMP_COL_NAME,
+                DataType::Int64,
+                false,
+            )])),
+        );
+        for (sql, column, expected) in [
+            (
+                "SELECT _timestamp FROM t ORDER BY _timestamp ASC",
+                "_timestamp",
+                [10, 20, 30],
+            ),
+            (
+                "SELECT histogram(_timestamp, '1 hour', '+00:00') AS ts, count(*) AS c FROM t GROUP BY ts ORDER BY ts ASC",
+                "ts",
+                [10, 20, 30],
+            ),
+            (
+                "SELECT histogram(_timestamp, '1 hour', '+08:00') AS ts, count(*) AS c FROM t GROUP BY ts ORDER BY c DESC",
+                "ts",
+                [20, 10, 30],
+            ),
+        ] {
+            let mut request = search::Request {
+                query: search::Query {
+                    sql: sql.into(),
+                    start_time: 1_735_689_600_000_000,
+                    end_time: 1_735_776_000_000_000,
+                    size: 100,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let (prepared, execute) = prepare_cache_response(
+                "scoped",
+                "org",
+                StreamType::Logs,
+                &mut request,
+                CacheMode::ReadWrite,
+                Some("viewer@cache.test"),
+            )
+            .await
+            .unwrap();
+            assert!(execute);
+            assert!(prepared.file_path.is_empty());
+            assert!(!prepared.has_cached_data && !prepared.cache_query_response);
+            assert_eq!(prepared.ts_column, column);
+            let mut response = search::Response {
+                hits: vec![
+                    json::json!({(column): 20, "c": 3}),
+                    json::json!({(column): 30, "c": 1}),
+                    json::json!({(column): 10, "c": 2}),
+                ],
+                ..Default::default()
+            };
+            sort_response(
+                prepared.is_descending,
+                &mut response,
+                &prepared.ts_column,
+                &prepared.order_by,
+            );
+            assert_eq!(
+                response
+                    .hits
+                    .iter()
+                    .map(|hit| hit[column].as_i64().unwrap())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        infra::rbac::replace_policy("root@cache.test", "org", 2, original.grants)
+            .await
+            .unwrap();
+        let mut request = search::Request::default();
+        request.query.sql = "SELECT _timestamp FROM t".into();
+        assert!(
+            prepare_cache_response(
+                "revoked",
+                "org",
+                StreamType::Logs,
+                &mut request,
+                CacheMode::ReadWrite,
+                Some("viewer@cache.test")
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_prepare_histogram_response_ordering() {
         use arrow_schema::{DataType, Field, Schema};
         use infra::schema::{STREAM_SCHEMAS_LATEST, SchemaCache};
@@ -1356,6 +1586,7 @@ mod tests {
                         StreamType::Logs,
                         &mut req,
                         mode,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -1465,6 +1696,7 @@ mod tests {
                     StreamType::Logs,
                     &mut req,
                     mode,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1568,7 +1800,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (prepared, should_exec_query) =
-                    prepare_cache_response(org_id, org_id, StreamType::Logs, &mut req, mode)
+                    prepare_cache_response(org_id, org_id, StreamType::Logs, &mut req, mode, None)
                         .await
                         .unwrap();
                 let case = format!("sql={sql}, mode={mode:?}");
@@ -1671,7 +1903,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (prepared, should_exec_query) =
-                    prepare_cache_response(org_id, org_id, stream_type, &mut req, mode)
+                    prepare_cache_response(org_id, org_id, stream_type, &mut req, mode, None)
                         .await
                         .unwrap();
                 let case = format!("{name}, mode={mode:?}");

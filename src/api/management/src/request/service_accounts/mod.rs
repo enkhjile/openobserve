@@ -228,6 +228,13 @@ pub async fn update(
 
     let email_id = email_id.trim().to_string();
 
+    if openobserve_core::organization::validate_rbac_service_account_target(&org_id, &email_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Service account target is not permitted");
+    }
+
     // Check if this is a system service account - prefer role-based check over email pattern
     // matching
     if let Ok(user_record) = db::org_users::get(&org_id, &email_id).await {
@@ -253,10 +260,6 @@ pub async fn update(
     };
 
     if rotate_token {
-        // Non-enterprise: no RBAC middleware, so enforce Admin/Root role explicitly here.
-        // Enterprise without OpenFGA: same — middleware is a no-op, so enforce here.
-        // Enterprise with OpenFGA enabled: RBAC middleware already verified the caller has
-        // permission before the handler was invoked, so no additional check is needed.
         #[cfg(not(feature = "enterprise"))]
         let needs_role_check = true;
         #[cfg(feature = "enterprise")]

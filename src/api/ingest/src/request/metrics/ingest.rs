@@ -70,12 +70,15 @@ use crate::{
 pub async fn json(
     Path(org_id): Path<String>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     body: Bytes,
 ) -> Response {
     // log start processing time
     let process_time = get_process_time();
 
-    let user = IngestUser::from_user_email(&user_email.user_id);
+    let user = principal
+        .map(|axum::Extension(p)| IngestUser::OrgToken(p))
+        .unwrap_or_else(|| IngestUser::from_user_email(&user_email.user_id));
 
     #[cfg(feature = "cloud")]
     if let Err(e) = check_ingestion_allowed(&org_id, StreamType::Metrics, None).await {
@@ -96,7 +99,13 @@ pub async fn json(
         }
         Err(e) => {
             log::error!("Error processing request {org_id}/metrics/_json: {e}");
-            MetaHttpResponse::bad_request(e)
+            if e.downcast_ref::<infra::errors::Error>()
+                .is_some_and(|e| e.http_status() == 403)
+            {
+                MetaHttpResponse::forbidden(e)
+            } else {
+                MetaHttpResponse::bad_request(e)
+            }
         }
     };
 

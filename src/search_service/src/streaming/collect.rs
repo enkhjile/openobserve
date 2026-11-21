@@ -54,11 +54,12 @@ pub async fn search_partition_mode(
     }
 
     // partition scan direction follows the query's ORDER BY
-    let sql = crate::sql::Sql::new(
+    let sql = crate::sql::Sql::new_for_user(
         &req.query.clone().try_into()?,
         org_id,
         stream_type,
         req.search_type,
+        Some(user_id),
     )
     .await?;
     let req_order_by = sql.order_by.first().map(|v| v.1).unwrap_or_default();

@@ -58,18 +58,44 @@ impl Search for Searcher {
         let request = json::from_slice::<search::Request>(&req.request)
             .map_err(|e| Status::internal(format!("failed to parse search request: {e}")))?;
         let stream_type = StreamType::from(req.stream_type.as_str());
-        let ret = SearchService::cache::search(
-            &req.trace_id,
-            &req.org_id,
-            stream_type,
-            req.user_id.clone(),
-            &request,
-            "".to_string(),
-            false,
-            None,
-            false,
-        )
-        .await;
+
+        let ret = if let Some(subject) = req.rbac_subject.as_deref() {
+            SearchService::search_as_subject(
+                &req.trace_id,
+                &req.org_id,
+                stream_type,
+                subject,
+                &request,
+            )
+            .await
+        } else {
+            ::search::rbac::authorize(
+                &request.query.sql,
+                &req.org_id,
+                stream_type,
+                req.user_id.as_deref(),
+                request.search_type,
+            )
+            .await
+            .map_err(|e| Status::permission_denied(e.to_string()))?;
+            if infra::rbac::enabled() && request.query.query_fn.is_some() {
+                return Err(Status::permission_denied(
+                    "Query transforms require a scoped adapter",
+                ));
+            }
+            SearchService::cache::search(
+                &req.trace_id,
+                &req.org_id,
+                stream_type,
+                req.user_id.clone(),
+                &request,
+                "".to_string(),
+                false,
+                None,
+                false,
+            )
+            .await
+        };
 
         match ret {
             Ok(mut ret) => {
@@ -161,6 +187,11 @@ impl Search for Searcher {
         &self,
         req: Request<GetTableRequest>,
     ) -> Result<Response<GetTableResponse>, Status> {
+        if infra::rbac::enabled() {
+            return Err(Status::permission_denied(
+                "Table retrieval requires a scoped RBAC execution identity",
+            ));
+        }
         let path = req.into_inner().path;
         if !::search::datafusion::distributed::codec::is_join_result_path(&path) {
             return Err(Status::invalid_argument("invalid table path"));
@@ -299,6 +330,11 @@ impl Search for Searcher {
         &self,
         req: Request<GetSourcemapFileRequest>,
     ) -> Result<Response<GetSourcemapFileResponse>, Status> {
+        if infra::rbac::enabled() {
+            return Err(Status::permission_denied(
+                "Scoped execution identity required",
+            ));
+        }
         let req = req.into_inner();
         log::info!(
             "got get request for sourcemap file : {}/{} at {}",
@@ -485,8 +521,10 @@ impl Search for Searcher {
     }
 }
 
-/// A 503 stays decodable by the caller; other errors keep the text callers already parse.
 fn search_error_status(e: &infra::errors::Error, context: &str) -> Status {
+    if matches!(e, infra::errors::Error::ErrorCode(code) if code.http_status() == 403) {
+        return Status::permission_denied("Access denied");
+    }
     e.to_unavailable_status()
         .unwrap_or_else(|| Status::internal(format!("{context}: {e}")))
 }

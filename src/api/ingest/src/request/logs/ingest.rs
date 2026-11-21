@@ -211,6 +211,7 @@ pub async fn bulk(
 pub async fn multi(
     Path((org_id, stream_name)): Path<(String, String)>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     body: Bytes,
 ) -> Response {
     let user_email = &user_email.user_id;
@@ -229,7 +230,9 @@ pub async fn multi(
         &org_id,
         &stream_name,
         IngestionRequest::Multi(body),
-        IngestUser::from_user_email(user_email.clone()),
+        principal
+            .map(|axum::Extension(p)| IngestUser::OrgToken(p))
+            .unwrap_or_else(|| IngestUser::from_user_email(user_email.clone())),
         None,
         false,
     )
@@ -244,7 +247,12 @@ pub async fn multi(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_multi: {e}");
             }
-            if matches!(e, infra::errors::Error::ResourceError(_)) {
+            if matches!(
+                e,
+                infra::errors::Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(_))
+            ) {
+                MetaHttpResponse::forbidden(e.to_string())
+            } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(MetaHttpResponse::error(StatusCode::SERVICE_UNAVAILABLE, e)),
@@ -295,6 +303,7 @@ pub async fn multi(
 pub async fn json(
     Path((org_id, stream_name)): Path<(String, String)>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     body: Bytes,
 ) -> Response {
     let user_email = &user_email.user_id;
@@ -313,7 +322,9 @@ pub async fn json(
         &org_id,
         &stream_name,
         IngestionRequest::JSON(body),
-        IngestUser::from_user_email(user_email.clone()),
+        principal
+            .map(|axum::Extension(p)| IngestUser::OrgToken(p))
+            .unwrap_or_else(|| IngestUser::from_user_email(user_email.clone())),
         None,
         false,
     )
@@ -328,7 +339,12 @@ pub async fn json(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_json: {e}");
             }
-            if matches!(e, infra::errors::Error::ResourceError(_)) {
+            if matches!(
+                e,
+                infra::errors::Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(_))
+            ) {
+                MetaHttpResponse::forbidden(e.to_string())
+            } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(MetaHttpResponse::error(StatusCode::SERVICE_UNAVAILABLE, e)),

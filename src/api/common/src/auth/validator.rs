@@ -160,6 +160,7 @@ pub struct AuthValidationResult {
     pub is_internal_user: bool,
     /// Name of the org ingestion token the request authenticated with.
     pub token_name: Option<String>,
+    pub ingestion_principal: Option<config::meta::user::OrgIngestionPrincipal>,
     pub delegation: Option<super::delegation::DelegatedCaller>,
 }
 
@@ -210,6 +211,38 @@ pub async fn validator(
 ) -> Result<AuthValidationResult, AuthError> {
     let uri_path = req_data.uri.path();
     let path = routed_path(uri_path.strip_prefix(path_prefix).unwrap_or(uri_path));
+    if infra::rbac::enabled()
+        && password
+            .trim()
+            .starts_with(infra::table::org_ingestion_tokens::ORG_INGESTION_TOKEN_PREFIX)
+    {
+        if !ingestion_routes::is_ingestion_write(&req_data.method, path, req_data.route.as_deref())
+        {
+            return Err(AuthError::Forbidden(
+                "Ingestion credential cannot access this route".into(),
+            ));
+        }
+        let columns: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
+        let org = org_from_path(&columns);
+        let row =
+            infra::table::org_ingestion_tokens::find_enabled_token_primary(org, password.trim())
+                .await
+                .map_err(|_| {
+                    AuthError::Forbidden("Ingestion credential verification failed".into())
+                })?
+                .ok_or_else(|| AuthError::Unauthorized("Invalid ingestion credential".into()))?;
+        return Ok(AuthValidationResult {
+            user_email: String::new(),
+            user_role: None,
+            is_internal_user: false,
+            token_name: Some(row.name),
+            ingestion_principal: Some(config::meta::user::OrgIngestionPrincipal {
+                org_id: row.org_id,
+                token_id: row.id,
+            }),
+            delegation: None,
+        });
+    }
     match if auth_info.auth.starts_with("{\"auth_ext\":") {
         let auth_token: AuthTokensExt =
             config::utils::json::from_str(&auth_info.auth).unwrap_or_default();
@@ -231,8 +264,15 @@ pub async fn validator(
         Ok(res) => {
             if res.is_valid {
                 // Check and create organization if needed
-                check_and_create_org(user_id, &req_data.method, path, req_data.route.as_deref())
+                if !infra::rbac::enabled() {
+                    check_and_create_org(
+                        user_id,
+                        &req_data.method,
+                        path,
+                        req_data.route.as_deref(),
+                    )
                     .await?;
+                }
 
                 #[cfg(feature = "enterprise")]
                 let path = path.to_owned();
@@ -248,6 +288,7 @@ pub async fn validator(
                         user_email: res.user_email,
                         user_role: res.user_role,
                         is_internal_user: res.is_internal_user,
+                        ingestion_principal: None,
                         token_name: None,
                         delegation: None,
                     });
@@ -270,6 +311,7 @@ pub async fn validator(
                         user_email: res.user_email,
                         user_role: res.user_role,
                         is_internal_user: res.is_internal_user,
+                        ingestion_principal: None,
                         token_name,
                         delegation: None,
                     })
@@ -1175,6 +1217,7 @@ pub async fn validator_aws(req_data: &RequestData) -> Result<AuthValidationResul
                                 user_email: res.user_email,
                                 user_role: res.user_role,
                                 is_internal_user: res.is_internal_user,
+                                ingestion_principal: None,
                                 token_name: None,
                                 delegation: None,
                             })
@@ -1228,6 +1271,7 @@ pub async fn validator_gcp(req_data: &RequestData) -> Result<AuthValidationResul
                             user_email: res.user_email,
                             user_role: res.user_role,
                             is_internal_user: res.is_internal_user,
+                            ingestion_principal: None,
                             token_name: None,
                             delegation: None,
                         })
@@ -1311,6 +1355,7 @@ pub async fn validator_rum(req_data: &RequestData) -> Result<AuthValidationResul
                         user_email: user.email,
                         user_role: Some(user.role),
                         is_internal_user: !user.is_external,
+                        ingestion_principal: None,
                         token_name: None,
                         delegation: None,
                     })
@@ -1319,6 +1364,7 @@ pub async fn validator_rum(req_data: &RequestData) -> Result<AuthValidationResul
                         user_email: String::new(),
                         user_role: None,
                         is_internal_user: false,
+                        ingestion_principal: None,
                         token_name: None,
                         delegation: None,
                     })

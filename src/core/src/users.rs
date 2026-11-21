@@ -96,6 +96,16 @@ fn custom_roles_differ(requested: &[String], current: &[String]) -> bool {
     requested != current.iter().collect()
 }
 
+fn rbac_password_change_denied(
+    enabled: bool,
+    initiator: &str,
+    target: &str,
+    mode: &UserUpdateMode,
+    new_password: Option<&str>,
+) -> bool {
+    enabled && new_password.is_some() && (initiator != target || !mode.is_self_update())
+}
+
 fn redact_token(token: &str) -> String {
     if token.is_empty() {
         return String::new();
@@ -307,6 +317,18 @@ pub async fn update_user(
     let is_cloud = false;
     if !is_valid_email(email) {
         return Ok(MetaHttpResponse::bad_request("Invalid email"));
+    }
+    // A password belongs to the global identity, so an organization grant cannot reset it.
+    if rbac_password_change_denied(
+        infra::rbac::enabled(),
+        initiator_id,
+        email,
+        &update_mode,
+        user.new_password.as_deref(),
+    ) {
+        return Ok(MetaHttpResponse::forbidden(
+            "RBAC permits only a verified self password change",
+        ));
     }
     let is_email_root = is_root_user(email);
 
@@ -976,7 +998,7 @@ pub async fn list_users(
     list_all: bool,
 ) -> Result<Response, Error> {
     let mut user_list: Vec<UserResponse> = vec![];
-    let is_list_all = list_all & org_id.eq(META_ORG_ID);
+    let is_list_all = !infra::rbac::enabled() && list_all && org_id == META_ORG_ID;
     let mut user_orgs: HashMap<String, Vec<OrgRoleMapping>> = HashMap::new();
     log::debug!("Listing users for org: {org_id}");
 
@@ -1092,7 +1114,7 @@ pub async fn list_users(
 
     #[cfg(not(feature = "cloud"))]
     {
-        if !org_id.eq(DEFAULT_ORG) && role.is_none() {
+        if !infra::rbac::enabled() && !org_id.eq(DEFAULT_ORG) && role.is_none() {
             let root = ROOT_USER.get("root").unwrap();
             let root_user = root.value();
             user_list.push(UserResponse {
@@ -1716,6 +1738,83 @@ mod tests {
 
     // Mutex to ensure test setup is serialized to prevent race conditions
     static TEST_SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
+
+    #[test]
+    fn rbac_password_changes_cannot_cross_identity_boundaries() {
+        use UserUpdateMode::{CliUpdate, OtherUpdate, SelfUpdate};
+        for (enabled, initiator, target, mode, password, denied) in [
+            (
+                true,
+                "alice@example.com",
+                "bob@example.com",
+                OtherUpdate,
+                Some("new"),
+                true,
+            ),
+            (
+                true,
+                "root@example.com",
+                "bob@example.com",
+                OtherUpdate,
+                Some("new"),
+                true,
+            ),
+            (
+                true,
+                "alice@example.com",
+                "bob@example.com",
+                SelfUpdate,
+                Some("new"),
+                true,
+            ),
+            (
+                true,
+                "alice@example.com",
+                "alice@example.com",
+                OtherUpdate,
+                Some("new"),
+                true,
+            ),
+            (
+                true,
+                "alice@example.com",
+                "alice@example.com",
+                CliUpdate,
+                Some("new"),
+                true,
+            ),
+            (
+                true,
+                "alice@example.com",
+                "alice@example.com",
+                SelfUpdate,
+                Some("new"),
+                false,
+            ),
+            (
+                false,
+                "alice@example.com",
+                "bob@example.com",
+                OtherUpdate,
+                Some("new"),
+                false,
+            ),
+            (
+                true,
+                "alice@example.com",
+                "bob@example.com",
+                OtherUpdate,
+                None,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                rbac_password_change_denied(enabled, initiator, target, &mode, password),
+                denied,
+                "{enabled} {initiator} -> {target} {mode:?}"
+            );
+        }
+    }
 
     #[cfg(feature = "enterprise")]
     #[test]

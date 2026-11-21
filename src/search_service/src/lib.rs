@@ -115,6 +115,35 @@ pub async fn search(
     user_id: Option<String>,
     in_req: &search::Request,
 ) -> Result<search::Response, Error> {
+    search_with_identity(trace_id, org_id, stream_type, user_id, None, in_req).await
+}
+
+pub async fn search_as_subject(
+    trace_id: &str,
+    org_id: &str,
+    stream_type: StreamType,
+    subject: &str,
+    in_req: &search::Request,
+) -> Result<search::Response, Error> {
+    search_with_identity(
+        trace_id,
+        org_id,
+        stream_type,
+        None,
+        Some(subject.to_string()),
+        in_req,
+    )
+    .await
+}
+
+async fn search_with_identity(
+    trace_id: &str,
+    org_id: &str,
+    stream_type: StreamType,
+    user_id: Option<String>,
+    rbac_subject: Option<String>,
+    in_req: &search::Request,
+) -> Result<search::Response, Error> {
     let start = std::time::Instant::now();
     let started_at = now_micros();
 
@@ -149,6 +178,13 @@ pub async fn search(
     #[cfg(feature = "enterprise")]
     let req_clusters = in_req.clusters.clone();
 
+    if infra::rbac::enabled() && in_req.query.query_fn.is_some() {
+        return Err(Error::ErrorCode(
+            infra::errors::ErrorCodes::AuthorizationDenied(
+                "Query transforms require a scoped adapter".into(),
+            ),
+        ));
+    }
     let query: SearchQuery = in_req.query.clone().try_into()?;
     let req_query = query.clone();
     let mut request = config::datafusion::request::Request::new(
@@ -162,6 +198,7 @@ pub async fn search(
         in_req.query.histogram_interval,
         in_req.clear_cache,
     );
+    request.rbac_subject = rbac_subject;
     if in_req.query.streaming_output && !in_req.query.track_total_hits {
         request.set_streaming_output(true, in_req.query.streaming_id.clone());
     }
@@ -332,6 +369,13 @@ pub async fn search_multi(
     let started_at = Utc::now().timestamp_micros();
     let trace_id = leader_trace_id(trace_id);
 
+    if infra::rbac::enabled() && multi_req.query_fn.is_some() {
+        return Err(Error::ErrorCode(
+            infra::errors::ErrorCodes::AuthorizationDenied(
+                "Query transforms require a scoped adapter".into(),
+            ),
+        ));
+    }
     let mut per_query_resp = multi_req.per_query_response;
 
     let mut query_fn = multi_req
@@ -363,6 +407,21 @@ pub async fn search_multi(
             return Err(Error::Message(format!("decode sql error: {e:?}")));
         }
     }
+    ::search::rbac::authorize_batch(
+        queries.iter().map(|req| req.query.sql.as_str()),
+        org_id,
+        stream_type,
+        user_id.as_deref(),
+        multi_req.search_type,
+        multi_req.query_fn.is_some() || multi_req.sql.iter().any(|query| query.query_fn.is_some()),
+    )
+    .await
+    .map_err(|_| {
+        Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
+            "Batch search access denied".into(),
+        ))
+    })?;
+
     let queries_len = queries.len();
     let mut stream_names = vec![];
     let mut sqls = vec![];
@@ -598,7 +657,7 @@ pub async fn search_partition(
 
     let role_group = req.search_type.map(RoleGroup::from);
 
-    let ctx = PartitionSqlContext::new(req, org_id, stream_type).await?;
+    let ctx = PartitionSqlContext::new(req, org_id, stream_type, user_id).await?;
 
     let stream_files = collect_stream_files(trace_id, user_id, &ctx).await?;
 

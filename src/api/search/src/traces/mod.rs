@@ -72,6 +72,17 @@ pub(crate) async fn check_stream_permissions(
     stream_name: &str,
     user_id: &str,
 ) -> Option<Response> {
+    if infra::rbac::enabled()
+        && let Err(error) = infra::rbac::authorize_user(
+            user_id,
+            org_id,
+            infra::rbac::Action::Query,
+            infra::rbac::Resource::stream("traces", stream_name),
+        )
+        .await
+    {
+        return Some(MetaHttpResponse::forbidden(error));
+    }
     #[cfg(feature = "enterprise")]
     {
         return openobserve_core::authz::check_stream_permissions(
@@ -145,12 +156,15 @@ pub(crate) async fn check_sql_permissions(
 pub async fn traces_write(
     Path(org_id): Path<String>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let process_time = get_process_time();
 
-    let user = ingestion_common::IngestUser::from_user_email(&user_email.user_id);
+    let user = principal
+        .map(|axum::Extension(p)| ingestion_common::IngestUser::OrgToken(p))
+        .unwrap_or_else(|| ingestion_common::IngestUser::from_user_email(&user_email.user_id));
 
     let cfg = get_config();
     let content_type = headers
@@ -177,6 +191,13 @@ pub async fn traces_write(
         .get(&cfg.grpc.org_header_key)
         .map(|header| header.to_str().ok())
     {
+        if infra::rbac::enabled() && v != org_id {
+            return otlp_rejection_response(
+                req_type,
+                http::StatusCode::FORBIDDEN,
+                "Organization header does not match route",
+            );
+        }
         v.to_string()
     } else {
         org_id
@@ -507,6 +528,7 @@ mod tests {
             Headers(UserEmail {
                 user_id: "a@a.com".to_string(),
             }),
+            None,
             headers,
             Bytes::from_static(body),
         )

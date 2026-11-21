@@ -626,6 +626,33 @@ pub async fn list(
     )
     .await;
 
+    if infra::rbac::enabled() {
+        let resources: Vec<_> = indices
+            .iter()
+            .map(|stream| {
+                infra::rbac::Resource::stream(&stream.stream_type.to_string(), &stream.name)
+            })
+            .collect();
+        let decisions = match infra::rbac::allowed_resources(
+            &_user_email.user_id,
+            &org_id,
+            infra::rbac::Action::Read,
+            &resources,
+        )
+        .await
+        {
+            Ok(decisions) => decisions,
+            Err(_) => {
+                return MetaHttpResponse::forbidden("Organization RBAC policy is unavailable");
+            }
+        };
+        indices = indices
+            .into_iter()
+            .zip(decisions)
+            .filter_map(|(stream, allowed)| allowed.then_some(stream))
+            .collect();
+    }
+
     // The AI chat-events stream is internal: readable only through the Chat
     // API, so it is not offered in the streams UI/API either.
     indices

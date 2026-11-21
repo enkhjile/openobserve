@@ -71,7 +71,11 @@ impl Pipeline {
             nodes: meta_pipeline.nodes,
             edges: meta_pipeline.edges,
             paused_at,
-            last_error,
+            last_error: if infra::rbac::enabled() {
+                None
+            } else {
+                last_error
+            },
         }
     }
 }
@@ -130,6 +134,51 @@ mod tests {
     use config::meta::{pipeline::components::DerivedStream, stream::StreamParams};
 
     use super::*;
+
+    #[test]
+    fn rbac_pipeline_models_do_not_expose_historic_error_rows() {
+        if std::env::var_os("O2_PIPELINE_ERROR_CHILD").is_none() {
+            for enabled in ["true", "false"] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "models::pipelines::tests::rbac_pipeline_models_do_not_expose_historic_error_rows", "--nocapture"])
+                    .env("O2_PIPELINE_ERROR_CHILD", "1").env("ZO_RBAC_ENABLED", enabled).status().unwrap();
+                assert!(status.success());
+            }
+            return;
+        }
+        let pipeline = meta_pipeline {
+            id: "pipeline".into(),
+            version: 1,
+            enabled: true,
+            org: "org".into(),
+            name: "name".into(),
+            description: String::new(),
+            source: PipelineSource::Realtime(StreamParams::default()),
+            nodes: vec![],
+            edges: vec![],
+            kind: PipelineKind::User,
+        };
+        let error = PipelineErrorInfo {
+            last_error_timestamp: 1,
+            error_summary: Some("private-error-row".into()),
+            node_errors: Some(serde_json::json!({"sample":"private-error-row"})),
+        };
+        let individual = Pipeline::from(pipeline.clone(), None, Some(error.clone()));
+        let list = PipelineList::from(
+            vec![pipeline],
+            vec![],
+            HashMap::from_iter([("pipeline".into(), error)]),
+        );
+        for serialized in [
+            serde_json::to_string(&individual).unwrap(),
+            serde_json::to_string(&list).unwrap(),
+        ] {
+            assert_eq!(
+                serialized.contains("private-error-row"),
+                !infra::rbac::enabled()
+            );
+        }
+    }
 
     #[test]
     fn test_pipeline_from_meta() {

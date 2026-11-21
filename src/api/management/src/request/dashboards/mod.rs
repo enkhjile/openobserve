@@ -203,14 +203,54 @@ pub async fn list_dashboards(
     Query(query): Query<ListDashboardsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let params = query.into(&org_id);
+    let mut params = query.into(&org_id);
+    let rbac_enabled = infra::rbac::enabled();
+    let pagination = rbac_enabled
+        .then(|| params.page_size_and_idx.take())
+        .flatten();
     let Some(user_id) = get_user_id(&headers) else {
         return MetaHttpResponse::unauthorized("User ID not found in request headers");
     };
-    let dashboards = match dashboards::list_dashboards(&user_id, params).await {
+    let mut dashboards = match dashboards::list_dashboards(&user_id, params).await {
         Ok(dashboards) => dashboards,
         Err(err) => return err.into(),
     };
+    if rbac_enabled {
+        let resources: Vec<_> = dashboards
+            .iter()
+            .map(|(_, dashboard)| {
+                infra::rbac::Resource::new(
+                    infra::rbac::ResourceKind::Dashboard,
+                    dashboard.dashboard_id().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let decisions = match infra::rbac::allowed_resources(
+            &user_id,
+            &org_id,
+            infra::rbac::Action::Read,
+            &resources,
+        )
+        .await
+        {
+            Ok(decisions) => decisions,
+            Err(_) => {
+                return MetaHttpResponse::forbidden("Organization RBAC policy is unavailable");
+            }
+        };
+        dashboards = dashboards
+            .into_iter()
+            .zip(decisions)
+            .filter_map(|(dashboard, allowed)| allowed.then_some(dashboard))
+            .collect();
+        if let Some((size, index)) = pagination {
+            dashboards = dashboards
+                .into_iter()
+                .skip(usize::try_from(size.saturating_mul(index)).unwrap_or(usize::MAX))
+                .take(usize::try_from(size).unwrap_or(usize::MAX))
+                .collect();
+        }
+    }
     let resp_body: ListDashboardsResponseBody = dashboards.into();
     MetaHttpResponse::json(resp_body)
 }

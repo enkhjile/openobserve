@@ -73,7 +73,14 @@ fn serve_file(path: &str) -> Response {
                     "public, max-age=3600"
                 };
 
-            Response::builder()
+            let mut response = Response::builder();
+            if file_path == crate::STREAM_WORKER_ASSET {
+                response = response.header(
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; connect-src 'none'",
+                );
+            }
+            response
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime.as_ref())
                 .header(header::CACHE_CONTROL, cache_control)
@@ -163,6 +170,23 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn embedded_stream_worker_cannot_access_the_network() {
+        if let Some(worker) = crate::stream_worker_asset() {
+            let response = serve_file(&worker);
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CONTENT_SECURITY_POLICY],
+                "default-src 'none'; connect-src 'none'"
+            );
+        }
+        assert!(
+            !serve_file("index.html")
+                .headers()
+                .contains_key(header::CONTENT_SECURITY_POLICY)
+        );
+    }
 
     #[tokio::test]
     async fn test_index_ok() {

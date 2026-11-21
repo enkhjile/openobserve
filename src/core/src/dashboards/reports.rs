@@ -13,6 +13,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod browser_scope;
+pub mod scoped;
+
 use std::{str::FromStr, time::Duration};
 
 use async_trait::async_trait;
@@ -304,7 +307,11 @@ pub async fn get(org_id: &str, folder_id: &str, name: &str) -> Result<Report, Re
 }
 
 pub async fn get_by_id(org_id: &str, report_id: &str) -> Result<(Folder, Report), ReportError> {
-    let conn = get_orm_client_ro().await;
+    let conn = if infra::rbac::enabled() {
+        get_orm_client_rw().await
+    } else {
+        get_orm_client_ro().await
+    };
     match table::reports::get_by_id(conn, report_id).await {
         Ok(Some((folder, report))) if report.org_id == org_id => Ok((folder, report)),
         Ok(_) => Err(ReportError::ReportNotFound),
@@ -664,6 +671,8 @@ pub async fn move_to_folder(
 
 #[derive(Debug, thiserror::Error)]
 pub enum SendReportError {
+    #[error("Reports require a scoped RBAC execution identity")]
+    AuthorizationDenied,
     #[error("Atleast one dashboard is required")]
     NoDashboards,
 
@@ -730,6 +739,15 @@ impl SendReport for Report {
     /// Sends the report to subscribers
     async fn send_subscribers(&self) -> Result<SendOutcome, SendReportError> {
         check_send(self).await?;
+        let scoped = if infra::rbac::enabled() {
+            Some(
+                scoped::authorize(self)
+                    .await
+                    .map_err(|_| SendReportError::AuthorizationDenied)?,
+            )
+        } else {
+            None
+        };
 
         let cfg = get_config();
         let mut recipients = vec![];
@@ -791,14 +809,37 @@ impl SendReport for Report {
             let report = generate_report(
                 dashboard,
                 &self.org_id,
-                &cfg.common.report_user_name,
-                &cfg.common.report_user_password,
+                (
+                    &cfg.common.report_user_name,
+                    &cfg.common.report_user_password,
+                ),
                 &self.timezone,
                 no_of_recipients,
                 &self.name,
+                scoped.as_ref(),
             )
             .await?;
-            send_email(self, &report.0, report.1).await?;
+            if let Some(scope) = &scoped {
+                if report.2 {
+                    return Err(SendReportError::AuthorizationDenied);
+                }
+                scoped::recheck(self, scope)
+                    .await
+                    .map_err(|_| SendReportError::AuthorizationDenied)?;
+                let mut approved = self.clone();
+                approved.message =
+                    crate::alerts::notifications::render::markdown::escape_html(&self.message);
+                approved.destinations = scope
+                    .recipients
+                    .iter()
+                    .cloned()
+                    .map(ReportDestination::Email)
+                    .collect();
+                let link = crate::alerts::notifications::render::markdown::escape_html(&report.1);
+                send_email(&approved, &report.0, link).await?;
+            } else {
+                send_email(self, &report.0, report.1).await?;
+            }
             Ok(SendOutcome { partial: report.2 })
         }
     }
@@ -868,6 +909,8 @@ async fn send_email(
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenerateReportError {
+    #[error("Scoped report rendering denied or incomplete")]
+    ScopedRenderingDenied,
     #[error("Chrome not enabled")]
     ChromeNotEnabled,
 
@@ -907,6 +950,11 @@ pub enum GenerateReportError {
 
 /// The checks a send runs before it renders anything, so a caller can answer them first.
 pub async fn check_send(report: &Report) -> Result<(), SendReportError> {
+    if infra::rbac::enabled() {
+        scoped::authorize(report)
+            .await
+            .map_err(|_| SendReportError::AuthorizationDenied)?;
+    }
     if report.dashboards.is_empty() {
         return Err(SendReportError::NoDashboards);
     }
@@ -916,12 +964,13 @@ pub async fn check_send(report: &Report) -> Result<(), SendReportError> {
 async fn generate_report(
     dashboard: &ReportDashboard,
     org_id: &str,
-    user_id: &str,
-    user_pass: &str,
+    credentials: (&str, &str),
     timezone: &str,
     no_of_recipients: usize,
     report_name: &str,
+    scope: Option<&scoped::Scope>,
 ) -> Result<(Vec<u8>, String, bool), GenerateReportError> {
+    let (user_id, user_pass) = credentials;
     let cfg = get_config();
     // Check if Chrome is enabled, otherwise don't save the report
     if !cfg.chrome.chrome_enabled {
@@ -946,8 +995,38 @@ async fn generate_report(
 
     let _chrome_permit = config::chrome_semaphore().acquire().await?;
     log::info!("launching browser for dashboard {dashboard_id}");
-    let (mut browser, mut handler) =
-        Browser::launch(get_chrome_launch_options().await.as_ref().unwrap().clone()).await?;
+    let profile = if scope.is_some() {
+        Some(tempfile::tempdir().map_err(|_| GenerateReportError::ScopedRenderingDenied)?)
+    } else {
+        None
+    };
+    let browser_config = if let Some(profile) = &profile {
+        let cfg = get_config();
+        chromiumoxide::browser::BrowserConfig::builder()
+            .chrome_executable(&cfg.chrome.chrome_path)
+            .user_data_dir(profile.path())
+            .incognito()
+            .respect_https_errors()
+            .window_size(
+                cfg.chrome.chrome_window_width,
+                cfg.chrome.chrome_window_height,
+            )
+            .enable_request_intercept()
+            .disable_cache()
+            .args([
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--no-pings",
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ])
+            .build()
+            .map_err(|_| GenerateReportError::ScopedRenderingDenied)?
+    } else {
+        get_chrome_launch_options().await.as_ref().unwrap().clone()
+    };
+    let (mut browser, mut handler) = Browser::launch(browser_config).await?;
     log::info!("browser launched");
 
     let handle = tokio::task::spawn(async move {
@@ -961,8 +1040,22 @@ async fn generate_report(
 
     let web_url = format!("{}{}/web", cfg.common.web_url, cfg.common.base_uri);
     log::debug!("Navigating to web url: {}", web_url);
-    let page = browser
-        .new_page(&format!("{web_url}/login?login_as_internal_user=true"))
+    let page = browser.new_page("about:blank").await?;
+    let browser_scope = if let Some(scope) = scope {
+        Some(
+            browser_scope::BrowserScope::attach(
+                &page,
+                &cfg.common.web_url,
+                &cfg.common.base_uri,
+                scope.clone(),
+            )
+            .await
+            .map_err(|_| GenerateReportError::ScopedRenderingDenied)?,
+        )
+    } else {
+        None
+    };
+    page.goto(&format!("{web_url}/login?login_as_internal_user=true"))
         .await?;
     page.disable_log().await?;
     log::debug!("headless: new page created");
@@ -1062,11 +1155,12 @@ async fn generate_report(
     };
 
     log::debug!("headless: going to dash url");
-    // First navigate to the correct org
-    page.goto(&format!("{web_url}/?org_identifier={org_id}"))
-        .await?;
-    page.wait_for_navigation().await?;
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    if scope.is_none() {
+        page.goto(&format!("{web_url}/?org_identifier={org_id}"))
+            .await?;
+        page.wait_for_navigation().await?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
     log::debug!("headless: navigated to the org_id: {org_id}");
 
     page.goto(&dashb_url).await?;
@@ -1082,6 +1176,10 @@ async fn generate_report(
         log::error!(
             "[REPORT] error occurred while finding the span element for dashboard {dashboard_id}:{e}"
         );
+        if scope.is_some() {
+            browser.close().await?;
+            return Err(GenerateReportError::ScopedRenderingDenied);
+        }
         true
     } else {
         log::info!("[REPORT] all panel data loaded for report dashboard: {dashboard_id}");
@@ -1113,6 +1211,11 @@ async fn generate_report(
         });
     }
 
+    if let Some(guard) = &browser_scope {
+        guard
+            .complete()
+            .map_err(|_| GenerateReportError::ScopedRenderingDenied)?;
+    }
     // Last two elements loaded means atleast the metric components have loaded.
     // Convert the page into pdf
     let pdf_data = if no_of_recipients != 0 {
@@ -1742,5 +1845,26 @@ mod tests {
             report.send_subscribers().await,
             Err(SendReportError::DashboardNotInOrg)
         ));
+    }
+    #[tokio::test]
+    async fn rbac_rejects_report_execution_without_scoped_identity() {
+        if std::env::var_os("O2_REPORT_RBAC_TEST_CHILD").is_none() {
+            assert!(!infra::rbac::enabled());
+            assert!(matches!(
+                Report::default().send_subscribers().await,
+                Err(SendReportError::NoDashboards)
+            ));
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "dashboards::reports::tests::rbac_rejects_report_execution_without_scoped_identity", "--nocapture"])
+                .env("O2_REPORT_RBAC_TEST_CHILD", "1").env("ZO_RBAC_ENABLED", "true").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let error = Report::default().send_subscribers().await.unwrap_err();
+        assert!(
+            error.to_string().contains("scoped RBAC execution identity"),
+            "{error}"
+        );
+        assert_eq!(error.delivery_attempted(), Some(false));
     }
 }

@@ -254,7 +254,9 @@ tower.workspace = true
 transform.workspace = true
 
 [workspace]
+exclude = ["vendor/chromiumoxide_types"]
 members = [
+    "src/extensions/rbac",
     "src/api/http",
     "src/api/grpc",
     "src/api/ingest",
@@ -306,6 +308,7 @@ edition = "2024"
 license = "AGPL-3.0"
 
 [workspace.dependencies]
+openobserve-rbac = { path = "src/extensions/rbac" }
 pulldown-cmark = { version = "0.13", default-features = false, features = [
     "html",
 ] }
@@ -624,3 +627,6 @@ object_store = { git = "https://github.com/openobserve/arrow-rs-object-store", b
 sqlparser = { git = "https://github.com/openobserve/sqlparser-rs", branch = "0.62.0-patch" }
 # crates.io 3.5.0 reads past short inputs via _mm_loadu_si128 and trips debug UB checks on x86; 3.5.0-fix adds ogxd/gxhash#118 with unchanged hashes
 gxhash = { git = "https://github.com/openobserve/gxhash", branch = "3.5.0-fix" }
+
+[patch."https://github.com/mattsse/chromiumoxide"]
+chromiumoxide_types = { path = "vendor/chromiumoxide_types" }

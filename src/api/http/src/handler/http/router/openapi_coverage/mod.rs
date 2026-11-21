@@ -836,7 +836,12 @@ fn mount_spans(body: &str, cfgs: &[(Range<usize>, String)]) -> Vec<MountSpan> {
             ".nest(" => args.split_once(',').expect("nest takes two arguments"),
             _ => ("", args),
         };
-        let prefix = prefix.trim().trim_matches('"').to_string();
+        let prefix = prefix.trim();
+        assert!(
+            method != ".nest(" || (prefix.starts_with('"') && prefix.ends_with('"')),
+            "non-literal nest prefix: {prefix}"
+        );
+        let prefix = prefix.trim_matches('"').to_string();
         let target = target.trim();
         if !target.chars().all(|c| c.is_alphanumeric() || c == '_') {
             spans.push((open..open + args.len(), prefix, true));
@@ -973,6 +978,13 @@ fn parse_router(source: &str) -> Vec<ParsedRoute> {
         .iter()
         .flat_map(|(index, prefix, active)| routes_of(&functions[*index], prefix, *active))
         .collect();
+    // The versioned forwarding mount executes the same authenticated operations.
+    // Fold its aliases into public operations for OpenAPI coverage and authorization inventory.
+    for route in &mut routes {
+        if let Some(path) = route.path.strip_prefix("/internal/rbac/v1/api/") {
+            route.path = format!("/api/{path}");
+        }
+    }
     routes.sort();
     routes.dedup();
     routes
@@ -2134,5 +2146,78 @@ fn enabled_mcp_tools_match_the_snapshot() {
         &enabled,
         &edition_entries(MCP_ENABLED),
         "the enabled MCP tool set changed; edit mcp_enabled.txt only to enable or disable a tool on purpose",
+    );
+}
+
+#[test]
+fn every_endpoint_keeps_its_reviewed_rbac_disposition() {
+    let inventory = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../docs/rbac/endpoints.md"
+    ));
+    let expected: BTreeSet<_> = inventory
+        .lines()
+        .filter(|line| {
+            line.starts_with("| ") && !line.starts_with("| Method") && !line.starts_with("| ---")
+        })
+        .map(str::to_owned)
+        .collect();
+    let actual: BTreeSet<_> = parsed_routes()
+        .into_iter()
+        .map(|route| {
+            format!(
+                "| {} | `{}` | {} | {:?} |",
+                route.method,
+                route.path,
+                route.active,
+                super::rbac::disposition(&route.method, &route.path)
+            )
+        })
+        .collect();
+    if !cfg!(feature = "enterprise")
+        && !cfg!(feature = "cloud")
+        && !cfg!(feature = "cpu-profiling")
+        && !cfg!(feature = "profiling")
+    {
+        assert_eq!(
+            actual, expected,
+            "Review authorization and run python3 scripts/rbac/endpoint_inventory.py after route changes"
+        );
+    }
+}
+
+#[test]
+fn internal_rbac_mount_aliases_preserve_canonical_operation_coverage() {
+    let routes = parse_router(
+        r#"
+fn local_routes() -> Router {
+    Router::new().nest("/api", api()).nest("/internal/rbac/v1/api", api())
+}
+fn api() -> Router {
+    Router::new().route("/{org_id}/_search", post(search))
+}
+#[cfg(test)]
+mod tests {}
+    "#,
+    );
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].path, "/api/{org_id}/_search");
+    assert_eq!(routes[0].method, "POST");
+}
+
+#[test]
+#[should_panic(expected = "non-literal nest prefix")]
+fn dynamic_mount_prefix_cannot_publish_rust_source_as_a_route() {
+    parse_router(
+        r#"
+fn local_routes() -> Router {
+    Router::new().nest(&format!("{}/api", PREFIX), api())
+}
+fn api() -> Router {
+    Router::new().route("/{org_id}/_search", post(search))
+}
+#[cfg(test)]
+mod tests {}
+    "#,
     );
 }

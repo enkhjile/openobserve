@@ -344,6 +344,7 @@ impl DerivedStreamExt for DerivedStream {
                     module_key.to_string(),
                 ))),
                 trace_id,
+                None,
             )
             .await
     }

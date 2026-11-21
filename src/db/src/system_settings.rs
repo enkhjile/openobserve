@@ -591,7 +591,7 @@ fn normalize_category_to_label(category: &str) -> String {
                         None => String::new(),
                         Some(first) => {
                             first.to_uppercase().collect::<String>()
-                                + &chars.collect::<String>().to_lowercase()
+                                + chars.collect::<String>().to_lowercase().as_str()
                         }
                     }
                 }

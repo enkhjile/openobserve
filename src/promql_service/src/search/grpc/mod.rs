@@ -62,6 +62,7 @@ struct GroupPlan {
 }
 
 struct StorageProvider {
+    rbac_subject: Option<String>,
     trace_id: String,
     #[cfg_attr(not(feature = "enterprise"), allow(dead_code))]
     query_tracker: QueryTracker,
@@ -80,6 +81,19 @@ impl TableProvider for StorageProvider {
         filters: &mut [(String, Vec<String>)],
         streaming: bool,
     ) -> datafusion::error::Result<Vec<ScanContext>> {
+        if infra::rbac::enabled() {
+            let subject = self.rbac_subject.as_deref().ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution("Metrics identity required".into())
+            })?;
+            infra::rbac::authorize_subject(
+                subject,
+                org_id,
+                infra::rbac::Action::Query,
+                infra::rbac::Resource::stream("metrics", stream_name),
+            )
+            .await
+            .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
+        }
         if matches_nothing(org_id, stream_name, &matchers).await? {
             return Ok(vec![]);
         }
@@ -93,6 +107,7 @@ impl TableProvider for StorageProvider {
                 time_range,
                 matchers.clone(),
                 label_selector.clone(),
+                self.rbac_subject.as_deref(),
             )
             .await?
         } else {
@@ -140,6 +155,19 @@ pub async fn search(
     req: &cluster_rpc::MetricsQueryRequest,
     query_tracker: &QueryTracker,
 ) -> Result<cluster_rpc::MetricsQueryResponse> {
+    if infra::rbac::enabled() {
+        let query = req
+            .query
+            .as_ref()
+            .ok_or_else(|| crate::rbac::denied("Missing metrics query"))?;
+        if query.query_data || query.query_exemplars || req.search_event_type == "download" {
+            return Err(crate::rbac::denied(
+                "Metrics operation requires a scoped adapter",
+            ));
+        }
+        crate::rbac::authorize(req.rbac_subject.as_deref(), &req.org_id, &query.query).await?;
+    }
+
     let cfg = config::get_config();
     let start_ts = std::time::Instant::now();
     let query = req.query.as_ref().unwrap();
@@ -262,6 +290,14 @@ pub async fn data(
     query_tracker: &QueryTracker,
     tx: mpsc::Sender<Result<cluster_rpc::MetricsQueryResponse, tonic::Status>>,
 ) -> Result<()> {
+    if infra::rbac::enabled() {
+        return Err(infra::errors::Error::ErrorCode(
+            infra::errors::ErrorCodes::AuthorizationDenied(
+                "PromQL RPC requires a scoped RBAC execution adapter".into(),
+            ),
+        ));
+    }
+
     let cfg = config::get_config();
     let query = req.query.as_ref().unwrap();
 
@@ -405,6 +441,19 @@ pub async fn search_inner(
     need_wal: bool,
     query_tracker: &QueryTracker,
 ) -> Result<(value::Value, String, ScanStats, i64, Vec<String>)> {
+    if infra::rbac::enabled() {
+        let query = req
+            .query
+            .as_ref()
+            .ok_or_else(|| crate::rbac::denied("Missing metrics query"))?;
+        if query.query_data || query.query_exemplars || req.search_event_type == "download" {
+            return Err(crate::rbac::denied(
+                "Metrics operation requires a scoped adapter",
+            ));
+        }
+        crate::rbac::authorize(req.rbac_subject.as_deref(), &req.org_id, &query.query).await?;
+    }
+
     let start = std::time::Instant::now();
     let trace_id = req.job.as_ref().unwrap().trace_id.to_string();
     let org_id = &req.org_id;
@@ -442,6 +491,7 @@ pub async fn search_inner(
     let mut ctx = PromqlContext::new(
         query_ctx,
         StorageProvider {
+            rbac_subject: req.rbac_subject.clone(),
             trace_id: trace_id.to_string(),
             query_tracker: query_tracker.clone(),
             need_wal,

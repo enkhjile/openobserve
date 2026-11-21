@@ -196,7 +196,7 @@ async fn ingest_with_blocked_streams(
             doc_id = line_doc_id.map(|id| id.to_string());
 
             if raw_stream_name.is_empty() || raw_stream_name == "_" || raw_stream_name == "/" {
-                let err_msg = "Invalid stream name: ".to_string() + &line_str;
+                let err_msg = "Invalid stream name: ".to_string() + line_str.as_ref();
                 log::warn!("[LOGS:BULK] {err_msg}, org_id: {org_id}");
                 bulk_res.errors = true;
                 let err = BulkResponseError::new(

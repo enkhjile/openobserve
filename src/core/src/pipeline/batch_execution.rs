@@ -284,6 +284,7 @@ impl PipelineExt for Workflow {
 
 #[derive(Debug, Clone)]
 pub struct ExecutablePipeline {
+    pub(super) scoped_context: Option<super::rbac::ScopedContext>,
     pub id: String,
     name: String,
     is_realtime: bool,
@@ -404,6 +405,7 @@ impl ExecutablePipeline {
         let source_node_id = sorted_nodes[0].to_owned();
 
         Ok(Self {
+            scoped_context: None,
             id: pipeline.id.to_string(),
             name: pipeline.name.to_string(),
             is_realtime: pipeline.source.is_realtime(),
@@ -500,6 +502,7 @@ impl ExecutablePipeline {
             .to_owned();
 
         Ok(Self {
+            scoped_context: None,
             id: workflow.id.to_string(),
             name: workflow.name.to_string(),
             source_node_id,
@@ -518,6 +521,13 @@ impl ExecutablePipeline {
         records: Vec<Value>,
         stream_name: Option<String>,
     ) -> Result<HashMap<StreamParams, Vec<(usize, Value)>>> {
+        if infra::rbac::enabled() {
+            let context = self
+                .scoped_context
+                .as_ref()
+                .ok_or_else(|| anyhow!("Pipeline execution has no scoped identity"))?;
+            super::rbac::validate_execution(org_id, context).await?;
+        }
         let batch_size = records.len();
         let pipeline_name = self.name.clone();
         // Unique invocation ID to correlate logs across concurrent pipeline runs
@@ -722,6 +732,9 @@ impl ExecutablePipeline {
 
         // Wait for all node tasks to complete
         if let Err(e) = try_join_all(node_tasks).await {
+            if infra::rbac::enabled() {
+                return Err(anyhow!("Scoped pipeline task failed: {e}"));
+            }
             log::error!(
                 "[Pipeline] {pipeline_name} [inv={inv_id}]: node processing jobs failed: {e}"
             );
@@ -736,6 +749,9 @@ impl ExecutablePipeline {
             );
             anyhow!("[Pipeline] error collecting job failed: {}", e)
         })? {
+            if infra::rbac::enabled() {
+                return Err(anyhow!("Scoped pipeline processing failed"));
+            }
             let stream_params = self.get_source_stream_params();
             log::error!(
                 "[Pipeline] [inv={inv_id}] id: {}, name: {}, node_errors: {:?}",
@@ -817,6 +833,9 @@ impl ExecutablePipeline {
 
         // Cross-type leaf nodes ingest directly via ingestion_service inside process_node,
         // so results here only contain same-type records for the caller to handle.
+        if let Some(context) = &self.scoped_context {
+            super::rbac::validate_outputs(context, results.keys().cloned())?;
+        }
         Ok(results)
     }
 
@@ -3372,6 +3391,7 @@ mod tests {
             },
         );
         let pipeline = ExecutablePipeline {
+            scoped_context: None,
             id: "pipe-1".to_string(),
             name: "__eval__job".to_string(),
             is_realtime: false,
