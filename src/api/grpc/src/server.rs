@@ -41,14 +41,17 @@ use tonic_tracing_opentelemetry::middleware::server::OtelGrpcLayer;
 
 use crate::{
     handler::grpc::{
-        auth::{check_auth, check_ingest_auth, check_internal_auth, check_otlp_auth},
+        auth::{
+            check_auth, check_ingest_auth, check_internal_auth, check_otlp_auth,
+            check_otlp_logs_auth,
+        },
         flight::FlightServiceImpl,
         request::{
             event::Eventer,
             ingest::Ingester,
             logs::LogsServer,
             metrics::{ingester::MetricsIngester, querier::MetricsQuerier},
-            otlp::check_otlp_ingest,
+            otlp::{check_otlp_ingest, check_otlp_logs_ingest},
             profiles::ProfilesServer,
             query_cache::QueryCacheServerImpl,
             stream::StreamServiceImpl,
@@ -186,7 +189,7 @@ fn common_routes() -> Routes {
     let metrics_ingest_svc = otlp_authenticated_ingest(metrics_ingest_svc);
     let trace_svc = otlp_authenticated_ingest(trace_svc);
     let profiles_svc = otlp_authenticated_ingest(profiles_svc);
-    let logs_svc = otlp_authenticated_ingest(logs_svc);
+    let logs_svc = InterceptedService::new(logs_svc, check_otlp_logs_ingest as AuthInterceptor);
     let query_cache_svc = internal_authenticated(query_cache_svc);
     let ingest_svc = ingest_authenticated(ingest_svc);
     let streams_svc = authenticated(streams_svc);
@@ -241,7 +244,7 @@ async fn run_router(
         .max_decoding_message_size(cfg.grpc.max_message_size * 1024 * 1024)
         .max_encoding_message_size(cfg.grpc.max_message_size * 1024 * 1024);
 
-    let logs_svc = otlp_authenticated(logs_svc);
+    let logs_svc = InterceptedService::new(logs_svc, check_otlp_logs_auth as AuthInterceptor);
     let metrics_svc = otlp_authenticated(metrics_svc);
     let traces_svc = otlp_authenticated(traces_svc);
     let profiles_svc = otlp_authenticated(profiles_svc);

@@ -45,6 +45,11 @@ impl LogsService for LogsServer {
         let in_req = request.into_inner();
         let in_stream_name = metadata_str(&metadata, &cfg.grpc.stream_header_key)?;
         let user_email = metadata_str(&metadata, "user_id")?.unwrap_or_default();
+        let principal = if infra::rbac::enabled() {
+            crate::handler::grpc::auth::scoped_otlp_principal(&metadata, org_id).await?
+        } else {
+            None
+        };
 
         let resp = openobserve_core::logs::otlp::handle_request(
             0,
@@ -52,6 +57,7 @@ impl LogsService for LogsServer {
             in_req,
             in_stream_name,
             user_email,
+            principal.as_ref(),
             OtlpRequestType::Grpc,
         )
         .await

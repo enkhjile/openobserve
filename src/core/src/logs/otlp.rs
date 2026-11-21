@@ -27,6 +27,7 @@ use config::{
         otlp::OtlpRequestType,
         self_reporting::{ai_chat::is_protected_ai_chat_stream, usage::UsageType},
         stream::{StreamParams, StreamType},
+        user::OrgIngestionPrincipal,
     },
     metrics,
     utils::{flatten, json, schema::format_stream_name},
@@ -35,7 +36,7 @@ use infra::{
     errors::{Error, Result},
     schema::get_flatten_level,
 };
-use ingestion_common::{IngestionStatus, RecordStatus, StreamStatus};
+use ingestion_common::{IngestUser, IngestionStatus, RecordStatus, StreamStatus};
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::{
@@ -147,6 +148,7 @@ pub async fn handle_request(
     request: ExportLogsServiceRequest,
     in_stream_name: Option<&str>,
     user_email: &str,
+    principal: Option<&OrgIngestionPrincipal>,
     req_type: OtlpRequestType,
 ) -> Result<Response> {
     let start = std::time::Instant::now();
@@ -164,6 +166,15 @@ pub async fn handle_request(
             "stream '{stream_name}' is reserved and cannot be ingested into"
         )));
     }
+    let scoped_pipelines = if infra::rbac::enabled() {
+        let user = principal.map_or_else(
+            || IngestUser::User(user_email.to_owned()),
+            |p| IngestUser::OrgToken(p.clone()),
+        );
+        Some(super::ingest::authorize_scoped_destinations(org_id, &stream_name, &user).await?)
+    } else {
+        None
+    };
     check_ingestion_allowed(org_id, StreamType::Logs, Some(&stream_name)).await?;
     // Refused before the pipelines run: a remote-stream destination writes inside them.
     #[cfg(feature = "vectorscan")]
@@ -193,8 +204,10 @@ pub async fn handle_request(
 
     let stream_param = StreamParams::new(org_id, &stream_name, StreamType::Logs);
     // Start retrieve associated pipeline and construct pipeline components
-    let executable_pipelines =
-        crate::ingestion::get_stream_executable_pipelines(&stream_param).await;
+    let executable_pipelines = match scoped_pipelines {
+        Some(pipelines) => pipelines,
+        None => crate::ingestion::get_stream_executable_pipelines(&stream_param).await,
+    };
     let mut stream_params = vec![stream_param];
     let mut pipeline_inputs = Vec::new();
     let mut original_options = Vec::new();
@@ -429,6 +442,11 @@ pub async fn handle_request(
                 .await
             {
                 Err(e) => {
+                    if infra::rbac::enabled() {
+                        return Err(Error::ErrorCode(
+                            infra::errors::ErrorCodes::AuthorizationDenied(e.to_string()),
+                        ));
+                    }
                     log::error!(
                         "[Pipeline] for stream {org_id}/{stream_name}: Batch execution error: {e}."
                     );
@@ -977,6 +995,7 @@ mod tests {
             request,
             Some("test_stream"),
             "a@a.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -995,6 +1014,7 @@ mod tests {
                 },
                 Some(stream),
                 "a@a.com",
+                None,
                 OtlpRequestType::HttpJson,
             )
             .await;
@@ -1064,6 +1084,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::HttpJson,
         )
         .await;
@@ -1113,6 +1134,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::HttpProtobuf,
         )
         .await;
@@ -1160,6 +1182,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1234,6 +1257,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1309,6 +1333,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::HttpJson,
         )
         .await;
@@ -1330,6 +1355,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1356,6 +1382,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1402,6 +1429,7 @@ mod tests {
             request,
             None, // Should default to "default"
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1448,6 +1476,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1494,6 +1523,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::HttpJson,
         )
         .await;
@@ -1509,6 +1539,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::HttpProtobuf,
         )
         .await;
@@ -1524,6 +1555,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1595,6 +1627,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1646,6 +1679,7 @@ mod tests {
             request,
             Some("test_stream"),
             "test@test.com",
+            None,
             OtlpRequestType::Grpc,
         )
         .await;
@@ -1904,6 +1938,7 @@ mod tests {
             request,
             Some("test_columns_limit"),
             "a@a.com",
+            None,
             OtlpRequestType::HttpProtobuf,
         )
         .await
@@ -1947,6 +1982,7 @@ mod tests {
                 ExportLogsServiceRequest::default(),
                 Some(stream),
                 "collector@example.com",
+                None,
                 OtlpRequestType::Grpc,
             )
             .await
@@ -1956,5 +1992,40 @@ mod tests {
         }
         assert!(!is_feature_writer_stream("_o2_dbm_server"));
         assert!(!is_feature_writer_stream("default"));
+    }
+
+    #[tokio::test]
+    async fn rbac_rejects_a_credential_from_another_organization_before_writing() {
+        if std::env::var_os("O2_OTLP_LOGS_RBAC_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "logs::otlp::tests::rbac_rejects_a_credential_from_another_organization_before_writing",
+                    "--nocapture",
+                ])
+                .env("O2_OTLP_LOGS_RBAC_CHILD", "1")
+                .env("ZO_RBAC_ENABLED", "true")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert!(infra::rbac::enabled());
+        let principal = config::meta::user::OrgIngestionPrincipal {
+            org_id: "other-org".to_string(),
+            token_id: "credential-id".to_string(),
+        };
+        let err = super::handle_request(
+            0,
+            "rbac-otlp-org",
+            ExportLogsServiceRequest::default(),
+            Some("api"),
+            "collector@example.com",
+            Some(&principal),
+            OtlpRequestType::Grpc,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.http_status(), 403, "{err}");
     }
 }

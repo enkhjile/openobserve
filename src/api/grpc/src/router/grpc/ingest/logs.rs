@@ -57,9 +57,13 @@ impl LogsService for LogsServer {
         let token: MetadataValue<_> = get_internal_grpc_token()
             .parse()
             .map_err(|_| Status::internal("invalid token".to_string()))?;
+        // Under RBAC the ingester re-authenticates and scopes the caller's own credential.
+        let forward_caller_credential = infra::rbac::enabled();
         let (addr, channel) = get_ingester_channel().await?;
         let client = LogsServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
-            req.metadata_mut().insert("authorization", token.clone());
+            if !forward_caller_credential {
+                req.metadata_mut().insert("authorization", token.clone());
+            }
             Ok(req)
         });
         match client

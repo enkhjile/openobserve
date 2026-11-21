@@ -1,6 +1,6 @@
 # RBAC verification
 
-The tests use disposable application databases and loopback services. The generated HTTP matrix in `endpoints.md` and the RPC inventory in `rpc.md` identify which operations support scoped execution. Of the 585 operations marked active in OSS by the route parser, 494 are classified as unsupported and deny access when RBAC is enabled. Consult the matrix before enabling RBAC on an installation that depends on specialist APIs.
+The tests use disposable application databases and loopback services. The generated HTTP matrix in `endpoints.md` and the RPC inventory in `rpc.md` identify which operations support scoped execution. Of the 585 operations marked active in OSS by the route parser, 493 are classified as unsupported and deny access when RBAC is enabled. Consult the matrix before enabling RBAC on an installation that depends on specialist APIs.
 
 ## Current evidence
 
@@ -8,6 +8,8 @@ The tests use disposable application databases and loopback services. The genera
 | --- | --- | --- |
 | SQLite application, HTTP and gRPC | 236 assertions, including current membership, mixed SQL batches, scoped downloads, streamed rows and delegated gRPC search before and after revocation | `/tmp/rbac-streaming-sqlite-final.log` |
 | PostgreSQL 16 application, HTTP and gRPC | The same 236 assertions passed against a fresh PostgreSQL database | `/tmp/rbac-final-postgres-smoke.log` |
+| OTLP log ingestion, HTTP and gRPC | 65 assertions on each of SQLite and PostgreSQL. A user collector and a scoped org ingestion token wrote over OTLP/HTTP JSON and OTLP/gRPC protobuf, and the rows were read back. Restricted-stream, Viewer and cross-organization exports were denied, as was a forged `user_id` behind the internal token. A pipeline fan-out with one output not granted was rejected over both transports, with no source or output stream created. Granting every output delivered one filtered row to each output. Revoking the user grant and disabling the token denied the next export. Rolling back to disabled mode accepted exports to any stream, and re-enabling preserved the policy revision. | `/tmp/rbac-otlp-logs-sqlite.log`, `/tmp/rbac-otlp-logs-postgres.log` |
+| Full launcher after the OTLP change | HTTP and gRPC suites passed on SQLite and PostgreSQL, 506 assertions in total. The gRPC denial set grew to 23: credential-less OTLP log exports now return `UNAUTHENTICATED`, the internal token returns `PERMISSION_DENIED`, and OTLP metrics and trace exports stay denied. | `/tmp/rbac-otlp-launcher-both.log` |
 | Policy persistence | Six policy tests on each backend, including root organization discovery, concurrent updates, revoked administrators and membership removal. The SQLite infrastructure suite passed all fourteen checks. | `/tmp/rbac-infra-pipeline-focused.log`, `/tmp/rbac-policy-pg-six-final.log` |
 | Route inventory | All 41 OpenAPI coverage tests passed, including canonicalization of the internal forwarding mount and the full reviewed-permission snapshot. | `/tmp/rbac-openapi-forwarding-green.log` |
 | Core execution | Fifteen core RBAC regressions passed for alerts, reports, pipeline execution, credential administration and dashboard sources. | `/tmp/rbac-core-regressions-final.log` |
@@ -27,7 +29,7 @@ Transport totals exclude the scripts' summary lines. The HTTP fixture starts wit
 ## Scope of the checks
 
 - SQL checks cover ordinary reads and downloads, joins, subqueries, CTEs, unions, mixed batches and immediate revocation. The batch fixtures cover streaming, partition planning and one-shot APIs. Enabled execution rejects custom transforms, table functions and UDFs and bypasses shared result caches.
-- Ingestion checks exercise logs, multiline logs, JSON metrics, HTTP OTLP traces, organization tokens and scoped pipelines. Named PromQL instant and range queries run through both GET and POST. Additional protocols listed as unsupported in the endpoint matrix are denied.
+- Ingestion checks exercise logs, multiline logs, OTLP logs over HTTP and gRPC, JSON metrics, HTTP OTLP traces, organization tokens and scoped pipelines. The gRPC router's OTLP log proxy, which forwards the caller's credential under RBAC, has been checked by source review only. No multi-node router run covered it. Named PromQL instant and range queries run through both GET and POST. Additional protocols listed as unsupported in the endpoint matrix are denied.
 - Identity checks use two organizations, actual user and service-account credentials, credential rotation and deletion, explicit root bootstrap, and a removed member with a retained policy entry.
 - The delegated gRPC SQL fixture verifies a returned row before revocation and a permission denial afterwards. Additional RPC checks exercise 17 denial cases. These use loopback servers and disposable data.
 - The scoped renderer used a local Chromium installation, a disposable SMTP server and the bundled streaming decoder. The standalone report service stays blocked. The private enterprise manifest and corresponding enterprise build were unavailable in this checkout.

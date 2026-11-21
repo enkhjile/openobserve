@@ -555,6 +555,7 @@ pub async fn handle_gcp_request(
 pub async fn otlp_logs_write(
     Path(org_id): Path<String>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -645,6 +646,7 @@ pub async fn otlp_logs_write(
         request,
         in_stream_name,
         user_email,
+        principal.as_ref().map(|axum::Extension(p)| p),
         request_type,
     )
     .await
@@ -660,6 +662,9 @@ pub async fn otlp_logs_write(
             let status = match e {
                 infra::errors::Error::ResourceError(_) => StatusCode::SERVICE_UNAVAILABLE,
                 infra::errors::Error::TrialPeriodExpired => StatusCode::TOO_MANY_REQUESTS,
+                infra::errors::Error::ErrorCode(
+                    infra::errors::ErrorCodes::AuthorizationDenied(_),
+                ) => StatusCode::FORBIDDEN,
                 _ => StatusCode::BAD_REQUEST,
             };
             otlp_rejection_response(request_type, status, e.to_string())
@@ -756,6 +761,7 @@ mod tests {
             Headers(UserEmail {
                 user_id: "a@a.com".to_string(),
             }),
+            None,
             headers,
             Bytes::from_static(body),
         )

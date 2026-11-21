@@ -20,8 +20,11 @@ Node services accept only the configured cluster transport credential. That cred
 | NodeService | GetNodes | Cluster membership discovery restricted to node credentials. |
 | Ingest | Ingest | Deny unscoped internal ingestion. |
 | Streams | stream_stats | Deny until stream statistics can be scoped. |
-| OTLP Logs, Metrics, Trace, Profiles | Export | Deny at the ingest or router interceptor. |
+| OTLP Logs | Export | Requires the caller's own user or org ingestion token credential; the internal token is refused. Ingest on the destination and every scoped pipeline output is checked before the first write. |
+| OTLP Metrics, Trace, Profiles | Export | Deny at the ingest or router interceptor. |
 | Arrow Flight | DoGet | Node-only transport. Stream scans use the identity propagated with the plan. |
 | Arrow Flight | Handshake, ListFlights, GetFlightInfo, PollFlightInfo, GetSchema, DoPut, DoAction, ListActions, DoExchange | Unimplemented. |
+
+The router's OTLP Logs proxy forwards the caller's credential unchanged while RBAC is enabled. The ingester authenticates it again and re-reads org ingestion tokens from the primary store. A forwarded internal token cannot carry a scoped identity.
 
 On rebase, compare service registrations, interceptors, every cluster protocol declaration and the actual downstream method before carrying a classification forward. Automated live checks exercise selected methods. This matrix describes implementation coverage independently of transport test coverage.

@@ -83,6 +83,7 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         ("GET", "/api/{org_id}/streams") => Member,
         ("POST", "/api/{org_id}/ingest/metrics/_json") => Member,
         ("POST", "/api/{org_id}/v1/traces" | "/api/{org_id}/otel/v1/traces") => Member,
+        ("POST", "/api/{org_id}/v1/logs") => Member,
         (
             "GET",
             "/api/{org_id}/{stream_name}/traces/latest"
@@ -374,6 +375,7 @@ async fn authorize_enabled(
                     | "/api/{org_id}/ingest/metrics/_json"
                     | "/api/{org_id}/v1/traces"
                     | "/api/{org_id}/otel/v1/traces"
+                    | "/api/{org_id}/v1/logs"
             )
         {
             return Err(forbidden());
@@ -625,6 +627,26 @@ mod tests {
             disposition("POST", "/api/{org_id}/ingest/metrics/_json"),
             Disposition::Member
         );
+    }
+
+    #[test]
+    fn only_otlp_log_export_is_declared_among_alternate_log_protocols() {
+        assert_eq!(
+            disposition("POST", "/api/{org_id}/v1/logs"),
+            Disposition::Member
+        );
+        for path in [
+            "/api/{org_id}/_bulk",
+            "/api/{org_id}/_hec",
+            "/api/{org_id}/loki/api/v1/push",
+            "/api/{org_id}/v1/metrics",
+        ] {
+            assert_eq!(
+                disposition("POST", path),
+                Disposition::Unsupported,
+                "{path}"
+            );
+        }
     }
 
     #[test]

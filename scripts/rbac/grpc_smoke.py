@@ -49,9 +49,11 @@ INTERNAL_METHODS = (
     ("/cluster.QueryCache/PublicDashboardStatus", False),
 )
 PUBLIC_METHODS = (
-    "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
+    "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
+    "/opentelemetry.proto.collector.trace.v1.TraceService/Export",
     "/cluster.Streams/stream_stats",
 )
+OTLP_LOGS_METHOD = "/opentelemetry.proto.collector.logs.v1.LogsService/Export"
 INGEST_METHOD = "/cluster.Ingest/Ingest"
 FORGED_USER = (("user_id", "rbac-smoke-forged@example.invalid"),)
 
@@ -80,7 +82,7 @@ def loopback_target(value):
     return f"[{address}]:{port}" if address.version == 6 else f"{address}:{port}"
 
 
-def expect_denial(channel, method, metadata, streaming, timeout, label):
+def expect_denial(channel, method, metadata, streaming, timeout, label, code="PERMISSION_DENIED"):
     call = channel.unary_stream(method) if streaming else channel.unary_unary(method)
     stream = None
     try:
@@ -89,11 +91,11 @@ def expect_denial(channel, method, metadata, streaming, timeout, label):
             stream = result
             next(iter(stream), None)
     except grpc.RpcError as error:
-        if error.code() != grpc.StatusCode.PERMISSION_DENIED:
+        if error.code().name != code:
             raise SmokeFailure(
-                f"{label}: expected PERMISSION_DENIED, received {error.code().name}"
+                f"{label}: expected {code}, received {error.code().name}"
             ) from None
-        print(f"PASS {label}: PERMISSION_DENIED", flush=True)
+        print(f"PASS {label}: {code}", flush=True)
         return
     finally:
         if stream is not None:
@@ -154,6 +156,15 @@ def run(args, token):
                 expect_denial(channel, method, metadata, False, args.timeout,
                               f"{method} {label}")
                 count += 1
+        # Scoped OTLP logs authenticate the caller's own credential; the internal token cannot vouch for one.
+        for label, metadata, code in (
+            ("without credentials", (), "UNAUTHENTICATED"),
+            ("with forged user metadata", FORGED_USER, "UNAUTHENTICATED"),
+            ("with internal token and forged user metadata", authorization + FORGED_USER, "PERMISSION_DENIED"),
+        ):
+            expect_denial(channel, OTLP_LOGS_METHOD, metadata, False, args.timeout,
+                          f"{OTLP_LOGS_METHOD} {label}", code)
+            count += 1
         for label, metadata in (
             ("with valid internal token", authorization),
             ("with internal token and forged user metadata", authorization + FORGED_USER),

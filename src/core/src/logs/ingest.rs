@@ -287,6 +287,34 @@ pub fn prepare_record(
     }
 }
 
+/// Authorizes `stream_name` and every scoped pipeline output for `user`, before any write.
+pub(super) async fn authorize_scoped_destinations(
+    org_id: &str,
+    stream_name: &str,
+    user: &IngestUser,
+) -> Result<Vec<ExecutablePipeline>> {
+    let deny = |e: String| Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(e));
+    let resources = [infra::rbac::Resource::stream("logs", stream_name)];
+    let decisions = match user {
+        IngestUser::User(email) => {
+            infra::rbac::allowed_resources(email, org_id, infra::rbac::Action::Ingest, &resources)
+                .await
+        }
+        IngestUser::OrgToken(principal) if principal.org_id == org_id => {
+            infra::rbac::allowed_ingestion_token_resources(org_id, &principal.token_id, &resources)
+                .await
+        }
+        _ => Err(anyhow::anyhow!("Scoped ingestion identity required")),
+    }
+    .map_err(|e| deny(e.to_string()))?;
+    if decisions != [true] {
+        return Err(deny("Ingestion destination access denied".into()));
+    }
+    crate::pipeline::rbac::load(org_id, stream_name, user)
+        .await
+        .map_err(|e| deny(e.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn ingest_inner(
     thread_id: usize,
@@ -328,40 +356,7 @@ async fn ingest_inner(
     if stream_name.is_empty() {
         return Err(Error::IngestionError("Stream name is empty".to_string()));
     }
-    if infra::rbac::enabled() {
-        let resources = [infra::rbac::Resource::stream("logs", &stream_name)];
-        let decisions = match &user {
-            IngestUser::User(email) => {
-                infra::rbac::allowed_resources(
-                    email,
-                    org_id,
-                    infra::rbac::Action::Ingest,
-                    &resources,
-                )
-                .await
-            }
-            IngestUser::OrgToken(principal) if principal.org_id == org_id => {
-                infra::rbac::allowed_ingestion_token_resources(
-                    org_id,
-                    &principal.token_id,
-                    &resources,
-                )
-                .await
-            }
-            _ => Err(anyhow::anyhow!("Scoped ingestion identity required")),
-        }
-        .map_err(|e| {
-            Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
-                e.to_string(),
-            ))
-        })?;
-        if decisions != [true] {
-            return Err(Error::ErrorCode(
-                infra::errors::ErrorCodes::AuthorizationDenied(
-                    "Ingestion destination access denied".into(),
-                ),
-            ));
-        }
+    let scoped_pipelines = if infra::rbac::enabled() {
         if is_derived {
             return Err(Error::ErrorCode(
                 infra::errors::ErrorCodes::AuthorizationDenied(
@@ -369,7 +364,10 @@ async fn ingest_inner(
                 ),
             ));
         }
-    }
+        Some(authorize_scoped_destinations(org_id, &stream_name, &user).await?)
+    } else {
+        None
+    };
     // Internal writers pass the same test as the rollup write guard below.
     #[cfg(feature = "vectorscan")]
     let platform_write = {
@@ -426,14 +424,7 @@ async fn ingest_inner(
         derived_streams.insert(stream_name.to_string());
     }
 
-    let (needs, bulk_columnar) = if infra::rbac::enabled() {
-        let pipelines = crate::pipeline::rbac::load(org_id, &stream_name, &user)
-            .await
-            .map_err(|e| {
-                Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
-                    e.to_string(),
-                ))
-            })?;
+    let (needs, bulk_columnar) = if let Some(pipelines) = scoped_pipelines {
         (
             StreamRecordNeeds::with_pipelines(
                 StreamParams::new(org_id, &stream_name, stream_type),
