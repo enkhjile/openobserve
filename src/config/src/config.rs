@@ -506,12 +506,7 @@ pub fn refresh_config() -> Result<(), anyhow::Error> {
     let _guard = CONFIG_ENV_LOCK.lock();
     let old = config.load_full();
     let new = Arc::new(with_config_environment(|| {
-        let new = config_from_env()?;
-        anyhow::ensure!(
-            old.oidc == new.oidc,
-            "OIDC configuration changes require a restart; no configuration was reloaded"
-        );
-        Ok(new)
+        config_from_env(Some(&old.oidc))
     })?);
     apply_s3_environment(&new);
     config.store(new.clone());
@@ -4230,14 +4225,21 @@ pub struct EnrichmentTable {
 
 pub fn init() -> Config {
     let _guard = CONFIG_ENV_LOCK.lock();
-    let cfg = with_config_environment(config_from_env).expect("config init error");
+    let cfg = with_config_environment(|| config_from_env(None)).expect("config init error");
     apply_s3_environment(&cfg);
     cfg
 }
 
-fn config_from_env() -> anyhow::Result<Config> {
+fn config_from_env(running_oidc: Option<&Oidc>) -> anyhow::Result<Config> {
     use anyhow::Context;
     let mut cfg = Config::init().map_err(anyhow::Error::msg)?;
+    // Reject restart-only changes before validation creates directories for the candidate.
+    if let Some(running) = running_oidc {
+        anyhow::ensure!(
+            running == &cfg.oidc,
+            "OIDC configuration changes require a restart; no configuration was reloaded"
+        );
+    }
     anyhow::ensure!(
         !(cfg!(feature = "enterprise") && cfg.oidc.enabled),
         "OSS OIDC is not supported in Enterprise builds"

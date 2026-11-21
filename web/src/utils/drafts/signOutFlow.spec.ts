@@ -37,7 +37,11 @@ import {
 import { readEditorDraft, writeEditorDraft } from "@/utils/drafts/editorDraftStore";
 import { stopSessionServices } from "@/utils/sessionServices";
 import { invalidateLoginData } from "@/utils/zincutils";
-import { signOutDraftsToConfirm, signOutThroughLeaveGuards } from "./signOutFlow";
+import {
+  endSignedInSession,
+  signOutDraftsToConfirm,
+  signOutThroughLeaveGuards,
+} from "./signOutFlow";
 import oidc from "@/services/oidc";
 vi.mock("@/services/oidc", () => ({ default: { logout: vi.fn() } }));
 
@@ -116,6 +120,22 @@ describe("signOutThroughLeaveGuards", () => {
     } finally {
       window.removeEventListener("beforeunload", prompt);
     }
+  });
+
+  it("keeps drafts and clears the previous user's browser state after a confirmed direct sign-out", async () => {
+    const { rememberLinkRequest, recallLinkRequest } = await import("@/utils/slackLink");
+    const store = makeStore();
+    const scope = { kind: "function" as const, org: "o", entityId: "f", userEmail: email };
+    writeEditorDraft(scope, { data: {} });
+    rememberLinkRequest("req-1.sig", null);
+    localStorage.setItem("userInfo", "old-profile");
+    localStorage.setItem("currentuser", JSON.stringify("old-user"));
+    await endSignedInSession(store, { keepDrafts: true });
+    expect(store.dispatch).toHaveBeenCalledWith("logout");
+    expect(readEditorDraft(scope)).not.toBeNull();
+    expect(recallLinkRequest()).toBeNull();
+    expect(localStorage.getItem("userInfo")).toBeNull();
+    expect(localStorage.getItem("currentuser")).toBeNull();
   });
 
   it("awaits OIDC revocation before clearing state or navigating", async () => {

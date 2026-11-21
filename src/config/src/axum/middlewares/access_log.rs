@@ -225,10 +225,12 @@ where
                         resp.headers()
                             .iter()
                             .map(|(name, value)| {
-                                (
-                                    name.as_str().to_string(),
-                                    value.to_str().unwrap_or("-").to_string(),
-                                )
+                                let value = if name == axum::http::header::SET_COOKIE {
+                                    "[REDACTED]"
+                                } else {
+                                    value.to_str().unwrap_or("-")
+                                };
+                                (name.as_str().to_string(), value.to_string())
                             })
                             .collect()
                     } else {
@@ -649,6 +651,32 @@ mod tests {
             .expect("access line");
         assert!(line.contains("dd=[REDACTED]"), "{line}");
         assert!(!line.contains(secret), "{line}");
+    }
+
+    #[tokio::test]
+    async fn custom_response_headers_redact_set_cookie() {
+        let _ = log::set_logger(&CAPTURE_LOGGER);
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut svc = AccessLogLayer::new("cookies=%{sEt-CoOkIe}o id=%{X-Request-Id}o".into())
+            .layer(tower::service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(
+                    Response::builder()
+                        .header("Set-Cookie", "session=first")
+                        .header("Set-Cookie", "transaction=second")
+                        .header("X-Request-Id", "request-123")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        svc.call(Request::new(Body::empty())).await.unwrap();
+        let lines = LOG_LINES.lock().unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .find(|line| line.starts_with("cookies="))
+                .map(String::as_str),
+            Some("cookies=[REDACTED] id=request-123")
+        );
     }
 
     #[test]

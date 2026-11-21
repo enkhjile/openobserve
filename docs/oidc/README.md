@@ -38,7 +38,7 @@ Automatic provisioning is a separate policy. It requires verified email, refuses
 
 Authorization uses code flow with S256 PKCE, state and nonce. The callback validates the provider's signed ID token before creating a fresh opaque server session. Provider tokens are not returned to the browser. Login transactions are process-local and short-lived; after a restart, begin login again.
 
-Sessions use secure HttpOnly cookies and a fixed maximum lifetime. Reauthenticate after expiry; no refresh token is stored. Logout invalidates the local session through a CSRF-protected POST. It does not end the provider's own SSO session, so the next login may authenticate immediately there. Removing approval or the local user also invalidates session use.
+Sessions use secure HttpOnly cookies and a fixed maximum lifetime. Reauthenticate after expiry; no refresh token is stored. Choosing Sign Out in the application invalidates the local session through a CSRF-protected POST. A direct visit to `/web/logout` asks for confirmation before sending that request. It does not end the provider's own SSO session, so the next login may authenticate immediately there. Removing approval or the local user also invalidates session use.
 
 Use one application origin for UI and backend, with HTTPS terminated by the existing trusted reverse proxy. Unsafe cookie-authenticated requests must satisfy the adapter's origin checks. Avoid logging callback queries at the proxy, and do not enable credential/header debug logging.
 

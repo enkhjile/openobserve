@@ -52,9 +52,8 @@ export const getUserInfo = (loginString: string) => {
   }
 };
 
-export const invalidateLoginData = () => {
-  userService.logout().then(() => {});
-};
+export const invalidateLoginData = (awaitConfirmation = false) =>
+  userService.logout(awaitConfirmation);
 
 export const getDecodedAccessToken = (token: string) => {
   try {

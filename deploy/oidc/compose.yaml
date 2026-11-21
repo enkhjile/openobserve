@@ -23,6 +23,7 @@ services:
       ZO_OIDC_ONLY: "true"
       ZO_OIDC_EMERGENCY_USER: ${ZO_ROOT_USER_EMAIL:?Set the emergency root email}
       ZO_OIDC_SESSION_MAX_AGE: "3600"
+      ZO_COOKIE_SECURE_ONLY: "true"
       ZO_OIDC_COOKIE_SECURE: "true"
       ZO_OIDC_ALLOW_INSECURE_HTTP: "false"
 

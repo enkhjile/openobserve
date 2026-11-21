@@ -59,6 +59,78 @@ describe("OSS OIDC login", () => {
     cy.location("pathname").should("eq", "/web/login");
   });
 
+  it("requires confirmation for a direct native logout", () => {
+    cy.intercept("GET", "**/config", { oidc_enabled: false });
+    let attempts = 0;
+    cy.intercept("GET", "**/config/logout", (request) => {
+      attempts += 1;
+      request.reply({ statusCode: [503, 401, 200][attempts - 1] });
+    }).as("nativeLogout");
+    cy.visit("/web/logout", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem(
+          "userInfo",
+          win.btoa(JSON.stringify({ email: "native@example.test" })),
+        );
+      },
+    });
+    cy.get('[data-test="confirm-sign-out"]')
+      .should("be.visible")
+      .then(() => {
+        expect(attempts).to.equal(0);
+      });
+    [503, 401].forEach((status) => {
+      cy.get('[data-test="confirm-sign-out"]').click();
+      cy.wait("@nativeLogout").its("response.statusCode").should("eq", status);
+      cy.contains("Sign-out failed").should("be.visible");
+      cy.location("pathname").should("eq", "/web/logout");
+      cy.window().then((win) => expect(win.localStorage.getItem("userInfo")).not.to.be.null);
+    });
+    cy.get('[data-test="confirm-sign-out"]').click();
+    cy.wait("@nativeLogout");
+    cy.location("pathname").should("eq", "/web/login");
+  });
+
+  [false, true].forEach((cachedProfile) => {
+    it(`requires confirmation for direct logout with ${cachedProfile ? "a cached" : "no cached"} profile`, () => {
+      cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+      let attempts = 0;
+      cy.intercept("POST", "**/auth/oidc/logout", (request) => {
+        attempts += 1;
+        request.reply({ statusCode: attempts === 1 ? 503 : 204 });
+      }).as("revoke");
+      cy.visit("/web/logout", {
+        onBeforeLoad(win) {
+          if (cachedProfile) {
+            win.localStorage.setItem(
+              "userInfo",
+              win.btoa(
+                JSON.stringify({
+                  email: "member@example.test",
+                  exp: Math.floor(Date.now() / 1000) + 600,
+                }),
+              ),
+            );
+          } else {
+            win.localStorage.removeItem("userInfo");
+          }
+        },
+      });
+      cy.get('[data-test="confirm-sign-out"]')
+        .should("be.visible")
+        .then(() => {
+          expect(attempts).to.equal(0);
+        });
+      cy.get('[data-test="confirm-sign-out"]').click();
+      cy.wait("@revoke");
+      cy.contains("Sign-out failed").should("be.visible");
+      cy.location("pathname").should("eq", "/web/logout");
+      cy.get('[data-test="confirm-sign-out"]').click();
+      cy.wait("@revoke");
+      cy.location("pathname").should("eq", "/web/login");
+    });
+  });
+
   it("shows a generic failure without echoing provider error details", () => {
     openLogin({}, "?oidc_error=1&error_description=private-provider-details");
     cy.get('[data-test="oidc-error"]').should("be.visible").and("contain", "SSO sign-in failed");

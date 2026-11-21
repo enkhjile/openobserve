@@ -28,7 +28,7 @@ Record the application commit, provider version, issuer, signing algorithm, date
 8. Submit an unsafe authenticated request from another origin. Verify rejection. Verify that a normal same-origin edit still works.
 9. Log out, then reuse the old cookie in a direct API request. Verify rejection. Also verify rejection after the configured session lifetime and after approval is removed.
 10. Rotate the provider signing key. Verify that a subsequent login succeeds with the new key; verify that an unrelated signing key does not.
-11. Enable OIDC-only mode. Try native login and direct Basic human-password access. Both must fail except for the explicitly configured emergency root account. Verify the emergency password must still be correct.
+11. Enable OIDC-only mode. Try native login and direct Basic human-password access. Both must fail except for the explicitly configured emergency root account. Verify the emergency password must still be correct. After an emergency browser login over HTTPS, check that the native `auth_tokens` cookie has `Secure` and `HttpOnly`; the Compose example sets `ZO_COOKIE_SECURE_ONLY=true` for this cookie.
 12. Exercise existing OTLP ingestion, organization ingestion tokens, and service-account API access with their normal credentials.
 13. Restart OpenObserve and check persisted sessions and identity mappings according to the documented expiry policy. An unfinished login may need to restart because its transaction is process-local.
 14. Verify callback handling behind the intended reverse proxy and under any configured base path.

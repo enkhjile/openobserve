@@ -401,9 +401,15 @@ def test_flow(binary, directory, issuer):
         ZO_OIDC_ACCOUNT_LINKS="[]",
         ZO_OIDC_PROVISIONING_ENABLED="true",
         ZO_OIDC_EMERGENCY_USER=ROOT,
+        ZO_COOKIE_SECURE_ONLY="true",
         ZO_OIDC_SESSION_MAX_AGE="2",
     )
     with app(binary, directory, port, settings):
+        emergency = requests.post(
+            base + "/auth/login", json={"name": ROOT, "password": PASSWORD}, timeout=5
+        )
+        emergency.raise_for_status()
+        assert any(c.name == "auth_tokens" and c.secure for c in emergency.cookies)
         assert requests.get(
             base + "/api/default/config", auth=(ROOT, PASSWORD), timeout=5
         ).ok

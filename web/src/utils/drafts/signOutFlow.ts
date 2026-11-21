@@ -63,11 +63,16 @@ export const reloadToLogin = (): void => {
 /** Ends the signed-in session here: services stopped, login data gone and, unless kept, this user's drafts gone with no draft written after. */
 export const endSignedInSession = (
   store: SignOutStore,
-  { keepDrafts = false }: { keepDrafts?: boolean } = {},
+  {
+    keepDrafts = false,
+    awaitNativeLogout = false,
+  }: { keepDrafts?: boolean; awaitNativeLogout?: boolean } = {},
 ): void | Promise<void> => {
   const finish = (oidcEnabled: boolean) => {
-    if (oidcEnabled) return oidc.logout().then(() => clearSignedInSession(store, keepDrafts));
-    invalidateLoginData();
+    const request = oidcEnabled ? oidc.logout() : invalidateLoginData(awaitNativeLogout);
+    if (oidcEnabled || awaitNativeLogout) {
+      return request.then(() => clearSignedInSession(store, keepDrafts));
+    }
     clearSignedInSession(store, keepDrafts);
   };
   const enabled = store.state.zoConfig?.oidc_enabled;

@@ -94,6 +94,25 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         assert!(config::get_config().oidc.enabled);
         assert!(!config::get_config().oidc.only);
     }
+    let proposed_cache = dir.join("rejected-cache");
+    let before_cache = std::env::var_os("ZO_DATA_CACHE_DIR");
+    std::fs::write(
+        &env_file,
+        format!(
+            "ZO_DATA_CACHE_DIR={}\nZO_OIDC_CLIENT_ID=proposed-client\n",
+            proposed_cache.display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        config::config::refresh_config()
+            .unwrap_err()
+            .to_string()
+            .contains("require a restart")
+    );
+    assert!(!proposed_cache.exists());
+    assert_eq!(std::env::var_os("ZO_DATA_CACHE_DIR"), before_cache);
+    assert_eq!(config::get_config().oidc.client_id, "test-client");
     std::fs::write(
         &env_file,
         format!("\u{feff}O2_TEST_RELOAD_BASE=first\n{new_key}=${{O2_TEST_RELOAD_BASE}}\nO2_TEST_RELOAD_BASE=last\n"),
