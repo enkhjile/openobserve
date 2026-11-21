@@ -13,10 +13,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{collections::HashMap, ops::Deref, sync::LazyLock};
+
 use dotenv_config::EnvConfig;
 use serde::Serialize;
 
-#[derive(Serialize, EnvConfig, Default, PartialEq, Eq)]
+#[derive(Serialize, EnvConfig, Default)]
 pub struct Oidc {
     #[env_config(name = "ZO_OIDC_ENABLED", default = false)]
     pub enabled: bool,
@@ -48,10 +50,63 @@ pub struct Oidc {
     pub cookie_secure: bool,
 }
 
+/// Application startup loads dotenv before constructing Config. Every subsequent config reload
+/// receives the same OIDC settings, including the policy used to validate existing sessions.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct StartupOidc(&'static Oidc);
+
+impl StartupOidc {
+    pub(crate) fn init() -> Result<Self, &'static str> {
+        static SETTINGS: LazyLock<Oidc> = LazyLock::new(|| {
+            let settings = Oidc::init().expect("invalid OIDC configuration");
+            settings
+                .validate_startup()
+                .expect("invalid OIDC configuration");
+            settings
+        });
+        Ok(Self(&SETTINGS))
+    }
+
+    pub(crate) fn get_help() -> HashMap<String, (String, Option<String>)> {
+        Oidc::get_help()
+    }
+}
+
+impl Default for StartupOidc {
+    fn default() -> Self {
+        static DEFAULT: LazyLock<Oidc> = LazyLock::new(Oidc::default);
+        Self(&DEFAULT)
+    }
+}
+
+impl Deref for StartupOidc {
+    type Target = Oidc;
+
+    fn deref(&self) -> &Oidc {
+        self.0
+    }
+}
+
 pub const CALLBACK_PATH: &str = "/auth/oidc/callback";
 
 impl Oidc {
-    pub(crate) fn validate_callback_path(&self) -> anyhow::Result<()> {
+    fn validate_startup(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !(cfg!(feature = "enterprise") && self.enabled),
+            "OSS OIDC is not supported in Enterprise builds"
+        );
+        anyhow::ensure!(
+            !self.only || self.enabled,
+            "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
+        );
+        if self.enabled {
+            self.validate_callback_path()?;
+        }
+        Ok(())
+    }
+
+    fn validate_callback_path(&self) -> anyhow::Result<()> {
         let uri = url::Url::parse(&self.redirect_uri)?;
         anyhow::ensure!(
             uri.path().ends_with(CALLBACK_PATH),
@@ -82,14 +137,12 @@ mod tests {
     }
 
     #[test]
-    fn private_oidc_settings_are_not_serialized_but_are_compared_on_reload() {
-        let old = Oidc::default();
+    fn private_oidc_settings_are_not_serialized() {
         let new = Oidc {
             client_secret: "private-client-secret".into(),
             account_links: "private-account-links".into(),
             ..Default::default()
         };
-        assert!(old != new);
         let value = serde_json::to_value(new).unwrap();
         assert!(value.get("client_secret").is_none());
         assert!(value.get("account_links").is_none());

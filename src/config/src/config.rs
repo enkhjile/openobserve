@@ -16,7 +16,6 @@
 use std::{
     cmp::max,
     collections::BTreeMap,
-    ffi::OsString,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock as Lazy},
 };
@@ -42,7 +41,7 @@ use crate::{
         meta_store::MetaStore,
         stream::{DataRetentionDefaults, QueryPartitionStrategy, StreamType},
     },
-    oidc::Oidc,
+    oidc::StartupOidc,
     utils::{str::redact_dsn, sysinfo},
 };
 
@@ -490,10 +489,6 @@ pub static NATS_KV_WATCH_MODULES: Lazy<HashSet<String>> = Lazy::new(|| {
 });
 
 pub static CONFIG: Lazy<ArcSwap<Config>> = Lazy::new(|| ArcSwap::from(Arc::new(init())));
-// Process values shadowed by the currently applied dotenv file.
-type FileEnvironment = BTreeMap<String, Option<OsString>>;
-static FILE_ENVIRONMENT: parking_lot::Mutex<FileEnvironment> =
-    parking_lot::Mutex::new(BTreeMap::new());
 static INSTANCE_ID: Lazy<RwHashMap<String, String>> = Lazy::new(Default::default);
 static STORED_GRPC_TOKEN: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
 static STORED_EXT_AUTH_SALT: Lazy<ArcSwap<String>> = Lazy::new(Default::default);
@@ -505,15 +500,9 @@ pub fn get_config() -> Arc<Config> {
 }
 
 pub fn refresh_config() -> Result<(), anyhow::Error> {
-    // Initialization also takes the environment lock.
-    let config = Lazy::force(&CONFIG);
-    let mut baseline = FILE_ENVIRONMENT.lock();
-    let old = config.load_full();
-    let new = Arc::new(with_config_environment(&mut baseline, || {
-        config_from_env(Some(&old.oidc))
-    })?);
-    apply_s3_environment(&new);
-    config.store(new.clone());
+    let old = CONFIG.load_full();
+    let new = Arc::new(init());
+    CONFIG.store(new.clone());
 
     // Deliberately not propagated as an error. `config_watcher::reload_config`
     // chains this with other refreshes and only records the new file hash when
@@ -715,85 +704,29 @@ pub fn calculate_config_file_hash(path: &PathBuf) -> Result<String, anyhow::Erro
 }
 
 pub fn load_config() -> Result<(), anyhow::Error> {
-    let mut baseline = FILE_ENVIRONMENT.lock();
-    with_config_environment(&mut baseline, || Ok(()))
-}
-
-fn discover_config_file() -> anyhow::Result<Option<PathBuf>> {
-    for directory in std::env::current_dir()?.ancestors() {
-        let path = directory.join(".env");
-        match path.metadata() {
-            Ok(metadata) if metadata.is_file() => return Ok(Some(path)),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+    match crate::config_path_manager::get_config_file_path() {
+        Some(path) => {
+            log::info!("Loading config from file {:?}", path);
+            if dotenvy::from_path_override(&path).is_err() {
+                return Err(anyhow::anyhow!("Config loading from file failed"));
+            }
+            log::info!("Config loaded successfully from file {path:?}");
         }
-    }
-    Ok(None)
-}
-
-fn restore_env_key(key: &str, value: Option<&OsString>) {
-    match value {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
-    }
-}
-
-fn with_config_environment<T>(
-    baseline: &mut FileEnvironment,
-    validate: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    let selected = crate::config_path_manager::get_config_file_path();
-    let path = match &selected {
-        Some(path) => Some(path.clone()),
-        None => discover_config_file()?,
-    };
-    let mut previous = FileEnvironment::new();
-    let mut next_baseline = FileEnvironment::new();
-    // Start from the underlying environment so deleted keys and substitutions match a fresh start.
-    for (key, value) in baseline.iter() {
-        previous.insert(key.clone(), std::env::var_os(key));
-        restore_env_key(key, value.as_ref());
-    }
-    // EnvConfig panics on malformed scalars. Restore both overwritten and newly introduced keys.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Some(path) = &path {
-            let bytes = std::fs::read(path)?;
-            let contents = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-            for item in dotenvy::from_read_iter(contents) {
-                let (key, value) =
-                    item.map_err(|_| anyhow::anyhow!("invalid config file {path:?}"))?;
-                // Apply in file order so later substitutions see earlier overrides, including
-                // duplicates.
-                next_baseline
-                    .entry(key.clone())
-                    .or_insert_with(|| std::env::var_os(&key));
-                previous
-                    .entry(key.clone())
-                    .or_insert_with(|| std::env::var_os(&key));
-                unsafe { std::env::set_var(key, value) };
+        None => {
+            // Perform default .env discovery and set it in the config manager
+            if let Ok(env_path) = dotenvy::dotenv_override() {
+                log::debug!("Config init: Found .env file at {env_path:?} during boot");
+                // Set the default path in config manager
+                crate::config_path_manager::set_config_file_path(env_path)?;
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Config init: No .env file found during default discovery"
+                ));
             }
         }
-        let value = validate()?;
-        if selected.is_none()
-            && let Some(path) = path
-        {
-            crate::config_path_manager::set_config_file_path(path)?;
-        }
-        Ok(value)
-    }))
-    .unwrap_or_else(|_| Err(anyhow::anyhow!("invalid environment configuration")));
-
-    if result.is_ok() {
-        *baseline = next_baseline;
-    } else {
-        for (key, prior) in previous {
-            restore_env_key(&key, prior.as_ref());
-        }
     }
-    result
+    Ok(())
 }
-
 static CHROME_LAUNCHER_OPTIONS: tokio::sync::OnceCell<Option<BrowserConfig>> =
     tokio::sync::OnceCell::const_new();
 static CHROME_SEMAPHORE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
@@ -1179,7 +1112,7 @@ impl<'de> Deserialize<'de> for FileFormatConfig {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Config {
-    pub oidc: Oidc,
+    pub oidc: StartupOidc,
     pub auth: Auth,
     pub http_streaming: HttpStreaming,
     pub report_server: ReportServer,
@@ -4246,36 +4179,11 @@ pub struct EnrichmentTable {
 }
 
 pub fn init() -> Config {
-    let mut baseline = FILE_ENVIRONMENT.lock();
-    let cfg = with_config_environment(&mut baseline, || config_from_env(None))
-        .expect("config init error");
-    apply_s3_environment(&cfg);
-    cfg
-}
-
-fn config_from_env(running_oidc: Option<&Oidc>) -> anyhow::Result<Config> {
-    use anyhow::Context;
-    let mut cfg = Config::init().map_err(anyhow::Error::msg)?;
-    // Reject restart-only changes before validation creates directories for the candidate.
-    if let Some(running) = running_oidc {
-        anyhow::ensure!(
-            running == &cfg.oidc,
-            "OIDC configuration changes require a restart; no configuration was reloaded"
-        );
+    if let Err(e) = load_config() {
+        log::error!("Failed to load config {e}");
+        // do nothing
     }
-    anyhow::ensure!(
-        !(cfg!(feature = "enterprise") && cfg.oidc.enabled),
-        "OSS OIDC is not supported in Enterprise builds"
-    );
-
-    anyhow::ensure!(
-        !cfg.oidc.only || cfg.oidc.enabled,
-        "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
-    );
-
-    if cfg.oidc.enabled {
-        cfg.oidc.validate_callback_path()?;
-    }
+    let mut cfg = Config::init().expect("config init error");
 
     // set local mode
     if cfg.common.local_mode {
@@ -4285,29 +4193,89 @@ fn config_from_env(running_oidc: Option<&Oidc>) -> anyhow::Result<Config> {
     cfg.common.is_local_storage = cfg.common.local_mode
         && (cfg.common.local_mode_storage == "disk" || cfg.common.local_mode_storage == "local");
 
-    check_limit_config(&mut cfg).context("limit config error")?;
-    check_route_config(&cfg).context("route config error")?;
-    check_common_config(&mut cfg).context("common config error")?;
+    // check limit config
+    if let Err(e) = check_limit_config(&mut cfg) {
+        panic!("limit config error: {e}");
+    }
+
+    // check route config
+    if let Err(e) = check_route_config(&cfg) {
+        panic!("route config error: {e}");
+    }
+
+    // check common config
+    if let Err(e) = check_common_config(&mut cfg) {
+        panic!("common config error: {e}");
+    }
+
     check_self_profiles_config(&mut cfg);
-    check_grpc_config(&mut cfg).context("grpc config error")?;
-    check_http_config(&mut cfg).context("http config error")?;
-    check_path_config(&mut cfg).context("path config error")?;
-    check_memory_config(&mut cfg).context("memory config error")?;
-    check_disk_cache_config(&mut cfg).context("disk cache config error")?;
-    check_compact_config(&mut cfg).context("compact config error")?;
-    check_s3_config(&mut cfg).context("s3 config error")?;
-    check_sns_config(&mut cfg).context("sns config error")?;
-    check_health_check_config(&mut cfg).context("health check config error")?;
-    check_pipeline_config(&mut cfg).context("pipeline config error")?;
-    check_nats_config(&mut cfg).context("nats config error")?;
-    check_inverted_index_config(&mut cfg).context("inverted index config error")?;
+
+    // check grpc config
+    if let Err(e) = check_grpc_config(&mut cfg) {
+        panic!("common config error: {e}");
+    }
+
+    // check http config
+    if let Err(e) = check_http_config(&mut cfg) {
+        panic!("common config error: {e}")
+    }
+
+    // check data path config
+    if let Err(e) = check_path_config(&mut cfg) {
+        panic!("data path config error: {e}");
+    }
+
+    // check memory cache
+    if let Err(e) = check_memory_config(&mut cfg) {
+        panic!("memory cache config error: {e}");
+    }
+
+    // check disk cache
+    if let Err(e) = check_disk_cache_config(&mut cfg) {
+        panic!("disk cache config error: {e}");
+    }
+
+    // check compact config
+    if let Err(e) = check_compact_config(&mut cfg) {
+        panic!("compact config error: {e}");
+    }
+
+    // check s3 config
+    if let Err(e) = check_s3_config(&mut cfg) {
+        panic!("s3 config error: {e}");
+    }
+
+    // check sns config
+    if let Err(e) = check_sns_config(&mut cfg) {
+        panic!("sns config error: {e}");
+    }
+
+    // check health check config
+    if let Err(e) = check_health_check_config(&mut cfg) {
+        panic!("health check config error: {e}");
+    }
+
+    // check pipeline config
+    if let Err(e) = check_pipeline_config(&mut cfg) {
+        panic!("pipeline config error: {e}");
+    }
+
+    // check nats config
+    if let Err(e) = check_nats_config(&mut cfg) {
+        panic!("nats config error: {e}");
+    }
+
+    // check inverted index config
+    if let Err(e) = check_inverted_index_config(&mut cfg) {
+        panic!("inverted index config error: {e}");
+    }
 
     // check synthetics config — infallible on purpose, see the function
     check_synthetics_config(&mut cfg);
 
     check_public_dashboards_config(&mut cfg);
 
-    Ok(cfg)
+    cfg
 }
 
 fn check_limit_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
@@ -5407,19 +5375,16 @@ fn check_s3_config(cfg: &mut Config) -> Result<(), anyhow::Error> {
         }
     }
     cfg.s3.provider = cfg.s3.provider.to_lowercase();
+    if cfg.s3.provider.eq("swift") {
+        unsafe { std::env::set_var("AWS_EC2_METADATA_DISABLED", "true") };
+    }
+
     if cfg.s3.keepalive_timeout == 0 {
         // reset to default
         cfg.s3.keepalive_timeout = 20;
     }
 
     Ok(())
-}
-
-// Change process-wide SDK behavior only after the entire candidate has been accepted.
-fn apply_s3_environment(cfg: &Config) {
-    if cfg.s3.provider == "swift" {
-        unsafe { std::env::set_var("AWS_EC2_METADATA_DISABLED", "true") };
-    }
 }
 
 fn check_pipeline_config(cfg: &mut Config) -> Result<(), anyhow::Error> {

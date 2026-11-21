@@ -234,15 +234,14 @@ def test_flow(binary, directory, issuer):
         "ZO_OIDC_ALLOW_INSECURE_HTTP": "true",
         "ZO_OIDC_COOKIE_SECURE": "false",
         "ZO_OIDC_ONLY": "true",
-        "ZO_OIDC_ACCOUNT_LINKS": json.dumps(
-            [{"issuer": issuer.issuer, "subject": "approved", "email": HUMAN.upper()}]
-        ),
     }
+    config_file = Path(directory) / ".env"
+    links = [{"issuer": issuer.issuer, "subject": "approved", "email": HUMAN.upper()}]
+    config_file.write_text(f"ZO_OIDC_ACCOUNT_LINKS='{json.dumps(links)}'\n")
     # Static client errors must be reported before a server can advertise readiness.
     invalid_env = {k: v for k, v in os.environ.items() if not k.startswith("ZO_")}
     invalid_env.update(
         settings,
-        ZO_OIDC_CLIENT_ID="",
         ZO_ROOT_USER_EMAIL=ROOT,
         ZO_ROOT_USER_PASSWORD=PASSWORD,
         ZO_LOCAL_MODE="true",
@@ -251,18 +250,19 @@ def test_flow(binary, directory, issuer):
         ZO_TELEMETRY="false",
         ZO_DATA_DIR=str(Path(directory) / "data") + "/",
     )
-    invalid = subprocess.run(
-        [binary],
-        cwd=directory,
-        env=invalid_env,
-        check=False,
-        capture_output=True,
-        timeout=20,
-    )
-    assert (
-        invalid.returncode != 0
-        and b"OIDC provider configuration" in invalid.stderr + invalid.stdout
-    )
+    for setting, value, expected in [
+        ("ZO_OIDC_CLIENT_ID", "", b"OIDC provider configuration"),
+        ("ZO_OIDC_COOKIE_SECURE", "invalid", b"ZO_OIDC_COOKIE_SECURE"),
+    ]:
+        invalid = subprocess.run(
+            [binary],
+            cwd=directory,
+            env=invalid_env | {setting: value},
+            check=False,
+            capture_output=True,
+            timeout=20,
+        )
+        assert invalid.returncode != 0 and expected in invalid.stderr + invalid.stdout
     with app(binary, directory, port, settings):
         issuer.subject, issuer.email = "unapproved", HUMAN
         with requests.Session() as browser:
@@ -430,14 +430,28 @@ def test_flow(binary, directory, issuer):
         )
         finish_flow(browser, pending, False)
 
+        # A deleted mapping stays in effect until the next process reads the edited file.
+        config_file.write_text("ZO_ROUTE_TIMEOUT=602\n")
+        reload_response = requests.get(
+            base + "/config/reload", auth=(ROOT, PASSWORD), timeout=10
+        )
+        reload_response.raise_for_status()
+        with requests.Session() as linked:
+            flow(linked, base, True)
+            before_restart = linked.cookies.copy()
+            profile = linked.get(base + "/auth/oidc/session", timeout=5)
+            assert profile.ok and profile.json()["email"] == HUMAN
+
     settings.update(
-        ZO_OIDC_ACCOUNT_LINKS="[]",
         ZO_OIDC_PROVISIONING_ENABLED="true",
         ZO_OIDC_EMERGENCY_USER=ROOT,
         ZO_COOKIE_SECURE_ONLY="true",
         ZO_OIDC_SESSION_MAX_AGE="2",
     )
     with app(binary, directory, port, settings):
+        assert requests.get(
+            base + "/auth/oidc/session", cookies=before_restart, timeout=5
+        ).status_code == 401
         emergency = requests.post(
             base + "/auth/login", json={"name": ROOT, "password": PASSWORD}, timeout=5
         )

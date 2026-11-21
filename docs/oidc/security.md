@@ -15,7 +15,7 @@ Review scope: OIDC login on the Community Edition, from browser redirect through
 
 ## Boundaries operators should verify
 
-Keep the UI and API on the same HTTPS origin. Match the complete callback URL at the provider, including any base path. Protect the environment and SQLite database as credentials. Configure the reverse proxy to omit callback queries. Browsers retain the provider's own session after OpenObserve logout. An IdP logout or deactivation does not send a back-channel revocation notification to this extension; the application session has a hard expiry. For faster revocation remove the local approval or local account.
+Keep the UI and API on the same HTTPS origin. Match the complete callback URL at the provider, including any base path. Protect the environment and SQLite database as credentials. Configure the reverse proxy to omit callback queries. Browsers retain the provider's own session after OpenObserve logout. An IdP logout or deactivation does not send a back-channel revocation notification to this extension; the application session has a hard expiry. Delete the local account for immediate revocation, or remove its configured approval and restart OpenObserve.
 
 The current deployment target is a single OpenObserve process. Pending login state is in memory. Restarting during a login discards that transaction and the user starts again. The bounded signing-key cache permits rotation without a network call per API request. Key removal at the issuer takes effect at cache refresh. Use short token and local session lifetimes appropriate for your deployment.
 

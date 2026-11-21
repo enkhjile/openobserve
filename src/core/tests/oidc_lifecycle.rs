@@ -75,16 +75,13 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
     let dir = std::env::temp_dir().join(format!("o2-oidc-lifecycle-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("db")).unwrap();
     let env_file = dir.join("empty.env");
-    // A file assignment shadows an inherited value. Removing it proposes an OIDC policy change.
-    env("ZO_OIDC_SCOPES", "openid");
-    let write_env = |contents: &str| {
-        std::fs::write(
-            &env_file,
-            format!("\u{feff}ZO_OIDC_SCOPES=\"openid email profile\"\n{contents}"),
-        )
-        .unwrap();
-    };
-    write_env("");
+    let account_links =
+        r#"[{"issuer":"https://issuer.example","subject":"linked","email":"linked@example.com"}]"#;
+    std::fs::write(
+        &env_file,
+        format!("ZO_OIDC_ACCOUNT_LINKS='{account_links}'\nZO_ROUTE_TIMEOUT=601\n"),
+    )
+    .unwrap();
     config::config_path_manager::set_config_file_path(env_file.clone()).unwrap();
     env("ZO_LOCAL_MODE", "true");
     env("ZO_META_STORE", "sqlite");
@@ -98,70 +95,40 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         "https://observe.example/auth/oidc/callback",
     );
     env("ZO_OIDC_PROVISIONING_ENABLED", "true");
-    assert!(config::get_config().oidc.enabled);
-    assert_eq!(config::get_config().oidc.scopes, "openid email profile");
-    std::fs::write(&env_file, "O2_TEST_DELETED_OIDC=rejected\n").unwrap();
-    assert!(
-        config::refresh_config()
-            .unwrap_err()
-            .to_string()
-            .contains("require a restart")
-    );
-    assert_eq!(
-        std::env::var("ZO_OIDC_SCOPES").unwrap(),
-        "openid email profile"
-    );
-    assert!(std::env::var_os("O2_TEST_DELETED_OIDC").is_none());
-    let before_enabled = std::env::var_os("ZO_OIDC_ENABLED");
-    let before_only = std::env::var_os("ZO_OIDC_ONLY");
-    let before_secure = std::env::var_os("ZO_OIDC_COOKIE_SECURE");
-    let new_key = "O2_TEST_RELOAD_TRANSIENT";
-    assert!(std::env::var_os(new_key).is_none());
-    env("O2_TEST_RELOAD_BASE", "original");
-    for invalid in [
-        "ZO_OIDC_ENABLED=false\nZO_OIDC_ONLY=true",
-        "ZO_OIDC_ONLY=true",
-        "ZO_ROUTE_STRATEGY=invalid",
-        "ZO_OIDC_COOKIE_SECURE=invalid",
-        "bad dotenv line",
-    ] {
-        write_env(&format!(
-            "O2_TEST_RELOAD_BASE=first\nO2_TEST_RELOAD_BASE=second\n{new_key}=candidate\n{invalid}\n"
-        ));
-        assert!(config::config::refresh_config().is_err());
-        assert_eq!(std::env::var("O2_TEST_RELOAD_BASE").unwrap(), "original");
-        assert!(std::env::var_os(new_key).is_none());
-        assert_eq!(std::env::var_os("ZO_OIDC_ENABLED"), before_enabled);
-        assert_eq!(std::env::var_os("ZO_OIDC_ONLY"), before_only);
-        assert_eq!(std::env::var_os("ZO_OIDC_COOKIE_SECURE"), before_secure);
-        assert!(config::get_config().oidc.enabled);
-        assert!(!config::get_config().oidc.only);
-    }
-    let proposed_cache = dir.join("rejected-cache");
-    let before_cache = std::env::var_os("ZO_DATA_CACHE_DIR");
-    write_env(&format!(
-        "ZO_DATA_CACHE_DIR={}\nZO_OIDC_CLIENT_ID=proposed-client\n",
-        proposed_cache.display()
-    ));
-    assert!(
-        config::config::refresh_config()
-            .unwrap_err()
-            .to_string()
-            .contains("require a restart")
-    );
-    assert!(!proposed_cache.exists());
-    assert_eq!(std::env::var_os("ZO_DATA_CACHE_DIR"), before_cache);
-    assert_eq!(config::get_config().oidc.client_id, "test-client");
-    write_env(&format!(
-        "O2_TEST_RELOAD_BASE=first\n{new_key}=${{O2_TEST_RELOAD_BASE}}\nO2_TEST_RELOAD_BASE=last\n"
-    ));
-    config::config::refresh_config().unwrap();
-    assert_eq!(std::env::var(new_key).unwrap(), "first");
-    assert_eq!(std::env::var("O2_TEST_RELOAD_BASE").unwrap(), "last");
-    write_env("");
+    let startup = config::get_config();
+    assert_eq!(startup.route.timeout, 601);
+    assert!(startup.oidc.enabled);
+    assert_eq!(startup.oidc.account_links, account_links);
+
+    // A normal edit takes effect alongside valid changes to startup-only settings.
+    std::fs::write(
+        &env_file,
+        "ZO_ROUTE_TIMEOUT=602\nZO_OIDC_ENABLED=false\nZO_OIDC_CLIENT_ID=next-client\nZO_OIDC_ACCOUNT_LINKS=[]\n",
+    ).unwrap();
     config::refresh_config().unwrap();
-    assert_eq!(std::env::var("O2_TEST_RELOAD_BASE").unwrap(), "original");
-    assert!(std::env::var_os(new_key).is_none());
+    let mixed = config::get_config();
+    assert_eq!(mixed.route.timeout, 602);
+    assert!(mixed.oidc.enabled);
+    assert_eq!(mixed.oidc.client_id, "test-client");
+    assert_eq!(mixed.oidc.account_links, account_links);
+
+    // Removing the mapping and leaving a malformed next-start flag cannot stall another reload.
+    std::fs::write(
+        &env_file,
+        "ZO_ROUTE_TIMEOUT=603\nZO_OIDC_COOKIE_SECURE=invalid\n",
+    )
+    .unwrap();
+    config::refresh_config().unwrap();
+    let malformed = config::get_config();
+    assert_eq!(malformed.route.timeout, 603);
+    assert!(malformed.oidc.cookie_secure);
+    assert_eq!(malformed.oidc.account_links, account_links);
+
+    std::fs::write(&env_file, "ZO_ROUTE_TIMEOUT=604\n").unwrap();
+    config::refresh_config().unwrap();
+    let ordinary = config::get_config();
+    assert_eq!(ordinary.route.timeout, 604);
+    assert_eq!(ordinary.oidc.account_links, account_links);
     infra::db::create_table().await.unwrap();
     infra::db_init().await.unwrap();
     infra::table::migrate().await.unwrap();

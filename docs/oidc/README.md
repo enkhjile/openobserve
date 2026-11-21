@@ -22,7 +22,7 @@ Set environment variables using the existing OpenObserve configuration mechanism
 | `ZO_OIDC_COOKIE_SECURE` | `true` | Secure browser cookies; keep enabled in production. |
 | `ZO_OIDC_ALLOW_INSECURE_HTTP` | `false` | Explicit development-only HTTP opt-in. Never enable on an exposed deployment. |
 
-Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. If discovery fails, concurrent logins share the failure and the server can retry discovery after two seconds. Confidential clients support client_secret_basic and client_secret_post. Restart the server after changing any OIDC setting. Hot reload rejects OIDC changes before applying configuration, so incomplete rotations cannot mix a new approval policy with an old client. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
+Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. If discovery fails, concurrent logins share the failure and the server can retry discovery after two seconds. Confidential clients support client_secret_basic and client_secret_post. OpenObserve reads all `ZO_OIDC_*` settings at startup. If a file edit changes both an OIDC setting and a reloadable OpenObserve setting, the latter takes effect on reload. The OIDC change takes effect on the next server start. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
 
 Example explicit mapping:
 
@@ -32,13 +32,13 @@ ZO_OIDC_ACCOUNT_LINKS='[{"issuer":"https://id.example.com/application/o/openobse
 
 This is an operator authorization to link that exact identity. An identity with the same email but a different issuer or subject is not equivalent. A binding pins the local database user ID as well as its email. Reassigning the mapping, or deleting and recreating the user with the same email, invalidates access. Create the target account through existing administration first. Do not use the emergency root as a routine user.
 
-Automatic provisioning is a separate policy. It requires verified email, refuses an existing-email collision, creates an unusable local password, and grants no implicit membership. An administrator must assign application membership through existing mechanisms. Keeping provisioning disabled supports an explicit approval list. Removing a mapping revokes the corresponding approval; disabling automatic provisioning revokes approval for automatically provisioned identities. Local accounts and application data are retained.
+Automatic provisioning is a separate policy. It requires verified email, refuses an existing-email collision, creates an unusable local password, and grants no implicit membership. An administrator must assign application membership through existing mechanisms. Keeping provisioning disabled supports an explicit approval list. After restart, a removed mapping no longer grants approval. Disabling automatic provisioning also withdraws approval for automatically provisioned identities after restart. Local accounts and application data are retained.
 
 ## Browser sessions
 
 Authorization uses code flow with S256 PKCE, state and nonce. The callback validates the provider's signed ID token before creating a fresh opaque server session. Provider tokens are not returned to the browser. Login transactions are process-local and short-lived; after a restart, begin login again.
 
-Sessions use secure HttpOnly cookies and a fixed maximum lifetime. Reauthenticate after expiry; no refresh token is stored. Choosing Sign Out in the application invalidates the local session through a CSRF-protected POST. A direct visit to `/web/logout` asks for confirmation before sending that request. It does not end the provider's own SSO session, so the next login may authenticate immediately there. Removing approval or the local user also invalidates session use.
+Sessions use secure HttpOnly cookies and a fixed maximum lifetime. Reauthenticate after expiry; no refresh token is stored. Choosing Sign Out in the application invalidates the local session through a CSRF-protected POST. A direct visit to `/web/logout` asks for confirmation before sending that request. It does not end the provider's own SSO session, so the next login may authenticate immediately there. Deleting the local user invalidates session use immediately. Withdrawing approval in the configuration invalidates session use after restart.
 
 Use one application origin for UI and backend, with HTTPS terminated by the existing trusted reverse proxy. Unsafe cookie-authenticated requests must satisfy the adapter's origin checks. Avoid logging callback queries at the proxy, and do not enable credential/header debug logging.
 
