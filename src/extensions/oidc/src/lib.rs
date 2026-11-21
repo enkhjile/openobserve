@@ -19,6 +19,7 @@ mod transactions;
 use std::fmt;
 
 pub use provider::{AuthorizationRequest, OidcProvider, ProviderSettings, VerifiedIdentity};
+pub use transactions::TRANSACTION_TTL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

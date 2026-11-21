@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use anyhow::Context;
 use axum::{
     Json, Router,
     extract::Query,
@@ -20,11 +21,12 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use config::oidc::Oidc;
 use openobserve_core::extensions::oidc::{self, browser_transactions};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
-pub struct Callback {
+struct Callback {
     code: Option<String>,
     state: Option<String>,
 }
@@ -47,7 +49,7 @@ pub fn routes() -> Router {
         .route("/oidc/logout", post(logout))
 }
 
-pub async fn login(headers: HeaderMap) -> Response {
+async fn login(headers: HeaderMap) -> Response {
     let cfg = config::get_config();
     if !cfg.oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
@@ -66,58 +68,38 @@ pub async fn login(headers: HeaderMap) -> Response {
     }
     let binding = oidc::random_secret();
     let result = async {
-        let provider = oidc::provider().await?;
-        let request = provider
-            .begin(&binding)
-            .await
-            .map_err(|_| anyhow::anyhow!("OIDC unavailable"))?;
+        let request = oidc::provider().await?.begin(&binding).await?;
+        let name = browser_transactions::cookie_for_state(&cfg.oidc, &request.state)
+            .context("invalid provider state")?;
         browser_transactions::register(&binding).await?;
-        Ok::<_, anyhow::Error>(request)
+        anyhow::Ok((request.url, name))
     }
     .await;
-    match result {
-        Ok(request) => {
-            let Some(cookie_name) =
-                browser_transactions::cookie_for_state(&cfg.oidc, &request.state)
-            else {
-                return unavailable();
-            };
-            let mut response = Redirect::temporary(&request.url).into_response();
-            set_cookie(&mut response, &cookie_name, &binding, 300);
-            no_store(response)
-        }
-        Err(_) => unavailable(),
-    }
+    let Ok((url, name)) = result else {
+        return unavailable();
+    };
+    let mut response = Redirect::temporary(&url).into_response();
+    let age = oidc::TRANSACTION_TTL.as_secs() as i64;
+    set_cookie(&mut response, &cfg.oidc, &name, &binding, age);
+    no_store(response)
 }
 
-pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Response {
+async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Response {
     let cfg = config::get_config();
     if !cfg.oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let transaction_cookie = query
-        .state
-        .as_deref()
-        .and_then(|state| browser_transactions::cookie_for_state(&cfg.oidc, state));
+    let transaction = query.state.as_deref().and_then(|state| {
+        browser_transactions::cookie_for_state(&cfg.oidc, state).map(|name| (state, name))
+    });
     let result = async {
-        let name = transaction_cookie
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("invalid OIDC state"))?;
-        let binding = oidc::unique_cookie(&headers, name)?
-            .ok_or_else(|| anyhow::anyhow!("missing OIDC transaction"))?;
-        let code = query
-            .code
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("missing OIDC code"))?;
-        let state = query
-            .state
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("missing OIDC state"))?;
+        let (state, name) = transaction.as_ref().context("invalid OIDC state")?;
+        let binding = oidc::unique_cookie(&headers, name)?.context("missing OIDC transaction")?;
+        let code = query.code.as_deref().context("missing OIDC code")?;
         let identity = oidc::provider()
             .await?
             .complete(code, state, binding)
-            .await
-            .map_err(|_| anyhow::anyhow!("OIDC verification failed"))?;
+            .await?;
         oidc::establish(identity, &headers, &browser_transactions::marker(binding)).await
     }
     .await;
@@ -126,23 +108,27 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
             let mut response =
                 Redirect::to(&format!("{}/web/oidc/cb", cfg.common.base_uri)).into_response();
             let age = session.expires_at - chrono::Utc::now().timestamp();
-            set_cookie(&mut response, oidc::cookie_name(&cfg.oidc), &secret, age);
-            for name in ["auth_tokens", "auth_ext"] {
-                set_cookie(&mut response, name, "", 0);
-            }
+            set_cookie(
+                &mut response,
+                &cfg.oidc,
+                oidc::cookie_name(&cfg.oidc),
+                &secret,
+                age,
+            );
+            clear_native_cookies(&mut response, &cfg.oidc);
             response
         }
         Err(_) => {
             Redirect::to(&format!("{}/web/login?oidc_error=1", cfg.common.base_uri)).into_response()
         }
     };
-    if let Some(name) = transaction_cookie {
-        set_cookie(&mut response, &name, "", 0);
+    if let Some((_, name)) = transaction {
+        set_cookie(&mut response, &cfg.oidc, &name, "", 0);
     }
     no_store(response)
 }
 
-pub async fn session(headers: HeaderMap) -> Response {
+async fn session(headers: HeaderMap) -> Response {
     if !config::get_config().oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -165,7 +151,7 @@ pub async fn session(headers: HeaderMap) -> Response {
     )
 }
 
-pub async fn logout(headers: HeaderMap) -> Response {
+async fn logout(headers: HeaderMap) -> Response {
     let cfg = config::get_config();
     if !cfg.oidc.enabled {
         return StatusCode::NOT_FOUND.into_response();
@@ -176,19 +162,21 @@ pub async fn logout(headers: HeaderMap) -> Response {
     let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
         return unavailable();
     };
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    for cookie in cleared {
-        response.headers_mut().append(header::SET_COOKIE, cookie);
-    }
-    for name in ["auth_tokens", "auth_ext"] {
-        set_cookie(&mut response, name, "", 0);
-    }
+    let mut response = (StatusCode::NO_CONTENT, cleared).into_response();
+    clear_native_cookies(&mut response, &cfg.oidc);
     no_store(response)
 }
 
-fn set_cookie(response: &mut Response, name: &str, value: &str, age: i64) {
-    let cookie = oidc::cookie_header(&config::get_config().oidc, name, value, age);
+fn set_cookie(response: &mut Response, cfg: &Oidc, name: &str, value: &str, age: i64) {
+    let cookie = oidc::cookie_header(cfg, name, value, age);
     response.headers_mut().append(header::SET_COOKIE, cookie);
+}
+
+/// The OIDC session replaces any native session this browser held.
+fn clear_native_cookies(response: &mut Response, cfg: &Oidc) {
+    for name in ["auth_tokens", "auth_ext"] {
+        set_cookie(response, cfg, name, "", 0);
+    }
 }
 
 fn no_store(mut response: Response) -> Response {

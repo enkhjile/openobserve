@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_bearing_routes_never_get_a_request_span() {
+    fn hook_routes_never_get_a_request_span() {
         assert!(!otel_span_wanted("/base/auth/oidc/callback", true));
         assert!(!otel_span_wanted(
             "/api/v2/acme/workflows/hooks/o2wh_abc",

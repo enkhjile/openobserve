@@ -10,7 +10,7 @@ use subtle::ConstantTimeEq;
 
 use crate::Error;
 
-const TRANSACTION_TTL: Duration = Duration::from_secs(300);
+pub const TRANSACTION_TTL: Duration = Duration::from_secs(300);
 const MAX_TRANSACTIONS: usize = 4096;
 
 #[derive(Default)]

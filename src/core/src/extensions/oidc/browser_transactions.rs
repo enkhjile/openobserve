@@ -14,7 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use anyhow::Result;
-use config::oidc::Oidc;
+use config::{
+    oidc::Oidc,
+    utils::time::{now_micros, second_micros},
+};
 use http::{HeaderMap, header};
 
 use super::transaction_cookie_name;
@@ -22,23 +25,16 @@ use super::transaction_cookie_name;
 pub const MAX_BROWSER_TRANSACTIONS: usize = 8;
 
 pub fn marker(binding: &str) -> String {
-    super::compact_key("oidc_tx_", binding)
+    super::compact_key("tx", binding)
 }
 
 pub async fn register(binding: &str) -> Result<()> {
     super::session_store::start_transaction(
         &marker(binding),
-        chrono::Utc::now().timestamp_micros() + 300_000_000,
+        now_micros() + second_micros(super::TRANSACTION_TTL.as_secs() as i64),
     )
     .await?;
     Ok(())
-}
-
-fn valid_state(state: &str) -> bool {
-    (1..=128).contains(&state.len())
-        && state
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 /// The public state selects the cookie. Its independent, secret value binds the browser.
@@ -56,6 +52,13 @@ pub(super) fn pending_markers(headers: &HeaderMap, cfg: &Oidc) -> Vec<String> {
     pending_cookies(headers, cfg)
         .map(|(_, binding)| marker(binding))
         .collect()
+}
+
+fn valid_state(state: &str) -> bool {
+    (1..=128).contains(&state.len())
+        && state
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 fn pending_cookies<'a>(

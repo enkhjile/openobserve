@@ -131,8 +131,7 @@ impl OidcProvider {
         if code.is_empty() || code.len() > 8192 {
             return Err(Error::InvalidResponse);
         }
-        let metadata = self.metadata(false).await?;
-        let client = self.client(metadata.clone())?;
+        let client = self.client(self.metadata(false).await?)?;
         let response = client
             .exchange_code(AuthorizationCode::new(code.to_owned()))
             .map_err(|_| Error::InvalidResponse)?
@@ -140,17 +139,13 @@ impl OidcProvider {
             .request_async(&self.http)
             .await
             .map_err(|_| Error::InvalidResponse)?;
-        if let Ok(identity) = self.verify(&response, &transaction.nonce, code, metadata) {
+        if let Ok(identity) = self.verify(&response, &transaction.nonce, code, &client) {
             return Ok(identity);
         }
         // Retry verification with rotated keys, never replay the already consumed authorization
         // code.
-        self.verify(
-            &response,
-            &transaction.nonce,
-            code,
-            self.metadata(true).await?,
-        )
+        let refreshed = self.client(self.metadata(true).await?)?;
+        self.verify(&response, &transaction.nonce, code, &refreshed)
     }
 
     fn client(&self, metadata: CoreProviderMetadata) -> Result<DiscoveredClient, Error> {
@@ -177,9 +172,8 @@ impl OidcProvider {
         response: &CoreTokenResponse,
         nonce: &Nonce,
         code: &str,
-        metadata: CoreProviderMetadata,
+        client: &DiscoveredClient,
     ) -> Result<VerifiedIdentity, Error> {
-        let client = self.client(metadata)?;
         let verifier = client
             .id_token_verifier()
             .set_issue_time_verifier_fn(|issued| {

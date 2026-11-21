@@ -7,17 +7,16 @@ publish = false
 
 [dependencies]
 openidconnect = "4.1"
-chrono = "0.4"
-serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+chrono.workspace = true
+serde.workspace = true
+sha2.workspace = true
 subtle = "2.6"
-tokio = { version = "1", features = ["sync", "time"] }
-url = "2"
+tokio.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 rsa = "0.9"
-serde_json = "1"
-axum = "0.8"
-base64 = "0.22"
-jsonwebtoken = "9"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+serde_json.workspace = true
+axum.workspace = true
+base64.workspace = true
+jsonwebtoken.workspace = true

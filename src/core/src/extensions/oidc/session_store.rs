@@ -29,14 +29,7 @@ pub async fn start_transaction(marker: &str, expires_at: i64) -> Result<()> {
 
 /// Keep the marker on failure so a retried logout can revoke the issued session. [strong]
 pub async fn revoke(markers: Vec<String>, current: Option<String>) -> Result<()> {
-    let client = infra::db::get_orm_client_rw().await;
-    if markers.is_empty() {
-        if let Some(current) = current {
-            infra::table::sessions::delete(&current).await?;
-        }
-        return Ok(());
-    }
-    let transaction = client.begin().await?;
+    let transaction = infra::db::get_orm_client_rw().await.begin().await?;
     // One DELETE ... RETURNING locks each marker and reads the session it issued.
     let mut stmt = Entity::delete_many()
         .filter(Column::SessionId.is_in(markers))
@@ -89,7 +82,7 @@ pub async fn rotate(
     }
     // Check both deadlines after any wait for the writer, then keep the revocation handle as long
     // as the session.
-    let now = chrono::Utc::now().timestamp_micros();
+    let now = config::utils::time::now_micros();
     let published = Entity::update_many()
         .col_expr(Column::ExpiresAt, Expr::value(expires_at))
         .filter(Column::SessionId.eq(marker))
@@ -105,7 +98,7 @@ pub async fn rotate(
 }
 
 fn session_model(session_id: &str, access_token: &str, expires_at: i64) -> ActiveModel {
-    let now = chrono::Utc::now().timestamp_micros();
+    let now = config::utils::time::now_micros();
     ActiveModel {
         session_id: Set(session_id.to_string()),
         access_token: Set(access_token.to_string()),

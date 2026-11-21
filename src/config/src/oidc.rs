@@ -18,6 +18,10 @@ use std::{collections::HashMap, ops::Deref, sync::LazyLock};
 use dotenv_config::EnvConfig;
 use serde::Serialize;
 
+pub const CALLBACK_PATH: &str = "/auth/oidc/callback";
+/// Every OIDC row in the sessions table starts with this, so the native session cache skips them.
+pub const SESSION_PREFIX: &str = "oidc_";
+
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Oidc {
     #[env_config(name = "ZO_OIDC_ENABLED", default = false)]
@@ -48,6 +52,44 @@ pub struct Oidc {
     pub session_max_age: i64,
     #[env_config(name = "ZO_OIDC_COOKIE_SECURE", default = true)]
     pub cookie_secure: bool,
+}
+
+impl Oidc {
+    /// Whether this account may authenticate with its password; OIDC-only keeps one exact root.
+    pub fn allows_password(&self, email: &str, is_root: bool) -> bool {
+        !self.enabled
+            || !self.only
+            || (is_root && !self.emergency_user.is_empty() && self.emergency_user == email)
+    }
+
+    /// Whether any human password login remains, so the login page can offer it.
+    pub fn allows_native_login(&self) -> bool {
+        self.allows_password(&self.emergency_user, true)
+    }
+
+    fn validate_startup(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !(cfg!(feature = "enterprise") && self.enabled),
+            "OSS OIDC is not supported in Enterprise builds"
+        );
+        anyhow::ensure!(
+            !self.only || self.enabled,
+            "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
+        );
+        if self.enabled {
+            self.validate_callback_path()?;
+        }
+        Ok(())
+    }
+
+    fn validate_callback_path(&self) -> anyhow::Result<()> {
+        let uri = url::Url::parse(&self.redirect_uri)?;
+        anyhow::ensure!(
+            uri.path().ends_with(CALLBACK_PATH),
+            "ZO_OIDC_REDIRECT_URI must end with {CALLBACK_PATH}"
+        );
+        Ok(())
+    }
 }
 
 /// Application startup loads dotenv before constructing Config. Every subsequent config reload
@@ -88,39 +130,6 @@ impl Deref for StartupOidc {
     }
 }
 
-pub const CALLBACK_PATH: &str = "/auth/oidc/callback";
-
-impl Oidc {
-    /// Whether human password login stays available, so the login page can offer it.
-    pub fn allows_native_login(&self) -> bool {
-        !self.enabled || !self.only || !self.emergency_user.is_empty()
-    }
-
-    fn validate_startup(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !(cfg!(feature = "enterprise") && self.enabled),
-            "OSS OIDC is not supported in Enterprise builds"
-        );
-        anyhow::ensure!(
-            !self.only || self.enabled,
-            "ZO_OIDC_ONLY requires ZO_OIDC_ENABLED"
-        );
-        if self.enabled {
-            self.validate_callback_path()?;
-        }
-        Ok(())
-    }
-
-    fn validate_callback_path(&self) -> anyhow::Result<()> {
-        let uri = url::Url::parse(&self.redirect_uri)?;
-        anyhow::ensure!(
-            uri.path().ends_with(CALLBACK_PATH),
-            "ZO_OIDC_REDIRECT_URI must end with {CALLBACK_PATH}"
-        );
-        Ok(())
-    }
-}
-
 /// Whether a path or URL path is the callback, whose query carries the authorization code.
 pub fn is_callback_path(path: &str) -> bool {
     path.trim_end_matches('/').ends_with(CALLBACK_PATH)
@@ -129,6 +138,21 @@ pub fn is_callback_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_policy_preserves_disabled_and_requires_exact_root() {
+        let mut cfg = Oidc {
+            only: true,
+            ..Default::default()
+        };
+        assert!(cfg.allows_password("human@example.com", false));
+        cfg.enabled = true;
+        cfg.emergency_user = "root@example.com".into();
+        assert!(!cfg.allows_password("human@example.com", false));
+        assert!(!cfg.allows_password("root@example.com", false));
+        assert!(cfg.allows_password("root@example.com", true));
+        assert!(!cfg.allows_password("other@example.com", true));
+    }
 
     #[test]
     fn callback_path_detection_tolerates_prefixes_and_trailing_slashes() {

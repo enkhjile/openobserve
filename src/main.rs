@@ -158,9 +158,7 @@ async fn run() -> Result<(), anyhow::Error> {
     }
 
     #[cfg(not(feature = "enterprise"))]
-    if cfg.oidc.enabled {
-        openobserve_core::extensions::oidc::provider().await?;
-    }
+    openobserve_core::extensions::oidc::init().await?;
 
     // init backend jobs
     let (job_init_tx, job_init_rx) = oneshot::channel();

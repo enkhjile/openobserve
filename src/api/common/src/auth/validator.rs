@@ -3450,14 +3450,9 @@ CN5lTowpVXP2OIiiNTGa75Fj
     /// The source pins what may reveal a locked license; files outside this list are not read.
     #[test]
     fn test_role_refused_sites_are_pinned_with_no_auth_error_after_their_role_check() {
-        const GUARDS: [&str; 3] = [
-            "check_permissions(",
-            "path.contains(\"/user\")",
-            "oidc_role(&record",
-        ];
+        const GUARDS: [&str; 2] = ["check_permissions(", "path.contains(\"/user\")"];
         for (file, source, sites) in [
             ("validator.rs", include_str!("validator.rs"), 3),
-            ("validator/oidc.rs", include_str!("validator/oidc.rs"), 2),
             ("token.rs", include_str!("token.rs"), 1),
             ("delegation.rs", include_str!("delegation.rs"), 1),
         ] {

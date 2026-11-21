@@ -105,6 +105,35 @@ fn oidc_role(record: &DBUser, path: &str, method: &Method, is_root: bool) -> Opt
 mod tests {
     use super::*;
 
+    /// Mirrors the parent's pin: each RoleRefused here directly follows its role check.
+    #[test]
+    fn role_refusals_follow_their_role_checks() {
+        let source = include_str!("oidc.rs");
+        let (production, _) = source.split_once("\n#[cfg(test)]\nmod tests {").unwrap();
+        let refusals: Vec<usize> = production
+            .match_indices("Err(AuthError::RoleRefused(")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            refusals.len(),
+            2,
+            "review each RoleRefused site: it reveals the license"
+        );
+        for at in refusals {
+            let before = &production[..at];
+            let guard = ["oidc_role(&record", "check_permissions("]
+                .iter()
+                .filter_map(|g| before.rfind(g))
+                .max()
+                .expect("role check before RoleRefused");
+            assert!(
+                !before[guard..].contains("AuthError::"),
+                "{}",
+                &before[guard..]
+            );
+        }
+    }
+
     #[test]
     fn oidc_clusters_uses_default_org_membership() {
         let mut record: DBUser = serde_json::from_value(serde_json::json!({

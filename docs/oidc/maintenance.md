@@ -12,9 +12,9 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/core/Cargo.toml`, `src/core/src/lib.rs` | Depend on the protocol crate by path and expose the core adapter. |
 | `src/main.rs` | Validate static provider settings before the server accepts traffic. |
 | `src/db/src/user.rs`, `src/infra/src/table/org_users.rs` | Load the bound account and its current memberships by immutable user ID. |
-| `src/db/src/session.rs` | Exclude database-only OIDC sessions when rebuilding the native session cache. |
+| `src/db/src/session.rs` | Exclude OIDC rows, identified by `config::oidc::SESSION_PREFIX`, when rebuilding the native session cache. |
 | `src/core/src/auth.rs` | Recognize the session cookie in the OSS request extractor. |
-| `src/api/common/src/auth/validator.rs` | Route a request carrying the session cookie to the child module `validator/oidc.rs`, apply OIDC-only policy before accepting human passwords, and include the child module in the pinned role-refusal check. |
+| `src/api/common/src/auth/validator.rs` | Route a request carrying the session cookie to the child module `validator/oidc.rs`, which pins its own role refusals, and apply OIDC-only policy before accepting human passwords. |
 | `src/api/grpc/src/handler/grpc/auth/mod.rs` | Apply the human-password policy to gRPC and OTLP passwords; ingestion tokens are unaffected. |
 | `src/api/http/src/handler/http/router/openapi_coverage/excluded_routes.txt` | Record browser-specific non-API routes in the existing OpenAPI coverage check. |
 | `src/api/http/src/lib.rs`, `src/api/http/src/handler/http/router/mod.rs` | Merge the browser authentication routes from `oidc::routes()` and pin the public bootstrap field in tests. |
@@ -76,7 +76,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -W clippy::too_many_lines -W clippy::cognitive_complexity -W clippy::excessive_nesting -D warnings
 cargo test -p openobserve-oidc
 cargo test -p openobserve-core --test oidc_lifecycle
-cargo test -p config -p openobserve-api-common -p openobserve-api-grpc -p openobserve-api-http -p openobserve-core --lib oidc
+cargo test -p config -p openobserve-api-common -p openobserve-api-http -p openobserve-core --lib oidc
 cargo build
 uv run tests/oidc/browser_flow.py target/debug/openobserve
 ```

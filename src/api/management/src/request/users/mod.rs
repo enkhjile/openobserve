@@ -834,7 +834,6 @@ pub async fn authentication(
         } else {
             auth_cookie.set_same_site(SameSite::None);
         }
-        // Retire the browser's previous identity before issuing native credentials.
         let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
             return AuthError::Unavailable("Unable to switch login session".into()).into_response();
         };
@@ -844,9 +843,7 @@ pub async fn authentication(
         (
             StatusCode::OK,
             [(header::SET_COOKIE, auth_cookie.to_string())],
-            axum::response::AppendHeaders(
-                cleared.into_iter().map(|value| (header::SET_COOKIE, value)),
-            ),
+            cleared,
             axum::Json(resp),
         )
             .into_response()

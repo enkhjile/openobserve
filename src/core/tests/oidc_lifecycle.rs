@@ -61,13 +61,14 @@ async fn establish(
     identity: VerifiedIdentity,
     headers: &HeaderMap,
 ) -> anyhow::Result<(String, oidc::Session)> {
-    let marker = format!("oidc_tx_{}", oidc::random_secret());
-    oidc::session_store::start_transaction(
-        &marker,
-        chrono::Utc::now().timestamp_micros() + 300_000_000,
+    let binding = oidc::random_secret();
+    oidc::browser_transactions::register(&binding).await?;
+    oidc::establish(
+        identity,
+        headers,
+        &oidc::browser_transactions::marker(&binding),
     )
-    .await?;
-    oidc::establish(identity, headers, &marker).await
+    .await
 }
 
 #[tokio::test]
