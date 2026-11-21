@@ -1,34 +1,35 @@
-# Authentik integration and manual acceptance test
+# Authentik setup and acceptance test
 
-This extension uses standard OIDC; it does not implement Google sign-in or MFA itself.
+OpenObserve speaks standard OIDC. Google sign-in, MFA and enrollment happen in Authentik's own flows.
 
-## Provider setup
+## Authentik
 
-Create an Authentik OAuth2/OpenID provider and associate it with an application. Use a confidential client, an asymmetric signing key (for example RSA/RS256), authorization-code flow, and an exact redirect URI matching `ZO_OIDC_REDIRECT_URI`. Configure the `openid`, `profile`, and `email` scope mappings and include their claims in ID tokens. Copy the issuer from discovery rather than guessing it; Authentik exposes discovery under `/application/o/<application_slug>/.well-known/openid-configuration`. Record the client ID and secret securely. Do not select implicit flow or request offline access for this extension. See the official [OAuth2 provider documentation](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/) and [scope mapping documentation](https://docs.goauthentik.io/add-secure-apps/providers/property-mappings/).
+1. Create an OAuth2/OpenID provider and an application that uses it ([provider docs](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/), [scope mappings](https://docs.goauthentik.io/add-secure-apps/providers/property-mappings/)).
+2. Use a confidential client, the authorization-code flow and an asymmetric signing key such as RS256. Don't enable the implicit flow or offline access.
+3. Set the redirect URI to exactly the value of `ZO_OIDC_REDIRECT_URI`.
+4. Map the `openid`, `profile` and `email` scopes and include their claims in the ID token.
+5. Copy the issuer from `/application/o/<application_slug>/.well-known/openid-configuration`, and store the client ID and secret securely.
+6. Add Google federation and MFA to the authentication flow if wanted, and restrict the application to its intended users.
 
-Configure Google federation and MFA in the provider's authentication flow if desired. OpenObserve receives only the resulting standard OIDC response. Restrict access to the Authentik application to the intended users.
+## OpenObserve
 
-## OpenObserve setup
+Configure OpenObserve as in [README.md](README.md), starting with provisioning off. Link one existing test account with known memberships by its Authentik subject, taken from Authentik's admin UI; the subject is not the email unless Authentik makes it so. Accounts created through the OSS user API are organization administrators, so choose the test account accordingly. OpenObserve must reach Authentik's discovery, JWKS and token endpoints over trusted TLS, and both clocks must be synchronized.
 
-Use the configuration reference in [README.md](README.md). Keep provisioning disabled initially. Select a dedicated existing local test user with known organization memberships. On this OSS baseline the native user-creation API assigns the organization administrator role. Explicitly approve the test user’s exact issuer and subject using the operator-managed account mapping. Obtain the subject from the provider's administrative tools; do not use an email address as the subject unless the provider actually defines it that way. Preserve existing memberships.
+## Acceptance test
 
-Use HTTPS with an exact public callback URL. If `ZO_BASE_URI` sets a public path prefix, the callback URL must include it, as described in [README.md](README.md). Synchronize server clocks. Ensure the OpenObserve process can reach discovery, JWKS and token endpoints over trusted TLS. Keep callback query strings out of reverse-proxy access logs.
+Record the OpenObserve commit, Authentik version, issuer, signing algorithm, date, tester and each result. Never record tokens, secrets, cookie values or authorization codes.
 
-## Manual test record
-
-Record the application commit, provider version, issuer, signing algorithm, date, tester, and each result. Never attach tokens, secrets, cookie values or authorization codes to the record.
-
-1. Start with a clean browser profile. Verify that disabled OIDC preserves local login.
-2. Enable OIDC with default-deny provisioning. Verify that Login with SSO redirects to the configured provider and returns through the configured callback.
-3. Complete Google federation, if configured, and the provider's MFA challenge. Verify that the approved account sees its existing organizations and data.
-4. Verify that a user without a mapping is denied, even when its email matches an existing administrator. Verify that a different subject with the same email cannot take over an approved account.
-5. Enable provisioning in a test installation. Verify that a fresh verified identity creates no administrator privilege or implicit membership. Assign membership through the existing administration mechanism and retry.
-6. Inspect browser storage: provider tokens must not appear in localStorage or URL fragments. Inspect the session cookie's Secure, HttpOnly and SameSite attributes.
-7. Try a callback copied into another browser and replay the original callback. Both must fail. A failed login must not replace the existing account session.
-8. Submit an unsafe authenticated request from another origin. Verify it is refused with 403 and that the browser stays signed in. Verify that a normal same-origin edit still works.
-9. Log out, then reuse the old cookie in a direct API request. Verify rejection. Also verify rejection after the configured session lifetime and after approval is removed.
-10. Rotate the provider signing key. Verify that a subsequent login succeeds with the new key; verify that an unrelated signing key does not.
-11. Enable OIDC-only mode. Try native login and direct Basic human-password access. Both must fail except for the explicitly configured emergency root account. Verify the emergency password must still be correct. After an emergency browser login over HTTPS, check that the native `auth_tokens` cookie has `Secure` and `HttpOnly`; the Compose example sets `ZO_COOKIE_SECURE_ONLY=true` for this cookie.
-12. Exercise existing OTLP ingestion, organization ingestion tokens, and service-account API access with their normal credentials.
-13. Restart OpenObserve and check persisted sessions and identity mappings according to the documented expiry policy. An unfinished login may need to restart because its transaction is process-local.
-14. Verify callback handling behind the intended reverse proxy and under any configured base path.
+1. With OIDC disabled, local login works.
+2. With OIDC enabled, Login with SSO goes to Authentik and returns through the callback.
+3. Google sign-in (if configured) and MFA complete, and the linked account sees its organizations and data.
+4. An unlinked identity is refused even when its email belongs to an administrator, and another subject with the same email cannot take over the linked account.
+5. With provisioning on (test installation only), a new verified identity gets an account with no membership or administrator rights, and can use it once an administrator adds a membership.
+6. No provider token appears in browser storage or URL fragments, and the session cookie is Secure, HttpOnly and SameSite=Lax.
+7. A replayed callback URL fails, as does one copied into another browser, and a failed login leaves an existing session intact.
+8. A state-changing request from another origin gets 403 and the browser stays signed in; the same edit made in OpenObserve works.
+9. After logout the old cookie is refused by the API. It is also refused once the session lifetime passes, and after its link is removed and the server restarted.
+10. After Authentik rotates its signing key, login still works; a token signed with an unrelated key is refused.
+11. With `ZO_OIDC_ONLY`, native login and Basic auth with a human password fail, except for the emergency root with its correct password. After an emergency browser login over HTTPS, its `auth_tokens` cookie is Secure and HttpOnly (the Compose example sets `ZO_COOKIE_SECURE_ONLY=true`).
+12. OTLP ingestion, organization ingestion tokens and service-account API access keep working.
+13. After a restart, existing sessions stay valid until they expire, and a sign-in that was in progress has to start again.
+14. Login works through the production reverse proxy, including any `ZO_BASE_URI` prefix.
