@@ -16,14 +16,17 @@
 pub mod browser_transactions;
 pub mod session_store;
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result, ensure};
 use axum::response::AppendHeaders;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use config::{
-    meta::user::DBUser,
+    meta::{meta_store::MetaStore, user::DBUser},
     oidc::{Oidc, SESSION_PREFIX},
     utils::time::{now_micros, second_micros},
 };
@@ -32,7 +35,7 @@ use infra::table::entity::users::{self, Entity as Users};
 use openobserve_oidc::{OidcProvider, ProviderSettings, VerifiedIdentity};
 pub use openobserve_oidc::{TRANSACTION_TTL, random_secret};
 use sea_orm::{
-    EntityTrait, QueryFilter, Set,
+    ConnectionTrait, DbBackend, EntityTrait, QueryFilter, Set, Statement,
     sea_query::{Expr, Func},
 };
 use serde::{Deserialize, Serialize};
@@ -62,6 +65,13 @@ struct Binding {
     provisioned: bool,
     user_id: String,
     pending: bool,
+}
+
+/// Outcome of a compare-and-swap on a binding.
+enum BindingSwap {
+    Stored,
+    /// Another writer won; carries what the store holds now, if anything.
+    Lost(Option<Bytes>),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -386,12 +396,56 @@ fn binding_key(issuer: &str, subject: &str) -> Result<String> {
 }
 
 async fn load_binding(issuer: &str, subject: &str) -> Result<Option<Binding>> {
-    infra::db::get_db()
-        .await
-        .get_if_exists(&binding_key(issuer, subject)?)
+    read_binding(&binding_key(issuer, subject)?)
         .await?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
         .transpose()
+}
+
+/// A PostgreSQL read replica can lag a binding written moments ago, so read it from the primary.
+async fn read_binding(key: &str) -> Result<Option<Bytes>> {
+    if MetaStore::from(config::get_config().common.meta_store.as_str()) != MetaStore::PostgreSQL {
+        return Ok(infra::db::get_db().await.get_if_exists(key).await?);
+    }
+    let (module, key1, key2) = infra::db::parse_key(key);
+    let statement = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT value FROM meta WHERE module = $1 AND key1 = $2 AND key2 = $3 \
+         ORDER BY start_dt DESC LIMIT 1",
+        [module.into(), key1.into(), key2.into()],
+    );
+    let row = infra::db::get_orm_client_rw()
+        .await
+        .query_one(statement)
+        .await?;
+    Ok(row
+        .map(|row| row.try_get::<String>("", "value"))
+        .transpose()?
+        .map(Bytes::from))
+}
+
+/// Stores `next` only while the binding still holds `expected` (`None`: absent), comparing the
+/// stored bytes on the primary inside the store's locked update.
+async fn swap_binding(key: &str, expected: Option<Bytes>, next: Bytes) -> Result<BindingSwap> {
+    let lost = Arc::new(Mutex::new(None));
+    let seen = lost.clone();
+    infra::db::get_db()
+        .await
+        .get_for_update(
+            key,
+            false,
+            None,
+            Box::new(move |current| {
+                if current == expected {
+                    return Ok(Some((Some(next), None)));
+                }
+                *seen.lock().expect("binding swap lock") = Some(current);
+                Ok(None)
+            }),
+        )
+        .await?;
+    let lost = lost.lock().expect("binding swap lock").take();
+    Ok(lost.map_or(BindingSwap::Stored, BindingSwap::Lost))
 }
 
 fn binding_allowed(cfg: &Oidc, links: &HashMap<String, AccountLink>, binding: &Binding) -> bool {
@@ -439,19 +493,17 @@ async fn resolve_identity(
         "invalid OIDC identity"
     );
     let key = binding_key(&identity.issuer, &identity.subject)?;
-    let store = infra::db::get_db().await;
-    let (bytes, revision) = match store.get_with_revision(&key).await? {
+    let bytes = match read_binding(&key).await? {
         Some(existing) => existing,
         None => {
-            let binding = initial_binding(cfg, links, identity).await?;
-            // A concurrent callback owns the same immutable reservation if this CAS loses.
-            store
-                .put_if_revision(&key, Bytes::from(serde_json::to_vec(&binding)?), None)
-                .await?;
-            store
-                .get_with_revision(&key)
-                .await?
-                .context("missing OIDC reservation")?
+            let reservation = Bytes::from(serde_json::to_vec(
+                &initial_binding(cfg, links, identity).await?,
+            )?);
+            // A concurrent callback owns the same immutable reservation if this swap loses.
+            match swap_binding(&key, None, reservation.clone()).await? {
+                BindingSwap::Stored => reservation,
+                BindingSwap::Lost(stored) => stored.context("missing OIDC reservation")?,
+            }
         }
     };
     let mut binding: Binding = serde_json::from_slice(&bytes)?;
@@ -471,17 +523,10 @@ async fn resolve_identity(
         )
         .await?;
         binding.pending = false;
-        if !store
-            .put_if_revision(
-                &key,
-                Bytes::from(serde_json::to_vec(&binding)?),
-                Some(revision),
-            )
-            .await?
-        {
-            let current = load_binding(&identity.issuer, &identity.subject)
-                .await?
-                .context("missing OIDC binding")?;
+        let completed = Bytes::from(serde_json::to_vec(&binding)?);
+        if let BindingSwap::Lost(stored) = swap_binding(&key, Some(bytes), completed).await? {
+            let current: Binding =
+                serde_json::from_slice(&stored.context("missing OIDC binding")?)?;
             ensure!(
                 !current.pending
                     && current.user_id == binding.user_id
