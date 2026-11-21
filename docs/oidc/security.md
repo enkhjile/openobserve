@@ -15,6 +15,7 @@ Scope: OIDC login in the Community Edition, from the browser redirect to the ide
 ## Limits
 
 - Pending logins live in one process's memory, so the supported deployment is a single OpenObserve node. A restart cancels logins in progress.
+- `/auth/oidc/login` needs no authentication. The per-browser limit counts cookies, and the process holds at most 4096 pending logins, so a client that sends no cookies can exhaust them; rate-limit this path per client at the proxy.
 - Logout ends only the OpenObserve session. A provider-side logout or account deactivation is not pushed to OpenObserve; the session ends at its hard expiry. For immediate revocation, delete the local account, or remove its link and restart.
 - Signing keys and discovery data are cached for up to five minutes, so a key removed at the provider stops being accepted within that time.
 - Provider groups and claims grant no roles, and new accounts have no memberships. Authorization stays with OpenObserve's memberships and the separate RBAC work, which consumes the identity passed through the normal HTTP middleware.

@@ -18,7 +18,7 @@ use config::{
     oidc::Oidc,
     utils::time::{now_micros, second_micros},
 };
-use http::{HeaderMap, header};
+use http::HeaderMap;
 
 use super::transaction_cookie_name;
 
@@ -66,12 +66,13 @@ fn pending_cookies<'a>(
     cfg: &Oidc,
 ) -> impl Iterator<Item = (&'a str, &'a str)> {
     let prefix = transaction_cookie_name(cfg);
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|line| line.to_str().ok())
-        .flat_map(|line| line.split(';'))
-        .filter_map(|part| part.trim().split_once('='))
+    super::cookie_pairs(headers)
+        .filter_map(|(name, value)| {
+            Some((
+                std::str::from_utf8(name).ok()?,
+                std::str::from_utf8(value).ok()?,
+            ))
+        })
         .filter(move |(name, _)| {
             name.strip_prefix(prefix)
                 .and_then(|suffix| suffix.strip_prefix('-'))
@@ -81,6 +82,8 @@ fn pending_cookies<'a>(
 
 #[cfg(test)]
 mod tests {
+    use http::header;
+
     use super::*;
 
     #[test]

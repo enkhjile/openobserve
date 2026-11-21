@@ -51,7 +51,7 @@ Sign Out revokes the session on the server, and a direct visit to `/web/logout` 
 
 ## Deployment
 
-Serve the UI and API from one HTTPS origin behind your reverse proxy, and keep callback query strings out of the proxy's logs. Both SQLite and PostgreSQL metadata stores work.
+Serve the UI and API from one HTTPS origin behind your reverse proxy. Keep callback query strings out of the proxy's logs, and rate-limit `/auth/oidc/login` per client (see [security notes](security.md#limits)). Both SQLite and PostgreSQL metadata stores work.
 
 [compose.yaml](../../deploy/oidc/compose.yaml) is an example for an existing TLS proxy and provider. It needs an image built from this branch (stock images don't include OIDC), keeps data in one `/data` volume, binds the backend to loopback, and turns on OIDC-only mode with the root as emergency user.
 

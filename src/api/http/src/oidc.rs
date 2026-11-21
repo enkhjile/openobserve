@@ -75,8 +75,12 @@ async fn login(headers: HeaderMap) -> Response {
         anyhow::Ok((request.url, name))
     }
     .await;
-    let Ok((url, name)) = result else {
-        return unavailable();
+    let (url, name) = match result {
+        Ok(started) => started,
+        Err(err) => {
+            log::warn!("[OIDC] sign-in could not start: {err:#}");
+            return unavailable();
+        }
     };
     let mut response = Redirect::temporary(&url).into_response();
     let age = oidc::TRANSACTION_TTL.as_secs() as i64;
@@ -118,7 +122,9 @@ async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Response
             clear_native_cookies(&mut response, &cfg.oidc);
             response
         }
-        Err(_) => {
+        Err(err) => {
+            // The chain names the failed check; the callback query never enters it.
+            log::warn!("[OIDC] sign-in failed: {err:#}");
             Redirect::to(&format!("{}/web/login?oidc_error=1", cfg.common.base_uri)).into_response()
         }
     };

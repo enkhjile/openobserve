@@ -5,7 +5,7 @@
       <h1 class="text-lg font-semibold">{{ t("login.confirmSignOut") }}</h1>
       <OBanner v-if="failed" variant="error" :content="t('login.oidcLogoutError')" />
       <div class="flex gap-2">
-        <OButton variant="secondary" :disabled="pending" @click="router.replace('/')">
+        <OButton variant="secondary" :disabled="pending" @click="cancel">
           {{ t("common.cancel") }}
         </OButton>
         <OButton
@@ -29,11 +29,17 @@ import OBanner from "@/lib/feedback/Banner/OBanner.vue";
 import store from "@/stores";
 import { useI18nTyped } from "@/types/i18n";
 import { endSignedInSession, reloadToLogin } from "@/utils/drafts/signOutFlow";
+import { getDecodedUserInfo } from "@/utils/zincutils";
 
 const { t } = useI18nTyped();
 const router = useRouter();
 const pending = ref(false);
 const failed = ref(false);
+
+// Without a profile the guard would send "/" to login and save this page as the return address.
+function cancel() {
+  router.replace(getDecodedUserInfo() ? "/" : "/login");
+}
 
 async function confirm() {
   if (pending.value) return;

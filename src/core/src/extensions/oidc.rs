@@ -128,15 +128,11 @@ pub fn cookie_header(cfg: &Oidc, name: &str, value: &str, age: i64) -> HeaderVal
 
 pub fn unique_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>> {
     let mut found = None;
-    for line in headers.get_all(header::COOKIE) {
-        for part in line.to_str()?.split(';') {
-            if let Some((key, value)) = part.trim().split_once('=')
-                && key == name
-            {
-                ensure!(found.is_none(), "duplicate OIDC cookie");
-                ensure!(!value.is_empty(), "empty OIDC cookie");
-                found = Some(value);
-            }
+    for (key, value) in cookie_pairs(headers) {
+        if key == name.as_bytes() {
+            ensure!(found.is_none(), "duplicate OIDC cookie");
+            ensure!(!value.is_empty(), "empty OIDC cookie");
+            found = Some(std::str::from_utf8(value).context("invalid OIDC cookie")?);
         }
     }
     Ok(found)
@@ -349,6 +345,20 @@ fn transaction_cookie_name(cfg: &Oidc) -> &'static str {
     } else {
         "o2_oidc_tx_dev"
     }
+}
+
+/// Parsed as bytes, so another application's non-ASCII cookie is skipped instead of failing
+/// every request that carries it.
+fn cookie_pairs(headers: &HeaderMap) -> impl Iterator<Item = (&[u8], &[u8])> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .flat_map(|line| line.as_bytes().split(|byte| *byte == b';'))
+        .filter_map(|part| {
+            let part = part.trim_ascii();
+            let at = part.iter().position(|byte| *byte == b'=')?;
+            Some((&part[..at], &part[at + 1..]))
+        })
 }
 
 fn session_key(secret: &str) -> String {
@@ -591,6 +601,11 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.append(header::COOKIE, "x=1; x=2".parse().unwrap());
         assert!(unique_cookie(&headers, "x").is_err());
+        let mut headers = HeaderMap::new();
+        let foreign = HeaderValue::from_bytes(b"pref=Zo\xc3\xab; x=1").unwrap();
+        headers.append(header::COOKIE, foreign);
+        assert_eq!(unique_cookie(&headers, "x").unwrap(), Some("1"));
+        assert_eq!(unique_cookie(&headers, "pref").unwrap(), Some("Zoë"));
         assert_ne!(
             binding_key("ab", "c").unwrap(),
             binding_key("a", "bc").unwrap()

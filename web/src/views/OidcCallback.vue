@@ -86,8 +86,9 @@ async function load() {
     // One row answers whether any membership exists; the main layout loads the full list.
     organizations = (await organizationsService.list(0, 1, "id", false, "")).data.data;
   } catch (error) {
-    if (statusOf(error) === 403) return signOut();
+    // Shown first, so a refused sign-out still leaves Retry and Sign out on screen.
     state.value = "failed";
+    if (statusOf(error) === 403) return signOut();
     return;
   }
   if (!organizations?.length) {

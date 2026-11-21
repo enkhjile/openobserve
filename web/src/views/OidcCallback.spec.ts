@@ -130,6 +130,18 @@ describe("OidcCallback", () => {
     expect(expireSession).toHaveBeenCalledWith(store, { toLogin: true });
   });
 
+  it("offers retry when the organizations are refused and sign-out also fails", async () => {
+    vi.mocked(organizationsService.list).mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 403 },
+    });
+    vi.mocked(oidc.logout).mockRejectedValue(new Error("unavailable"));
+    const wrapper = await mountView();
+    expect(expireSession).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="oidc-callback-loading"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="oidc-retry-callback"]').exists()).toBe(true);
+  });
+
   it("stays on the page when sign-out cannot revoke the session", async () => {
     vi.mocked(organizationsService.list).mockResolvedValue(organizations([]));
     vi.mocked(oidc.logout).mockRejectedValue(new Error("unavailable"));

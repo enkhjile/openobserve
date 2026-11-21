@@ -129,6 +129,14 @@ describe("OSS OIDC login", () => {
     });
   });
 
+  it("cancels a direct logout without a cached profile without saving it as the return page", () => {
+    cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
+    cy.visit("/web/logout");
+    cy.contains("button", "Cancel").click();
+    cy.location("pathname").should("eq", "/web/login");
+    cy.window().then((win) => expect(win.sessionStorage.getItem("redirectURI")).to.be.null);
+  });
+
   it("finishes confirmed logout when browser storage cleanup is blocked", () => {
     cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
     cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204 }).as("revoke");
