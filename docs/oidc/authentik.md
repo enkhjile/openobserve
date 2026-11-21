@@ -19,7 +19,7 @@ Use HTTPS with an exact public callback URL. If `ZO_BASE_URI` sets a public path
 Record the application commit, provider version, issuer, signing algorithm, date, tester, and each result. Never attach tokens, secrets, cookie values or authorization codes to the record.
 
 1. Start with a clean browser profile. Verify that disabled OIDC preserves local login.
-2. Enable OIDC with default-deny provisioning. Verify that Sign in with SSO redirects to the configured provider and returns through the configured callback.
+2. Enable OIDC with default-deny provisioning. Verify that Login with SSO redirects to the configured provider and returns through the configured callback.
 3. Complete Google federation, if configured, and the provider's MFA challenge. Verify that the approved account sees its existing organizations and data.
 4. Verify that a user without a mapping is denied, even when its email matches an existing administrator. Verify that a different subject with the same email cannot take over an approved account.
 5. Enable provisioning in a test installation. Verify that a fresh verified identity creates no administrator privilege or implicit membership. Assign membership through the existing administration mechanism and retry.

@@ -26,7 +26,7 @@ pub fn marker(binding: &str) -> String {
 }
 
 pub async fn register(binding: &str) -> Result<()> {
-    infra::table::sessions::start_oidc_transaction(
+    super::session_store::start_transaction(
         &marker(binding),
         chrono::Utc::now().timestamp_micros() + 300_000_000,
     )

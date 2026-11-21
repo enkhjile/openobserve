@@ -834,35 +834,22 @@ pub async fn authentication(
         } else {
             auth_cookie.set_same_site(SameSite::None);
         }
-        let mut response = (
-            StatusCode::OK,
-            [(header::SET_COOKIE, auth_cookie.to_string())],
-            axum::Json(resp),
-        )
-            .into_response();
-        if cfg.oidc.enabled {
-            // Retire the browser's previous identity before issuing native credentials.
-            if oidc::revoke(&headers).await.is_err() {
-                return AuthError::Unavailable("Unable to switch login session".into())
-                    .into_response();
-            }
-            let pending = oidc::browser_transactions::pending_cookie_names(&headers, &cfg.oidc);
-            for name in std::iter::once(oidc::cookie_name(&cfg.oidc)).chain(pending) {
-                let mut cookie = Cookie::new(name, "");
-                cookie.set_path("/");
-                cookie.set_http_only(true);
-                cookie.set_secure(cfg.oidc.cookie_secure);
-                cookie.set_same_site(SameSite::Lax);
-                cookie.make_removal();
-                response.headers_mut().append(
-                    header::SET_COOKIE,
-                    cookie.to_string().parse().expect("valid OIDC cookie name"),
-                );
-            }
-        }
+        // Retire the browser's previous identity before issuing native credentials.
+        let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
+            return AuthError::Unavailable("Unable to switch login session".into()).into_response();
+        };
+        // audit the successful login
         #[cfg(feature = "enterprise")]
         audit(audit_message).await;
-        response
+        (
+            StatusCode::OK,
+            [(header::SET_COOKIE, auth_cookie.to_string())],
+            axum::response::AppendHeaders(
+                cleared.into_iter().map(|value| (header::SET_COOKIE, value)),
+            ),
+            axum::Json(resp),
+        )
+            .into_response()
     } else {
         #[cfg(feature = "enterprise")]
         audit_unauthorized_error(audit_message).await;
@@ -937,11 +924,7 @@ pub async fn get_presigned_url(
     };
 
     let cfg = get_config();
-    if !openobserve_core::extensions::oidc::password_allowed(
-        &cfg.oidc,
-        &user_id,
-        db::user::is_root_user(&user_id),
-    ) {
+    if !oidc::password_login_allowed(&user_id, db::user::is_root_user(&user_id)) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let time = chrono::Utc::now().timestamp();

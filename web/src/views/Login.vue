@@ -15,29 +15,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 -->
 
 <template>
-  <main
-    v-if="oidcNoOrganization || oidcCallbackFailed"
-    class="bg-card-glass-bg flex min-h-dvh items-center justify-center p-6"
-  >
-    <div class="flex max-w-lg flex-col gap-4">
-      <OBanner
-        v-if="oidcNoOrganization"
-        variant="info"
-        :content="t('login.oidcNoOrganization')"
-        data-test="oidc-no-organization"
-      />
-      <template v-else>
-        <OBanner variant="error" :content="t('login.oidcCallbackError')" />
-        <OButton variant="primary" data-test="oidc-retry-callback" @click="loadOidcSession">
-          {{ t("common.retry") }}
-        </OButton>
-      </template>
-      <OButton variant="primary" @click="signout">{{ t("menu.signOut") }}</OButton>
-    </div>
-  </main>
-  <Login v-else-if="user.email == '' && !showInvitations && !isCallbackLoading" />
+  <Login v-if="user.email == '' && !showInvitations && !isDexCallback" />
   <div
-    v-else-if="isCallbackLoading && !showInvitations"
+    v-else-if="isDexCallback && !showInvitations"
     data-test="dex-callback-loading"
     class="bg-card-glass-bg flex h-[100vh] w-[100vw] flex-col items-center justify-center gap-4 max-md:h-dvh max-md:w-full"
   >
@@ -71,19 +51,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 <script lang="ts">
 import { configQuery, isFullConfigLoaded } from "@/services/config.queries";
-import { purgeAllQueries, queryClient } from "@/composables/query/queryClient";
-import { purgeAllPersisted } from "@/composables/query/persisters";
-import { isAxiosError } from "axios";
+import { queryClient } from "@/composables/query/queryClient";
 import { defineComponent, onBeforeMount, ref } from "vue";
-import { useRouter, type LocationQuery } from "vue-router";
+import { useRouter } from "vue-router";
 import Login from "@/components/login/Login.vue";
-import oidc from "@/services/oidc";
-import { useLocalUserInfo } from "@/utils/storage";
-import { b64EncodeStandard } from "@/utils/formatters";
 import InvitationList from "@/components/iam/users/InvitationList.vue";
 import OSpinner from "@/lib/feedback/Spinner/OSpinner.vue";
-import OButton from "@/lib/core/Button/OButton.vue";
-import OBanner from "@/lib/feedback/Banner/OBanner.vue";
 import config from "@/aws-exports";
 import { useStore } from "vuex";
 import { useTheme } from "@/composables/useTheme";
@@ -106,18 +79,12 @@ import { isSameOriginRedirect } from "@/utils/safeUrl";
 import { withDisambiguatedOrgLabels } from "@/utils/organizationLabel";
 import { capturePrefill } from "@/components/login/firstSourceOptions";
 
-function isOidcCallback(query: LocationQuery | undefined): boolean {
-  return query?.oidc === "1";
-}
-
 export default defineComponent({
   name: "LoginPage",
   components: {
     Login,
     InvitationList,
     OSpinner,
-    OButton,
-    OBanner,
   },
   setup() {
     const store = useStore();
@@ -127,8 +94,6 @@ export default defineComponent({
     const selectedOrg = ref({});
     const router: any = useRouter();
     const showInvitations = ref(false);
-    const oidcNoOrganization = ref(false);
-    const oidcCallbackFailed = ref(false);
     const { identify } = useReo();
     const invitedOrg = ref<{ identifier: string; name: string }>({
       identifier: "",
@@ -174,13 +139,9 @@ export default defineComponent({
      * redirect user to the page where user was redirected from
      */
     const getDefaultOrganization = () => {
-      return organizationsService
+      organizationsService
         .list(0, 100000, "id", false, "")
         .then(async (res: any) => {
-          if (isOidcCallback(router.currentRoute.value.query) && !res.data.data?.length) {
-            oidcNoOrganization.value = true;
-            return;
-          }
           const localOrg: any = useLocalOrganization();
           let tempDefaultOrg = {};
           let localOrgFlag = false;
@@ -274,21 +235,15 @@ export default defineComponent({
         })
         .catch((e: any) => {
           console.log("Error while fetching organizations", e);
-          oidcCallbackFailed.value = isOidcCallback(router.currentRoute.value.query);
-          if (e.response?.status === 403) return signout();
+          if (e.response?.status === 403) {
+            signout();
+          }
         });
     };
 
     // The server refused this user's organizations, so the session ends as an expired one does: the drafts stay for the next login.
-    const signout = async () => {
-      if (isOidcCallback(router.currentRoute.value.query)) {
-        try {
-          await oidc.logout();
-        } catch {
-          toast({ variant: "error", message: t("login.oidcLogoutError") });
-          return;
-        }
-      } else if (config?.isEnterprise == "true" || config?.isCloud == "true") {
+    const signout = () => {
+      if (config?.isEnterprise == "true" || config?.isCloud == "true") {
         invalidateLoginData();
       }
       // A reload here could re-run the login callback, so this goes to the login page instead.
@@ -358,8 +313,6 @@ export default defineComponent({
       redirectUser,
       getDefaultOrganization,
       showInvitations,
-      oidcNoOrganization,
-      oidcCallbackFailed,
       handleInvitationsProcessed,
       getImageURL,
       signout,
@@ -367,8 +320,10 @@ export default defineComponent({
   },
   data() {
     return {
-      // Keep the login form hidden while either callback resolves the signed-in user.
-      isCallbackLoading: isOidcCallback(this.$route.query) || !!this.$route.hash,
+      // True while we're on the Dex (OIDC) redirect-back callback and still
+      // resolving the token in the URL hash. Shows a spinner instead of the
+      // login form so it doesn't flash before the user lands in the app.
+      isDexCallback: !!this.$route.hash,
       user: {
         email: "",
         cognito_sub: "",
@@ -382,10 +337,6 @@ export default defineComponent({
     };
   },
   created() {
-    if (isOidcCallback(this.$route.query)) {
-      this.loadOidcSession();
-      return;
-    }
     /**
      * Get the user info from the url hash
      * if user info is not null and user email is not null
@@ -436,38 +387,11 @@ export default defineComponent({
           console.error("Error while fetching config:", err);
           // Fall back to the login form instead of stranding the user on
           // the spinner with no way to proceed.
-          this.isCallbackLoading = false;
+          this.isDexCallback = false;
         });
     }
   },
   methods: {
-    async loadOidcSession() {
-      this.oidcCallbackFailed = false;
-      // URL flags select the UI flow; only the server session supplies identity.
-      try {
-        const profile = await oidc.session();
-        // Cached results carry no user in their keys, so a replaced account's must be gone first;
-        // purgeAllQueries only starts the disk purge, so await it before the new identity loads.
-        purgeAllQueries();
-        await purgeAllPersisted();
-        useLocalUserInfo(b64EncodeStandard(JSON.stringify(profile)));
-        useLocalCurrentUser(JSON.stringify(profile));
-        this.store.dispatch("setCurrentUser", profile);
-        this.store.dispatch("login", { loginState: true, userInfo: profile });
-        await this.getDefaultOrganization();
-      } catch (error) {
-        const status = isAxiosError(error) ? error.response?.status : undefined;
-        if (!status || status >= 500) {
-          this.oidcCallbackFailed = true;
-          return;
-        }
-        useLocalUserInfo("", true);
-        useLocalCurrentUser("", true);
-        this.store.dispatch("logout");
-        this.isCallbackLoading = false;
-        this.router.replace({ path: "/login", query: { oidc_error: "1" } });
-      }
-    },
     /**
      * Verify the user by using user email
      * if user id is 0 then call the add new user method

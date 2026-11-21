@@ -2384,12 +2384,13 @@ describe("useRoutes (router.ts)", () => {
   // 23. Edge cases
   // =========================================================================
   describe("Edge Cases", () => {
-    it("should have exactly these 10 parentRoutes, the anonymous public pages included", () => {
+    it("should have exactly these 11 parentRoutes, the anonymous public pages included", () => {
       const { parentRoutes } = useRoutes();
       expect(parentRoutes.map((r: any) => r.path)).toEqual([
         "/login",
         "/signup",
         "/logout",
+        "/oidc/cb",
         "/cb",
         "/ai/public/:token",
         "/slack/oauth/callback",

@@ -14,18 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AxiosHeaders } from "axios";
 import { mount, VueWrapper, flushPromises } from "@vue/test-utils";
 import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";
 import LoginPage from "./Login.vue";
-import oidc from "@/services/oidc";
-import { purgeAllPersisted } from "@/composables/query/persisters";
-vi.mock("@/services/oidc", () => ({ default: { session: vi.fn(), logout: vi.fn() } }));
-vi.mock("@/composables/query/persisters", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/composables/query/persisters")>()),
-  purgeAllPersisted: vi.fn(() => Promise.resolve()),
-}));
 
 // Mock dependencies first with factory functions to avoid hoisting issues
 vi.mock("@/services/config", async (importOriginal) => {
@@ -243,141 +235,6 @@ describe("Login.vue", () => {
       wrapper.unmount();
     }
     vi.clearAllMocks();
-  });
-
-  it("bootstraps OIDC from the server and ignores a forged token hash", async () => {
-    const profile = {
-      email: "approved@example.test",
-      name: "Approved",
-      given_name: "Approved",
-      family_name: "",
-      exp: 12345,
-    };
-    vi.mocked(oidc.session).mockResolvedValue(profile);
-    router.currentRoute = {
-      value: { path: "/cb", query: { oidc: "1" }, hash: "#id_token=forged" },
-    };
-    wrapper = mount(LoginPage, {
-      global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
-    });
-    await flushPromises();
-    expect(oidc.session).toHaveBeenCalledTimes(1);
-    expect(store.dispatch).toHaveBeenCalledWith("login", { loginState: true, userInfo: profile });
-    expect(zincutils.getUserInfo).not.toHaveBeenCalled();
-    expect(usersService.verifyUser).not.toHaveBeenCalled();
-    expect(usersService.addNewUser).not.toHaveBeenCalled();
-  });
-
-  it("removes a replaced account's persisted results before installing the new identity", async () => {
-    let finishPurge = () => {};
-    vi.mocked(purgeAllPersisted).mockImplementation(
-      () => new Promise<void>((resolve) => (finishPurge = resolve)),
-    );
-    const profile = {
-      email: "second@example.test",
-      name: "Second",
-      given_name: "Second",
-      family_name: "",
-      exp: 12345,
-    };
-    vi.mocked(oidc.session).mockResolvedValue(profile);
-    router.currentRoute = { value: { path: "/cb", query: { oidc: "1" }, hash: "" } };
-    try {
-      wrapper = mount(LoginPage, {
-        global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
-      });
-      await flushPromises();
-      expect(purgeAllPersisted).toHaveBeenCalled();
-      expect(store.dispatch).not.toHaveBeenCalledWith("setCurrentUser", expect.anything());
-      expect(store.dispatch).not.toHaveBeenCalledWith("login", expect.anything());
-      finishPurge();
-      await flushPromises();
-      expect(store.dispatch).toHaveBeenCalledWith("login", { loginState: true, userInfo: profile });
-    } finally {
-      vi.mocked(purgeAllPersisted).mockImplementation(() => Promise.resolve());
-    }
-  });
-
-  it("shows an actionable message for an OIDC user with no organization", async () => {
-    const profile = {
-      email: "new@example.test",
-      name: "New",
-      given_name: "New",
-      family_name: "",
-      exp: 12345,
-    };
-    vi.mocked(oidc.session).mockResolvedValue(profile);
-    vi.mocked(organizationsService.list).mockResolvedValue({
-      data: { data: [] },
-      status: 200,
-      statusText: "OK",
-      headers: {},
-      config: { headers: new AxiosHeaders() },
-    });
-    router.currentRoute = { value: { path: "/cb", query: { oidc: "1" }, hash: "" } };
-    const push = vi.spyOn(router, "push").mockResolvedValue(undefined);
-    wrapper = mount(LoginPage, {
-      global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
-    });
-    await flushPromises();
-    expect(wrapper.find('[data-test="oidc-no-organization"]').exists()).toBe(true);
-    expect(wrapper.find('[data-test="dex-callback-loading"]').exists()).toBe(false);
-    expect(store.dispatch).not.toHaveBeenCalledWith("setSelectedOrganization", expect.anything());
-    expect(push).not.toHaveBeenCalled();
-  });
-
-  it.each(["organization", "session"])(
-    "lets the user retry a temporary %s lookup failure",
-    async (failure) => {
-      vi.mocked(oidc.session).mockResolvedValue({
-        email: "approved@example.test",
-        name: "Approved",
-        given_name: "Approved",
-        family_name: "",
-        exp: 12345,
-      });
-      if (failure === "session") {
-        vi.mocked(oidc.session).mockRejectedValueOnce({
-          isAxiosError: true,
-          response: { status: 503 },
-        });
-      } else {
-        vi.mocked(organizationsService.list).mockRejectedValueOnce(new Error("network failure"));
-      }
-      vi.mocked(organizationsService.list).mockResolvedValueOnce({
-        data: { data: [] },
-        status: 200,
-        statusText: "OK",
-        headers: {},
-        config: { headers: new AxiosHeaders() },
-      });
-      router.currentRoute = { value: { path: "/cb", query: { oidc: "1" }, hash: "" } };
-      wrapper = mount(LoginPage, {
-        global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
-      });
-      await flushPromises();
-      expect(wrapper.find('[data-test="dex-callback-loading"]').exists()).toBe(false);
-      expect(store.dispatch).not.toHaveBeenCalledWith("logout");
-      await wrapper.get('[data-test="oidc-retry-callback"]').trigger("click");
-      await flushPromises();
-      expect(wrapper.find('[data-test="oidc-no-organization"]').exists()).toBe(true);
-      expect(oidc.session).toHaveBeenCalledTimes(2);
-    },
-  );
-
-  it("does not authenticate a failed OIDC callback and shows a generic error", async () => {
-    vi.mocked(oidc.session).mockRejectedValue({ isAxiosError: true, response: { status: 401 } });
-    router.currentRoute = {
-      value: { path: "/cb", query: { oidc: "1" }, hash: "#id_token=forged" },
-    };
-    const replace = vi.spyOn(router, "replace").mockResolvedValue(undefined);
-    wrapper = mount(LoginPage, {
-      global: { plugins: [store, router], mocks: { $route: router.currentRoute.value } },
-    });
-    await flushPromises();
-    expect(store.dispatch).not.toHaveBeenCalledWith("login", expect.anything());
-    expect(zincutils.getUserInfo).not.toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledWith({ path: "/login", query: { oidc_error: "1" } });
   });
 
   describe("Component Mounting and Definition", () => {

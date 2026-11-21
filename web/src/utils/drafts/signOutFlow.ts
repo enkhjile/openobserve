@@ -14,19 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import type { Router } from "vue-router";
-import { queryClient } from "@/composables/query/queryClient";
-import { configQuery } from "@/services/config.queries";
-import oidc, { authClient } from "@/services/oidc";
-import userService from "@/services/users";
-import { toast } from "@/lib/feedback/Toast/useToast";
-import { gt } from "@/types/i18n";
 import {
   getPath,
   useLocalCurrentUser,
   useLocalUserInfo,
-  invalidateLoginData,
   rememberRevokedProfile,
 } from "@/utils/zincutils";
+import { reportSignOutFailure, revokeServerSession } from "@/utils/serverSignOut";
 import { forgetLinkRequest } from "@/utils/slackLink";
 import {
   beginDraftSignOut,
@@ -64,28 +58,15 @@ export const reloadToLogin = (): void => {
 };
 
 /** Ends the signed-in session here: services stopped, login data gone and, unless kept, this user's drafts gone with no draft written after. */
-export const endSignedInSession = (
+export const endSignedInSession = async (
   store: SignOutStore,
   {
     keepDrafts = false,
     awaitNativeLogout = false,
   }: { keepDrafts?: boolean; awaitNativeLogout?: boolean } = {},
-): void | Promise<void> => {
-  const finish = (oidcEnabled: boolean) => {
-    if (oidcEnabled || awaitNativeLogout) {
-      // The caller reports a failed revocation itself, so the global 401 handler must not reload first.
-      const request = oidcEnabled ? oidc.logout() : userService.logout(authClient());
-      return request.then(() => clearSignedInSession(store, keepDrafts));
-    }
-    invalidateLoginData();
-    clearSignedInSession(store, keepDrafts);
-  };
-  const enabled = store.state.zoConfig?.oidc_enabled;
-  // A direct /logout navigation can run before main.ts has stored the bootstrap config.
-  if (enabled === undefined) {
-    return queryClient.fetchQuery(configQuery()).then((config) => finish(config.oidc_enabled));
-  }
-  return finish(enabled);
+): Promise<void> => {
+  await revokeServerSession(store, { confirmNative: awaitNativeLogout });
+  clearSignedInSession(store, keepDrafts);
 };
 
 const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void => {
@@ -100,8 +81,8 @@ const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void =>
     store.dispatch("logout", { draftsOf: userEmail });
     endEditorDraftSession(userEmail);
   }
-  tryClearBrowserStorage(() => useLocalCurrentUser("", true));
-  tryClearBrowserStorage(() => useLocalUserInfo("", true));
+  useLocalCurrentUser("", true);
+  useLocalUserInfo("", true);
   tryClearBrowserStorage(rememberRevokedProfile);
   forgetLinkRequest();
 };
@@ -119,48 +100,34 @@ export const signOutThroughLeaveGuards = (
   { discardOnly = false, forced = false }: SignOutOptions = {},
 ): Promise<boolean> => {
   beginDraftSignOut({ discardOnly, forced });
-  let signedOut = false;
-  let ending: void | Promise<void>;
-  const endSession = () => {
-    if (signedOut) return ending;
-    signedOut = true;
-    ending = endSignedInSession(store, { keepDrafts: forced });
-    return ending;
-  };
-  const removeGuard = router.beforeEach((to) => {
+  let ending: Promise<void> | undefined;
+  const endSession = () => (ending ??= endSignedInSession(store, { keepDrafts: forced }));
+  // Global guards run after the leave guards; a redirect would run every leave guard again, so the reload ends the navigation.
+  const removeGuard = router.beforeEach(async (to) => {
     removeGuard();
     if (to.path !== "/logout") return true;
-    const pending = endSession();
-    return pending ? pending.then(() => false) : false;
+    await endSession();
+    return false;
   });
-  const finish = (refused: boolean): boolean | Promise<boolean> => {
+  const finish = async (refused: boolean) => {
     removeGuard();
-    if (refused && !forced && !signedOut) {
+    if (refused && !forced && !ending) {
       cancelDraftSignOut();
       return false;
     }
-    const pending = endSession();
-    if (pending) {
-      return pending
-        .then(() => {
-          reloadToLogin();
-          return true;
-        })
-        .catch(() => {
-          cancelDraftSignOut();
-          reportSignOutFailure();
-          return false;
-        });
+    try {
+      await endSession();
+    } catch {
+      cancelDraftSignOut();
+      reportSignOutFailure();
+      return false;
     }
     reloadToLogin();
     return true;
   };
+  // A guard that throws refuses like one that returns false, so the sign-out never hangs half-done.
   return router.push("/logout").then(
     (failure) => finish(!!failure),
     () => finish(true),
   );
-};
-
-export const reportSignOutFailure = (): void => {
-  toast({ variant: "error", message: gt("login.oidcLogoutError") });
 };

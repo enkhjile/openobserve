@@ -275,6 +275,12 @@ const useRoutes = () => {
       component: () => import("@/views/ConfirmSignOut.vue"),
     },
     {
+      path: "/oidc/cb",
+      // The view reads identity from the HttpOnly session and needs no cached profile.
+      meta: { public: true },
+      component: () => import("@/views/OidcCallback.vue"),
+    },
+    {
       path: "/cb",
       name: "callback",
       component: Login,

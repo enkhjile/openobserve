@@ -14,10 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use axum::{
-    Json,
+    Json, Router,
     extract::Query,
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
+    routing::{get, post},
 };
 use openobserve_core::extensions::oidc::{self, browser_transactions};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,15 @@ struct Profile {
     given_name: String,
     family_name: String,
     exp: i64,
+}
+
+/// Browser sign-in routes, mounted under `/auth` without authentication.
+pub fn routes() -> Router {
+    Router::new()
+        .route("/oidc/login", get(login))
+        .route("/oidc/callback", get(callback))
+        .route("/oidc/session", get(session))
+        .route("/oidc/logout", post(logout))
 }
 
 pub async fn login(headers: HeaderMap) -> Response {
@@ -73,9 +83,7 @@ pub async fn login(headers: HeaderMap) -> Response {
                 return unavailable();
             };
             let mut response = Redirect::temporary(&request.url).into_response();
-            if set_cookie(&mut response, &cookie_name, &binding, 300).is_err() {
-                return unavailable();
-            }
+            set_cookie(&mut response, &cookie_name, &binding, 300);
             no_store(response)
         }
         Err(_) => unavailable(),
@@ -116,21 +124,11 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
     let mut response = match result {
         Ok((secret, session)) => {
             let mut response =
-                Redirect::to(&format!("{}/web/cb?oidc=1", cfg.common.base_uri)).into_response();
-            if set_cookie(
-                &mut response,
-                oidc::cookie_name(&cfg.oidc),
-                &secret,
-                session.expires_at - chrono::Utc::now().timestamp(),
-            )
-            .is_err()
-            {
-                return unavailable();
-            }
+                Redirect::to(&format!("{}/web/oidc/cb", cfg.common.base_uri)).into_response();
+            let age = session.expires_at - chrono::Utc::now().timestamp();
+            set_cookie(&mut response, oidc::cookie_name(&cfg.oidc), &secret, age);
             for name in ["auth_tokens", "auth_ext"] {
-                if set_cookie(&mut response, name, "", 0).is_err() {
-                    return unavailable();
-                }
+                set_cookie(&mut response, name, "", 0);
             }
             response
         }
@@ -138,10 +136,8 @@ pub async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Resp
             Redirect::to(&format!("{}/web/login?oidc_error=1", cfg.common.base_uri)).into_response()
         }
     };
-    if let Some(name) = transaction_cookie
-        && set_cookie(&mut response, &name, "", 0).is_err()
-    {
-        return unavailable();
+    if let Some(name) = transaction_cookie {
+        set_cookie(&mut response, &name, "", 0);
     }
     no_store(response)
 }
@@ -177,32 +173,22 @@ pub async fn logout(headers: HeaderMap) -> Response {
     if oidc::check_csrf(&headers, &Method::POST, &cfg.oidc.redirect_uri).is_err() {
         return no_store(StatusCode::FORBIDDEN.into_response());
     }
-    if oidc::revoke(&headers).await.is_err() {
+    let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
         return unavailable();
-    }
+    };
     let mut response = StatusCode::NO_CONTENT.into_response();
-    for name in browser_transactions::pending_cookie_names(&headers, &cfg.oidc)
-        .into_iter()
-        .chain([oidc::cookie_name(&cfg.oidc), "auth_tokens", "auth_ext"])
-    {
-        if set_cookie(&mut response, name, "", 0).is_err() {
-            return unavailable();
-        }
+    for cookie in cleared {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    for name in ["auth_tokens", "auth_ext"] {
+        set_cookie(&mut response, name, "", 0);
     }
     no_store(response)
 }
 
-fn set_cookie(response: &mut Response, name: &str, value: &str, age: i64) -> anyhow::Result<()> {
-    let secure = if config::get_config().oidc.cookie_secure {
-        "; Secure"
-    } else {
-        ""
-    };
-    let value = HeaderValue::from_str(&format!(
-        "{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={age}{secure}"
-    ))?;
-    response.headers_mut().append(header::SET_COOKIE, value);
-    Ok(())
+fn set_cookie(response: &mut Response, name: &str, value: &str, age: i64) {
+    let cookie = oidc::cookie_header(&config::get_config().oidc, name, value, age);
+    response.headers_mut().append(header::SET_COOKIE, cookie);
 }
 
 fn no_store(mut response: Response) -> Response {

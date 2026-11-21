@@ -91,6 +91,11 @@ impl Deref for StartupOidc {
 pub const CALLBACK_PATH: &str = "/auth/oidc/callback";
 
 impl Oidc {
+    /// Whether human password login stays available, so the login page can offer it.
+    pub fn allows_native_login(&self) -> bool {
+        !self.enabled || !self.only || !self.emergency_user.is_empty()
+    }
+
     fn validate_startup(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !(cfg!(feature = "enterprise") && self.enabled),
@@ -116,9 +121,27 @@ impl Oidc {
     }
 }
 
+/// Whether a path or URL path is the callback, whose query carries the authorization code.
+pub fn is_callback_path(path: &str) -> bool {
+    path.trim_end_matches('/').ends_with(CALLBACK_PATH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_path_detection_tolerates_prefixes_and_trailing_slashes() {
+        for prefix in ["", "/observe", "https://example.test/observe"] {
+            for suffix in ["", "/", "//"] {
+                assert!(is_callback_path(&format!(
+                    "{prefix}/auth/oidc/callback{suffix}"
+                )));
+            }
+        }
+        assert!(!is_callback_path("/auth/oidc/callback/extra"));
+        assert!(!is_callback_path("/auth/oidc/login"));
+    }
 
     #[test]
     fn callback_path_allows_proxy_prefixes_and_requires_the_exact_route() {

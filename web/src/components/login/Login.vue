@@ -144,7 +144,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         </div>
 
         <div
-          v-if="showInternalLogin && (!showSSO || loginAsInternalUser)"
+          v-if="!showSSO || (showSSO && loginAsInternalUser && showInternalLogin)"
           id="login-internal-form"
           class="login-inputs"
         >
@@ -323,13 +323,7 @@ export default defineComponent({
     });
 
     const showInternalLogin = computed(() => {
-      if (store.state.zoConfig.oidc_enabled === true) {
-        return (
-          !store.state.zoConfig.oidc_only ||
-          store.state.zoConfig.oidc_emergency_login_enabled === true
-        );
-      }
-      return !showSSO.value || store.state.zoConfig.native_login_enabled;
+      return store.state.zoConfig.native_login_enabled;
     });
 
     // Dex opens on its Create account tab when the request carries screen_hint=signup.

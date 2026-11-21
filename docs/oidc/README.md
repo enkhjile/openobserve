@@ -24,7 +24,7 @@ Set environment variables using the existing OpenObserve configuration mechanism
 
 Startup validates OIDC settings before serving requests. Provider discovery occurs on the first login. If discovery fails, concurrent logins share the failure and the server can retry discovery after two seconds. Confidential clients support client_secret_basic and client_secret_post. OpenObserve reads all `ZO_OIDC_*` settings at startup. If a file edit changes both an OIDC setting and a reloadable OpenObserve setting, the latter takes effect on reload. The OIDC change takes effect on the next server start. Keep deployment secrets in the platform's secret store and inject them into the process environment. The extension does not add a new secret-management service.
 
-To serve OpenObserve under a public path prefix such as `https://example.com/observe`, set the existing `ZO_BASE_URI=/observe` and forward that prefix unchanged from the proxy. The callback then lives under the prefix, so set `ZO_OIDC_REDIRECT_URI=https://example.com/observe/auth/oidc/callback` and register exactly that URL with the provider. After login the browser returns to `/observe/web/cb`.
+To serve OpenObserve under a public path prefix such as `https://example.com/observe`, set the existing `ZO_BASE_URI=/observe` and forward that prefix unchanged from the proxy. The callback then lives under the prefix, so set `ZO_OIDC_REDIRECT_URI=https://example.com/observe/auth/oidc/callback` and register exactly that URL with the provider. After login the browser returns to `/observe/web/oidc/cb`.
 
 Example explicit mapping:
 

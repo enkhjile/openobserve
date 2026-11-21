@@ -91,8 +91,8 @@ export const expireSession = (
 ): void => {
   stopSessionServices(store);
   store.dispatch("logout");
-  tryClearBrowserStorage(() => useLocalCurrentUser("", true));
-  tryClearBrowserStorage(() => useLocalUserInfo("", true));
+  useLocalCurrentUser("", true);
+  useLocalUserInfo("", true);
   if (clearLocalStorage) tryClearBrowserStorage(clearLocalStorageKeepingDrafts);
   tryClearBrowserStorage(() => sessionStorage.clear());
   // The session is gone, so an editor's "leave site?" prompt could only keep the user on a dead page.

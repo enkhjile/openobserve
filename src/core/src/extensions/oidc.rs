@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod browser_transactions;
+pub mod session_store;
 
 use std::collections::HashMap;
 
@@ -21,7 +22,7 @@ use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use config::{meta::user::DBUser, oidc::Oidc};
-use http::{HeaderMap, Method, header};
+use http::{HeaderMap, HeaderValue, Method, header};
 use infra::table::entity::users::{self, Entity as Users};
 pub use openobserve_oidc::random_secret;
 use openobserve_oidc::{OidcProvider, ProviderSettings, VerifiedIdentity};
@@ -130,12 +131,27 @@ pub fn password_allowed(cfg: &Oidc, email: &str, is_root: bool) -> bool {
         || (is_root && !cfg.emergency_user.is_empty() && cfg.emergency_user == email)
 }
 
+/// `password_allowed` under the running configuration, for credential checks in upstream code.
+pub fn password_login_allowed(email: &str, is_root: bool) -> bool {
+    password_allowed(&config::get_config().oidc, email, is_root)
+}
+
 pub fn cookie_name(cfg: &Oidc) -> &'static str {
     if cfg.cookie_secure {
         "__Host-o2_oidc"
     } else {
         "o2_oidc_dev"
     }
+}
+
+/// Formats an OIDC browser cookie; an age of zero clears it.
+pub fn cookie_header(cfg: &Oidc, name: &str, value: &str, age: i64) -> HeaderValue {
+    let secure = if cfg.cookie_secure { "; Secure" } else { "" };
+    // Names are constants or validated states, and values are base64url secrets or empty.
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={age}{secure}"
+    ))
+    .expect("OIDC cookies are visible ASCII")
 }
 
 pub fn transaction_cookie_name(cfg: &Oidc) -> &'static str {
@@ -291,7 +307,7 @@ pub async fn establish(
     };
     let previous_id = unique_cookie(headers, cookie_name(&cfg.oidc))?.map(session_key);
     let secret = format!("v1.{}", random_secret());
-    infra::table::sessions::rotate_oidc_session(
+    session_store::rotate(
         marker,
         previous_id.as_deref(),
         &session_key(&secret),
@@ -306,8 +322,22 @@ pub async fn revoke(headers: &HeaderMap) -> Result<()> {
     let cfg = config::get_config();
     let current = unique_cookie(headers, cookie_name(&cfg.oidc))?.map(session_key);
     let markers = browser_transactions::pending_markers(headers, &cfg.oidc);
-    infra::table::sessions::revoke_oidc_sessions(markers, current).await?;
-    Ok(())
+    session_store::revoke(markers, current).await
+}
+
+/// Revokes the browser's OIDC session before a native login and returns the cookies that clear it.
+pub async fn retire_browser_session(headers: &HeaderMap) -> Result<Vec<HeaderValue>> {
+    let cfg = config::get_config();
+    if !cfg.oidc.enabled {
+        return Ok(Vec::new());
+    }
+    revoke(headers).await?;
+    Ok(std::iter::once(cookie_name(&cfg.oidc))
+        .chain(browser_transactions::pending_cookie_names(
+            headers, &cfg.oidc,
+        ))
+        .map(|name| cookie_header(&cfg.oidc, name, "", 0))
+        .collect())
 }
 
 fn session_key(secret: &str) -> String {

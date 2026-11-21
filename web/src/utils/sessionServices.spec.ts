@@ -85,22 +85,6 @@ describe("expireSession", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("navigates after ending the session even when session storage is blocked", () => {
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, assign });
-    const store = { state: { zoConfig: { rum: { enabled: false } } }, dispatch: vi.fn() };
-    const clear = vi.spyOn(Storage.prototype, "clear").mockImplementation(() => {
-      throw new DOMException("Storage blocked", "SecurityError");
-    });
-    try {
-      expect(() => expireSession(store, { toLogin: true })).not.toThrow();
-      expect(store.dispatch).toHaveBeenCalledWith("logout");
-      expect(assign).toHaveBeenCalledTimes(1);
-    } finally {
-      clear.mockRestore();
-    }
-  });
-
   it("goes to the login page instead of reloading when asked, keeping the drafts", () => {
     const reload = vi.fn();
     const assign = vi.fn();

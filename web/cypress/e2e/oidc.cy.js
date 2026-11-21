@@ -3,9 +3,7 @@ describe("OSS OIDC login", () => {
   const openLogin = (overrides = {}, query = "") => {
     cy.intercept("GET", "**/config", {
       oidc_enabled: true,
-      oidc_only: true,
-      oidc_emergency_login_enabled: false,
-      native_login_enabled: true,
+      native_login_enabled: false,
       sso_enabled: false,
       telemetry_enabled: false,
       ...overrides,
@@ -15,14 +13,14 @@ describe("OSS OIDC login", () => {
 
   it("shows SSO and hides native login in OIDC-only mode", () => {
     openLogin();
-    cy.get('[data-test="sso-login-btn"]').should("be.visible").and("contain", "Sign in with SSO");
+    cy.get('[data-test="sso-login-btn"]').should("be.visible").and("contain", "Login with SSO");
     cy.get('[data-test="login-user-id"]').should("not.exist");
     cy.get('[data-test="login-as-internal-user"]').should("not.exist");
     cy.screenshot("oidc-only-login");
   });
 
   it("allows explicitly enabled emergency login", () => {
-    openLogin({ oidc_emergency_login_enabled: true });
+    openLogin({ native_login_enabled: true });
     cy.get('[data-test="login-as-internal-user"]').click();
     cy.get('[data-test="login-user-id"]').should("be.visible");
     cy.get('[data-test="login-password"]').should("be.visible");
@@ -37,7 +35,7 @@ describe("OSS OIDC login", () => {
   it("explains missing organization membership and signs out", () => {
     cy.intercept("GET", "**/config", {
       oidc_enabled: true,
-      oidc_only: true,
+      native_login_enabled: false,
       telemetry_enabled: false,
     });
     cy.intercept("GET", "**/auth/oidc/session", {
@@ -49,7 +47,7 @@ describe("OSS OIDC login", () => {
     });
     cy.intercept("GET", "**/api/organizations?*", { data: [] });
     cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204, delay: 200 }).as("logout");
-    cy.visit("/web/cb?oidc=1");
+    cy.visit("/web/oidc/cb");
     cy.get('[data-test="oidc-no-organization"]')
       .should("be.visible")
       .and("contain", "Ask your OpenObserve administrator");
@@ -93,7 +91,7 @@ describe("OSS OIDC login", () => {
 
   [false, true].forEach((cachedProfile) => {
     it(`requires confirmation for direct logout with ${cachedProfile ? "a cached" : "no cached"} profile`, () => {
-      cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+      cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
       let attempts = 0;
       cy.intercept("POST", "**/auth/oidc/logout", (request) => {
         attempts += 1;
@@ -132,7 +130,7 @@ describe("OSS OIDC login", () => {
   });
 
   it("finishes confirmed logout when browser storage cleanup is blocked", () => {
-    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
     cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204 }).as("revoke");
     cy.visit("/web/logout");
     cy.window().then((win) => {
@@ -150,7 +148,7 @@ describe("OSS OIDC login", () => {
   });
 
   it("stays on login after a confirmed logout that could not delete the cached profile", () => {
-    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
     cy.intercept("POST", "**/auth/oidc/logout", { statusCode: 204 }).as("revoke");
     cy.intercept({ method: "GET", pathname: /^\/api\// }, { statusCode: 401 }).as("api");
     cy.visit("/web/logout", {
@@ -198,7 +196,7 @@ describe("OSS OIDC login", () => {
           tx.onerror = () => reject(tx.error);
         };
       });
-    cy.intercept("GET", "**/config", { oidc_enabled: true, oidc_only: true });
+    cy.intercept("GET", "**/config", { oidc_enabled: true, native_login_enabled: false });
     cy.intercept("GET", "**/auth/oidc/session", {
       email: "second@example.test",
       name: "Second",
@@ -217,7 +215,7 @@ describe("OSS OIDC login", () => {
         store.put({ key, value, updatedAt: now, expiresAt: now + 3_600_000 }),
       );
     });
-    cy.visit("/web/cb?oidc=1");
+    cy.visit("/web/oidc/cb");
     cy.get('[data-test="oidc-no-organization"]').should("be.visible");
     cy.window().then((win) => {
       expect(JSON.parse(win.atob(win.localStorage.getItem("userInfo"))).email).to.equal(

@@ -62,7 +62,7 @@ async fn establish(
     headers: &HeaderMap,
 ) -> anyhow::Result<(String, oidc::Session)> {
     let marker = format!("oidc_tx_{}", oidc::random_secret());
-    infra::table::sessions::start_oidc_transaction(
+    oidc::session_store::start_transaction(
         &marker,
         chrono::Utc::now().timestamp_micros() + 300_000_000,
     )
@@ -432,7 +432,7 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         .unwrap();
     let previous_id = compact_session_key(&secret);
     assert!(
-        infra::table::sessions::rotate_oidc_session(
+        oidc::session_store::rotate(
             &oidc::browser_transactions::marker(&binding),
             Some(&previous_id),
             "oidc_expired_replacement",
@@ -443,7 +443,7 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         .is_err()
     );
     let expired_marker = oidc::browser_transactions::marker(&oidc::random_secret());
-    infra::table::sessions::start_oidc_transaction(
+    oidc::session_store::start_transaction(
         &expired_marker,
         chrono::Utc::now().timestamp_micros() - 1,
     )

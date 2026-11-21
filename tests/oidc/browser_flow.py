@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["PyJWT[crypto]>=2.10,<3", "requests>=2.32,<3"]
+# dependencies = ["PyJWT[crypto]>=2.10,<3", "requests>=2.32,<3", "grpcio>=1.60,<2"]
 # ///
 """Run with uv run tests/oidc/browser_flow.py target/debug/openobserve.
 
@@ -24,6 +24,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+import grpc
 import jwt
 import requests
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -138,7 +139,7 @@ def app(binary, directory, port, settings):
         ZO_HTTP_ADDR="127.0.0.1",
         ZO_GRPC_ADDR="127.0.0.1",
         ZO_HTTP_PORT=str(port),
-        ZO_GRPC_PORT=str(free_port()),
+        ZO_GRPC_PORT=str(GRPC_PORT),
         ZO_DATA_DIR=str(Path(directory) / "data") + "/",
         ZO_ROOT_USER_EMAIL=ROOT,
         ZO_ROOT_USER_PASSWORD=PASSWORD,
@@ -187,8 +188,24 @@ def finish_flow(browser, callback, success):
     response = browser.get(callback, allow_redirects=False, timeout=20)
     assert response.is_redirect
     assert response.headers["Location"].endswith(
-        "/web/cb?oidc=1" if success else "/web/login?oidc_error=1"
+        "/web/oidc/cb" if success else "/web/login?oidc_error=1"
     )
+
+
+def grpc_code(user, secret):
+    """Status of an empty OTLP log export, which the gRPC auth interceptor checks first."""
+    token = base64.b64encode(f"{user}:{secret}".encode()).decode()
+    with grpc.insecure_channel(f"127.0.0.1:{GRPC_PORT}") as channel:
+        grpc.channel_ready_future(channel).result(timeout=20)
+        export = channel.unary_unary(
+            "/opentelemetry.proto.collector.logs.v1.LogsService/Export"
+        )
+        metadata = [("authorization", f"Basic {token}"), ("organization", "default")]
+        try:
+            export(b"", metadata=metadata, timeout=10)
+        except grpc.RpcError as error:
+            return error.code()
+    return grpc.StatusCode.OK
 
 
 def flow(browser, base, success):
@@ -203,6 +220,7 @@ META_STORE = (
     if POSTGRES_DSN
     else {}
 )
+GRPC_PORT = free_port()
 ROOT = "root@example.test"
 HUMAN = "member@example.test"
 PASSWORD = "T3st!" + secrets.token_urlsafe(24)
@@ -234,6 +252,7 @@ def test_flow(binary, directory, issuer):
         passcode = requests.get(
             base + "/api/default/passcode", auth=(ROOT, PASSWORD), timeout=5
         ).json()["data"]
+        assert grpc_code(HUMAN, PASSWORD) != grpc.StatusCode.UNAUTHENTICATED
 
     issuer.callback = base + "/auth/oidc/callback"
     settings = {
@@ -258,7 +277,7 @@ def test_flow(binary, directory, issuer):
         ZO_ROOT_USER_PASSWORD=PASSWORD,
         ZO_LOCAL_MODE="true",
         ZO_HTTP_PORT=str(port),
-        ZO_GRPC_PORT=str(free_port()),
+        ZO_GRPC_PORT=str(GRPC_PORT),
         ZO_TELEMETRY="false",
         ZO_DATA_DIR=str(Path(directory) / "data") + "/",
     )
@@ -352,6 +371,9 @@ def test_flow(binary, directory, issuer):
             assert requests.get(
                 base + "/api/default/config", auth=(email, PASSWORD), timeout=5
             ).status_code in (401, 403)
+            assert grpc_code(email, PASSWORD) == grpc.StatusCode.UNAUTHENTICATED
+        token_code = grpc_code(passcode["user"], passcode["passcode"])
+        assert token_code != grpc.StatusCode.UNAUTHENTICATED
         ingest = requests.post(
             base + "/api/default/oidc_smoke/_json",
             json=[{"message": "ok"}],
@@ -498,6 +520,7 @@ def test_flow(binary, directory, issuer):
         assert requests.get(
             base + "/api/default/config", auth=(ROOT, PASSWORD), timeout=5
         ).ok
+        assert grpc_code(ROOT, PASSWORD) != grpc.StatusCode.UNAUTHENTICATED
         with requests.Session() as browser:
             flow(browser, base, False)  # An explicitly linked account lost approval.
             issuer.subject = "different-subject"
@@ -527,7 +550,7 @@ def test_flow(binary, directory, issuer):
         callback = begin_flow(browser, prefixed)
         assert callback.startswith(issuer.callback + "?")
         landed = browser.get(callback, allow_redirects=False, timeout=20)
-        assert landed.headers["Location"] == "/observe/web/cb?oidc=1"
+        assert landed.headers["Location"] == "/observe/web/oidc/cb"
         assert browser.get(base + landed.headers["Location"], timeout=5).ok
         profile = browser.get(prefixed + "/auth/oidc/session", timeout=5)
         assert profile.ok and profile.json()["email"] == "new@example.test"
