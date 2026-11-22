@@ -19,28 +19,6 @@ defaults:
     shell: bash
 
 jobs:
-  # GitHub enables every workflow file new to main, so a merged sync can switch upstream ones back on.
-  disable-upstream-workflows:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      KEEP: fork-ci.yml upstream-sync.yml fork-release.yml gitleaks.yml
-    steps:
-      - run: |
-          gh workflow list --repo "$GITHUB_REPOSITORY" --limit 500 --json id,path,state \
-            --jq '.[] | select(.state == "active") | "\(.id) \(.path)"' |
-          while read -r id file; do
-            case " $KEEP " in *" ${file##*/} "*) continue ;; esac
-            if gh workflow disable "$id" --repo "$GITHUB_REPOSITORY"; then
-              echo "Disabled $file" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::warning::Could not disable $file"
-            fi
-          done
-
   sync:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
@@ -96,3 +74,34 @@ jobs:
             --title "chore: merge upstream main ($upstream)" \
             --body "Automated merge of openobserve/openobserve main at $upstream. Merge with a merge commit, never squash, so the next sync starts from here." \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Runs after the sync: GitHub enables workflow files new to main, and a sync PR runs the ones it adds.
+  disable-upstream-workflows:
+    needs: sync
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      KEEP: fork-ci.yml upstream-sync.yml fork-release.yml gitleaks.yml
+    steps:
+      # A new PR's workflow runs appear a few seconds after it opens.
+      - if: needs.sync.result == 'success'
+        run: sleep 60
+      - run: |
+          gh workflow list --limit 500 --json id,path,state \
+            --jq '.[] | select(.state == "active") | "\(.id) \(.path)"' |
+          while read -r id file; do
+            case " $KEEP " in *" ${file##*/} "*) continue ;; esac
+            gh run list --workflow "${file##*/}" --limit 100 --json databaseId,status \
+              --jq '.[] | select(.status != "completed") | .databaseId' < /dev/null |
+            while read -r run; do gh run cancel "$run" < /dev/null || true; done
+            if gh workflow disable "$id" < /dev/null; then
+              echo "Disabled $file" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not disable $file"
+            fi
+          done
