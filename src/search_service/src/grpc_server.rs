@@ -18,6 +18,7 @@ use config::{
     meta::{search, stream::StreamType},
     utils::json,
 };
+use infra::rbac::caller::Caller;
 use proto::cluster_rpc::{
     CancelQueryRequest, CancelQueryResponse, DeleteResultRequest, DeleteResultResponse,
     GetLicenseUsageRequest, GetLicenseUsageResponse, GetResultRequest, GetResultResponse,
@@ -58,44 +59,29 @@ impl Search for Searcher {
         let request = json::from_slice::<search::Request>(&req.request)
             .map_err(|e| Status::internal(format!("failed to parse search request: {e}")))?;
         let stream_type = StreamType::from(req.stream_type.as_str());
-
-        let ret = if let Some(subject) = req.rbac_subject.as_deref() {
-            SearchService::search_as_subject(
-                &req.trace_id,
-                &req.org_id,
-                stream_type,
-                subject,
-                &request,
-            )
-            .await
-        } else {
-            ::search::rbac::authorize(
-                &request.query.sql,
-                &req.org_id,
-                stream_type,
-                req.user_id.as_deref(),
-                request.search_type,
-            )
-            .await
-            .map_err(|e| Status::permission_denied(e.to_string()))?;
-            if infra::rbac::enabled() && request.query.query_fn.is_some() {
-                return Err(Status::permission_denied(
-                    "Query transforms require a scoped adapter",
-                ));
+        // A delegated subject skips the cache layer, whose delta tasks would not carry it.
+        let ret =
+            if let Some(subject) = req.rbac_subject.clone().filter(|_| infra::rbac::enabled()) {
+                let search =
+                    SearchService::search(&req.trace_id, &req.org_id, stream_type, None, &request);
+                infra::rbac::caller::scope(Caller::Subject(subject), search).await
+            } else {
+                let search = SearchService::cache::search(
+                    &req.trace_id,
+                    &req.org_id,
+                    stream_type,
+                    req.user_id.clone(),
+                    &request,
+                    "".to_string(),
+                    false,
+                    None,
+                    false,
+                );
+                let caller = Caller::User(req.user_id.clone().unwrap_or_default());
+                infra::rbac::caller::scope(caller, search).await
             }
-            SearchService::cache::search(
-                &req.trace_id,
-                &req.org_id,
-                stream_type,
-                req.user_id.clone(),
-                &request,
-                "".to_string(),
-                false,
-                None,
-                false,
-            )
-            .await
-        };
+            .map_err(infra::rbac::denied)
+            .and_then(std::convert::identity);
 
         match ret {
             Ok(mut ret) => {
@@ -187,11 +173,9 @@ impl Search for Searcher {
         &self,
         req: Request<GetTableRequest>,
     ) -> Result<Response<GetTableResponse>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Table retrieval requires a scoped RBAC execution identity",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled(
+            "Table retrieval requires a scoped RBAC execution identity",
+        )?;
         let path = req.into_inner().path;
         if !::search::datafusion::distributed::codec::is_join_result_path(&path) {
             return Err(Status::invalid_argument("invalid table path"));
@@ -330,11 +314,7 @@ impl Search for Searcher {
         &self,
         req: Request<GetSourcemapFileRequest>,
     ) -> Result<Response<GetSourcemapFileResponse>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Scoped execution identity required",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled("Scoped execution identity required")?;
         let req = req.into_inner();
         log::info!(
             "got get request for sourcemap file : {}/{} at {}",

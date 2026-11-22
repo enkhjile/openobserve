@@ -1187,6 +1187,8 @@ enum Alerts {
 }
 
 #[cfg(test)]
+mod rbac_tests;
+#[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::table::entity::alerts::Model;
@@ -1254,24 +1256,6 @@ pub(super) mod tests {
             keep_firing_for_seconds: None,
             suppress_repeats: None,
         }
-    }
-
-    #[test]
-    fn rbac_execution_subject_survives_read_write_mapping() {
-        let id = Ksuid::new(None, None).to_string();
-        let mut model = make_model(&id);
-        model.execution_subject = Some("persisted-subject".into());
-        let alert = MetaAlert::try_from(model.clone()).unwrap();
-        assert_eq!(
-            alert.execution_subject.as_deref(),
-            Some("persisted-subject")
-        );
-        let mut active: alerts::ActiveModel = model.into();
-        update_mutable_fields(&mut active, alert).unwrap();
-        assert_eq!(
-            active.execution_subject,
-            Set(Some("persisted-subject".into()))
-        );
     }
 
     #[test]

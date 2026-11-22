@@ -97,34 +97,17 @@ pub async fn process_search_stream_request(
     is_multi_stream_search: bool,
     extract_patterns: bool,
 ) {
-    if let Err(error) = ::search::rbac::authorize(
-        &req.query.sql,
+    let search = &req.query;
+    let rbac = ::search::rbac::authorize_search(
+        &search.sql,
         &org_id,
         stream_type,
-        Some(&user_id),
+        &user_id,
         req.search_type,
-    )
-    .await
-    {
-        if let Err(send_error) = sender
-            .send(Err(infra::errors::Error::ErrorCode(
-                infra::errors::ErrorCodes::AuthorizationDenied(error.to_string()),
-            )))
-            .await
-        {
-            log::debug!("RBAC denial receiver closed: {send_error}");
-        }
-        return;
-    }
-    if infra::rbac::enabled() && req.query.query_fn.is_some() {
-        if let Err(error) = sender
-            .send(Err(infra::errors::Error::ErrorCode(
-                infra::errors::ErrorCodes::AuthorizationDenied(
-                    "Query transforms require a scoped adapter".into(),
-                ),
-            )))
-            .await
-        {
+        search.query_fn.is_some(),
+    );
+    if let Err(denial) = rbac.await {
+        if let Err(error) = sender.send(Err(denial)).await {
             log::debug!("RBAC denial receiver closed: {error}");
         }
         return;
@@ -257,7 +240,7 @@ pub async fn process_search_stream_request(
     }
     // Disable caching when pattern extraction is requested since patterns are generated
     // dynamically from search results and cannot be cached
-    let cache_mode = if extract_patterns || infra::rbac::enabled() {
+    let cache_mode = if extract_patterns {
         search_cache::CacheMode::Bypass
     } else {
         search_cache::CacheMode::from_request(&req)
@@ -317,7 +300,6 @@ pub async fn process_search_stream_request(
                     stream_type,
                     &mut req,
                     cache_mode,
-                    Some(&user_id),
                 )
                 .instrument(search_span.clone())
                 .await
@@ -948,7 +930,7 @@ pub async fn process_search_stream_request_multi(
 
         let needs_post_vrl_clone = needs_post_vrl;
 
-        let task = tokio::spawn(async move {
+        let task = infra::rbac::caller::spawn(async move {
             log::debug!(
                 "[HTTP2_STREAM_MULTI trace_id {query_trace_id}] Starting query {query_index}: {}",
                 req.query.sql
@@ -998,7 +980,7 @@ pub async fn process_search_stream_request_multi(
                 false, // no pattern extraction for multi-stream
             );
 
-            tokio::spawn(search_task);
+            infra::rbac::caller::spawn(search_task);
 
             // Buffer for collecting hits when we need post-hoc VRL
             let mut buffered_hits: Vec<json::Value> = Vec::new();

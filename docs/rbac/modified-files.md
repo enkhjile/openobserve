@@ -1,15 +1,15 @@
 # Modified files
 
-Branch `feature/rbac` is based on `c828ccec7a43f58e98cc51e0838b745544a15789`. The extension crate owns role semantics and Casbin decisions. The infrastructure crate reads authoritative policy, membership, credentials and job definitions. Transport and execution adapters pass verified identities and resolved resources to these boundaries.
+Branch `feature/rbac` is based on `c828ccec7a43f58e98cc51e0838b745544a15789`. The extension crate owns role semantics and policy decisions. The infrastructure crate reads authoritative policy, membership, credentials and job definitions. Transport and execution adapters pass verified identities and resolved resources to these boundaries.
 
-The file inventory includes additive migrations, generated protocol bindings, authorization tests, Vue components and operational guides. NATS, file-list, system settings and bulk ingestion string concatenations use explicit string slices to resolve a trait ambiguity introduced by Casbin's transitive smartstring dependency.
+The file inventory includes additive migrations, generated protocol bindings, authorization tests, Vue components and operational guides. Several string concatenations in the cluster-state, file-list, system settings and bulk ingestion code use explicit string slices to resolve a trait ambiguity introduced by a transitive dependency of the policy engine.
 
-Each entry for a file that exists upstream states the purpose of its hook. Review that purpose when an upstream change touches the file. Entries without a purpose are files RBAC adds, which upstream changes cannot conflict with.
+Each entry for a file that exists upstream states the behaviour its hook adds. Review that behaviour when an upstream change touches the file. Entries without a description are files RBAC adds, which upstream changes cannot conflict with. With RBAC disabled, every hook leaves existing behaviour unchanged.
 
 ## Workspace configuration
 
-- `Cargo.lock`: generated lockfile update adding casbin, openobserve-rbac and their transitive crates (smartstring, rhai, petgraph and others); purely mechanical.
-- `Cargo.toml`: registers the `src/extensions/rbac` workspace member and dependency, and patches chromiumoxide_types to the vendored copy (excluded from the workspace) so the RBAC build resolves.
+- `Cargo.lock`: Mechanical: generated lockfile update for the policy engine and its transitive dependencies.
+- `Cargo.toml`: Mechanical: registers the RBAC extension as a workspace member and points a browser-protocol dependency at a vendored copy so the build resolves.
 - `vendor/chromiumoxide_types/.gitignore`
 - `vendor/chromiumoxide_types/Cargo.toml`
 - `vendor/chromiumoxide_types/LICENSE-APACHE`
@@ -21,6 +21,7 @@ Each entry for a file that exists upstream states the purpose of its hook. Revie
 
 - `docs/rbac/design.md`
 - `docs/rbac/endpoints.md`
+- `docs/rbac/identity-context.md`
 - `docs/rbac/modified-files.md`
 - `docs/rbac/operations.md`
 - `docs/rbac/requirements.md`
@@ -47,85 +48,85 @@ Each entry for a file that exists upstream states the purpose of its hook. Revie
 
 ## Rust integration in api
 
-- `src/api/common/src/auth/delegation.rs`: mechanical; initializes the new `ingestion_principal: None` field on `AuthValidationResult` because delegated validation never yields an org ingestion token.
-- `src/api/common/src/auth/token.rs`: mechanical; adds `ingestion_principal: None` to the two `AuthValidationResult` initializers in `token_validator`.
-- `src/api/common/src/auth/validator.rs`: when RBAC is enabled, resolves `o2oi_` org ingestion tokens against the primary store (restricted to ingestion-write routes) into an `OrgIngestionPrincipal`, and skips auto-creating orgs; other initializers just add `ingestion_principal: None`.
-- `src/api/grpc/src/handler/grpc/auth/mod.rs`: with RBAC enabled, `check_auth`, `check_otlp_auth` and `check_ingest_auth` fail closed; `check_otlp_logs_auth` refuses the internal token, which can assert any `user_id`, and `scoped_otlp_principal` re-reads an org ingestion token from the primary store.
-- `src/api/grpc/src/handler/grpc/request/logs.rs`: with RBAC enabled, resolves the org ingestion token principal before the export reaches core, which authorizes every destination.
-- `src/api/grpc/src/handler/grpc/request/event.rs`: with RBAC enabled, disables downloading latest files from peer nodes and rejects the file-list RPC without a scoped execution identity, so cluster RPC cannot bypass authorization.
-- `src/api/grpc/src/handler/grpc/request/metrics/querier.rs`: requires a verified `rbac_subject` on the metrics query RPC, maps 403 errors to permission_denied, and rejects the other metrics RPCs outright while RBAC is enabled.
-- `src/api/grpc/src/handler/grpc/request/otlp.rs`: adds `check_otlp_logs_ingest`, the logs-only interceptor plus the existing memory-breaker refusal.
-- `src/api/grpc/src/handler/grpc/request/query_cache.rs`: rejects both query-cache RPCs with permission_denied while RBAC is enabled, since cached results are not subject-scoped.
-- `src/api/grpc/src/router/grpc/ingest/logs.rs`: with RBAC enabled, the router forwards the caller's own credential instead of the internal token so the ingester re-authenticates and scopes it.
-- `src/api/grpc/src/server.rs`: registers the OTLP logs service, on both ingester and router, behind the logs-only interceptor; the other OTLP services keep the deny-all interceptor.
-- `src/api/http/src/handler/http/router/mod.rs`: wires the RBAC gate into the HTTP stack (canonical route names, ingestion principal extension, `rbac::authorize` after auth, RBAC routes, `route_gate`, CORS ordering) and mounts the versioned `/internal/rbac/v1/api` forwarding routes plus the proxy route table.
-- `src/api/http/src/handler/http/router/openapi_coverage/excluded_routes.txt`: lists the new browser-only RBAC policy, subject, bootstrap and destination routes as excluded from the public OpenAPI contract.
-- `src/api/http/src/handler/http/router/openapi_coverage/mod.rs`: folds `/internal/rbac/v1/api` mount aliases into canonical `/api` operations, rejects non-literal nest prefixes, and adds a test pinning every endpoint to its reviewed RBAC disposition in `docs/rbac/endpoints.md`.
+- `src/api/common/src/auth/delegation.rs`: Mechanical: delegated validation carries the new verified-token field, always unset because it never yields an org ingestion token.
+- `src/api/common/src/auth/token.rs`: Mechanical: both validation results on this path carry the new verified-token field, unset.
+- `src/api/common/src/auth/validator.rs`: With RBAC enabled, org ingestion tokens are verified against the primary store, accepted only on ingestion-write routes, and never trigger automatic org creation.
+- `src/api/grpc/src/handler/grpc/auth/mod.rs`: With RBAC enabled, gRPC services without a scoped adapter refuse every caller; OTLP log export refuses the internal credential, which could claim any user, and re-checks org ingestion tokens against the primary store.
+- `src/api/grpc/src/handler/grpc/request/logs.rs`: With RBAC enabled, the verified org ingestion token is the ingest identity and every destination is authorized before writing.
+- `src/api/grpc/src/handler/grpc/request/event.rs`: With RBAC enabled, downloading latest files from peer nodes is disabled and the file-list RPC is rejected without a scoped execution identity.
+- `src/api/grpc/src/handler/grpc/request/metrics/querier.rs`: With RBAC enabled, the metrics query RPC requires a verified subject, denials return permission denied, and the other metrics RPCs are rejected outright.
+- `src/api/grpc/src/handler/grpc/request/otlp.rs`: Adds a logs-only OTLP interceptor that keeps the existing memory-pressure refusal.
+- `src/api/grpc/src/handler/grpc/request/query_cache.rs`: With RBAC enabled, both query-cache RPCs return permission denied because cached results are not scoped to a subject.
+- `src/api/grpc/src/router/grpc/ingest/logs.rs`: With RBAC enabled, the router forwards the caller's own credential instead of the internal token so the ingester authenticates and scopes it.
+- `src/api/grpc/src/server.rs`: Serves the OTLP logs service on ingester and router behind the logs-only interceptor, while other OTLP services stay denied.
+- `src/api/http/src/handler/http/router/mod.rs`: Wires authorization into the HTTP stack after authentication, scopes each request to its verified caller, adds the RBAC routes, and mounts the versioned `/internal/rbac/v1/api` forwarding routes.
+- `src/api/http/src/handler/http/router/openapi_coverage/excluded_routes.txt`: Excludes the new browser-only RBAC policy, subject, bootstrap and destination routes from the public OpenAPI contract.
+- `src/api/http/src/handler/http/router/openapi_coverage/mod.rs`: Treats forwarding-route aliases as their canonical API operations and tests that every endpoint has a reviewed RBAC disposition in `docs/rbac/endpoints.md`.
 - `src/api/http/src/handler/http/router/rbac.rs`
 - `src/api/http/src/handler/http/router/rbac_destinations.rs`
 - `src/api/http/src/handler/http/router/rbac_forwarding_tests.rs`
-- `src/api/http/src/router/http/mod.rs`: with RBAC enabled, the router tier forwards requests to nodes under the `/internal/rbac/v1` prefix (so nodes re-authorize) and disables body-based result-cache routing; also serves the RBAC proxy routes.
-- `src/api/ingest/src/request/logs/ingest.rs`: accepts the optional org ingestion principal as the ingest identity for `_json`, `_multi` and OTLP `v1/logs`, and maps authorization denials to HTTP 403.
-- `src/api/ingest/src/request/metrics/ingest.rs`: uses the org ingestion principal as the ingest identity for metrics JSON and returns 403 instead of 400 when the error is an authorization denial.
-- `src/api/management/src/models/alerts/requests.rs`: test only; proves a client-supplied `execution_subject` in alert create/update bodies is ignored and cannot act as alert authority.
-- `src/api/management/src/request/alerts/mod.rs`: with RBAC enabled, restricts alerts to scheduled type, binds the alert's execution subject via `alerts::rbac::bind` on create/update, and filters list, detail and composite responses to alerts the caller can read.
-- `src/api/management/src/request/alerts/templates.rs`: test only; asserts a template authorization denial maps to HTTP 403.
-- `src/api/management/src/request/dashboards/mod.rs`: with RBAC enabled, filters the dashboard list to dashboards the caller can read and applies pagination after filtering rather than before.
-- `src/api/management/src/request/dashboards/reports.rs`: with RBAC enabled, binds the scheduled report's author, renderer subject, folder and destinations (`reports::scoped::bind`) on create/update, forbids org or folder moves, and filters the report list by readable ids.
-- `src/api/management/src/request/organization/ingestion_tokens.rs`: with RBAC enabled, forbids enabling or disabling default, system or writer ingestion tokens, which are not manageable credentials.
-- `src/api/management/src/request/service_accounts/mod.rs`: validates the service-account token rotation target against a primary read of org membership and role before updating, and drops obsolete comments about the middleware.
-- `src/api/management/src/request/stream/mod.rs`: with RBAC enabled, filters the stream list to typed stream resources the caller can read, failing closed with 403 when the policy is unavailable.
-- `src/api/pipelines/src/models/pipelines.rs`: with RBAC enabled, omits historic `last_error` rows from the pipeline response model so error samples cannot leak data from unreadable streams; adds a test for both modes.
-- `src/api/pipelines/src/request/pipeline.rs`: with RBAC enabled, save and update run as the verified user subject (`save_user_pipeline_as_subject` and `update_user_pipeline_as_subject`), and the pipeline list is filtered to readable pipelines.
-- `src/api/search/src/promql/mod.rs`: extracts `metrics_search_error_response` so authorization denials return HTTP 403 while PromQL syntax errors stay 400; adds a test.
-- `src/api/search/src/search/mod.rs`: routes field validation through `validate_query_fields_for_user` so the caller's identity is authorized against the queried typed stream resources.
-- `src/api/search/src/search/multi_streams.rs`: with RBAC enabled, authorizes every query of multi-stream, multi-stream streaming and partition-multi searches (`authorize_batch`), including query functions, before any execution.
-- `src/api/search/src/search/saved_view.rs`: with RBAC enabled, filters the saved-view list to saved queries the caller can read and fails closed with 403 on decision error; adds a revocation test.
-- `src/api/search/src/search/search_stream.rs`: passes the verified user id into SQL parsing (`Sql::new_for_user`) for HTTP/2 streaming search so the stream resources named in the SQL are authorized.
-- `src/api/search/src/search/utils.rs`: adds `validate_query_fields_for_user`, which builds the SQL with `Sql::new_for_user` so authorization is applied during field validation; the old function delegates with no user.
-- `src/api/search/src/traces/list/query.rs`: with RBAC enabled, disables the trace-list time index so trace listing goes through the authorized search path.
-- `src/api/search/src/traces/mod.rs`: with RBAC enabled, authorizes Query on the typed traces stream, uses the org ingestion principal for trace writes, and rejects an org header that differs from the route org.
+- `src/api/http/src/router/http/mod.rs`: With RBAC enabled, the router tier forwards requests to nodes under `/internal/rbac/v1` so nodes re-authorize them, disables body-based result-cache routing, and serves the RBAC proxy routes.
+- `src/api/ingest/src/request/logs/ingest.rs`: Log ingestion over JSON, multi and OTLP accepts the verified org ingestion token as the ingest identity, and authorization denials return HTTP 403.
+- `src/api/ingest/src/request/metrics/ingest.rs`: Metrics JSON ingestion uses the verified org ingestion token as identity and returns 403 instead of 400 on authorization denial.
+- `src/api/management/src/models/alerts/requests.rs`: Test only: proves an execution identity supplied by the client in alert create or update bodies is ignored.
+- `src/api/management/src/request/alerts/mod.rs`: With RBAC enabled, only scheduled alerts are allowed, the alert is bound to its creator's identity and organization on create and update, and list and detail responses show only readable alerts.
+- `src/api/management/src/request/alerts/templates.rs`: Test only: asserts a template authorization denial returns HTTP 403.
+- `src/api/management/src/request/dashboards/mod.rs`: With RBAC enabled, the dashboard list shows only allowed dashboards and pagination applies after filtering.
+- `src/api/management/src/request/dashboards/reports.rs`: With RBAC enabled, scheduled reports are bound to their author with organization, folder-move and renderer checks and a public denial, and the report list shows only readable reports.
+- `src/api/management/src/request/organization/ingestion_tokens.rs`: With RBAC enabled, enabling or disabling default, system or writer ingestion tokens is forbidden because they are not manageable credentials.
+- `src/api/management/src/request/service_accounts/mod.rs`: Before rotating a service-account token, checks the target's org membership and role against the primary store.
+- `src/api/management/src/request/stream/mod.rs`: The stream list shows only streams the caller may read, before totals and pagination; a policy error returns 403.
+- `src/api/pipelines/src/models/pipelines.rs`: With RBAC enabled, historic error samples are omitted from pipeline responses so they cannot leak data from unreadable streams; tested in both modes.
+- `src/api/pipelines/src/request/pipeline.rs`: With RBAC enabled, pipeline create and update run as the verified user, and the pipeline list shows only allowed pipelines.
+- `src/api/search/src/promql/mod.rs`: RBAC denials in PromQL return HTTP 403 while syntax errors stay 400.
+- `src/api/search/src/search/multi_streams.rs`: Every query of a multi-stream or partitioned multi-stream search is authorized before execution, and background producers keep the caller's identity.
+- `src/api/search/src/search/saved_view.rs`: The saved-view list shows only saved queries the caller may read; a decision error returns 403.
+- `src/api/search/src/search/search_stream.rs`: Background streaming producers keep the request's caller so their SQL is authorized for it.
+- `src/api/search/src/traces/list/query.rs`: With RBAC enabled, the trace-list time index is disabled so trace listing goes through the authorized search path.
+- `src/api/search/src/traces/mod.rs`: With RBAC enabled, trace queries require Query permission on the traces stream, trace writes use the verified org ingestion token, and an org header differing from the route org is rejected.
 
 ## Rust integration in config
 
-- `src/config/src/config.rs`: adds the `ZO_RBAC_ENABLED` and `ZO_RBAC_POLICY_CACHE_ENTRIES` settings and bumps `DB_SCHEMA_VERSION` from 157 to 160 for the three new migrations.
-- `src/config/src/datafusion/request.rs`: carries `rbac_subject` (the verified subject) in the DataFusion request and maps it to and from the Flight `super_cluster_info`, with tests.
-- `src/config/src/meta/alerts/alert.rs`: adds the persisted `execution_subject` field on `Alert`, the scheduled alert execution subject, including its memory-size accounting and default.
-- `src/config/src/meta/dashboards/reports.rs`: adds `ReportExecutionContext` (author and renderer subject, folder, destination names) and `delivery_destinations` to `Report`; the context is never deserialized from client input.
-- `src/config/src/meta/user.rs`: adds the `OrgIngestionPrincipal` type (org id and token id) that represents a verified org ingestion token.
+- `src/config/src/config.rs`: Adds the `ZO_RBAC_ENABLED` and `ZO_RBAC_POLICY_CACHE_ENTRIES` settings and raises the database schema version for three new migrations.
+- `src/config/src/datafusion/request.rs`: Carries the verified subject in query requests across nodes, with tests.
+- `src/config/src/meta/alerts/alert.rs`: Persists the identity a scheduled alert executes as.
+- `src/config/src/meta/dashboards/reports.rs`: Adds the report's execution identity, folder and approved delivery destinations, none of which can be set from client input.
+- `src/config/src/meta/user.rs`: Adds the type representing a verified org ingestion token.
 
 ## Rust integration in core
 
-- `src/core/Cargo.toml`: adds `tempfile` and `web` dependencies, used for the isolated browser profile and the embedded stream worker asset in scoped report rendering.
-- `src/core/src/alerts/alert.rs`: with RBAC enabled, alert evaluation and notification authorize through `alerts::rbac::authorize_execution`, resolve only approved custom-template destinations, re-check approval at dispatch, and refuse legacy recovery notifications.
-- `src/core/src/alerts/derived_streams.rs`: mechanical; passes `None` for the new `execution_subject` argument of the scheduled query evaluation call.
-- `src/core/src/alerts/mod.rs`: with RBAC enabled, scheduled alert queries validate the stored execution subject, authorize its SQL, and run via `grpc_search_as_subject`; realtime evaluation and hybrid caching are refused or disabled.
+- `src/core/Cargo.toml`: Mechanical: adds dependencies for an isolated browser profile and the embedded stream worker used in scoped report rendering.
+- `src/core/src/alerts/alert.rs`: With RBAC enabled, alert evaluation and notification are authorized as the alert's identity, only approved custom-template destinations are used and re-checked at dispatch, and legacy recovery notifications are refused.
+- `src/core/src/alerts/derived_streams.rs`: Mechanical: derived-stream queries run with no recorded identity, so they are denied while RBAC is enabled.
+- `src/core/src/alerts/mod.rs`: With RBAC enabled, scheduled alert queries validate the stored execution identity, authorize their SQL and run as that identity; realtime evaluation and hybrid caching are refused or disabled.
 - `src/core/src/alerts/rbac.rs`
-- `src/core/src/alerts/templates.rs`: with RBAC enabled, stops the root fallback across org boundaries, refuses updates to shared or non-custom templates, and checks foreign references before local template mutation.
-- `src/core/src/dashboards/reports.rs`: with RBAC enabled, scheduled report sends require `scoped::authorize`, render in an isolated incognito browser attached to a `BrowserScope` request guard, rechecked recipients, and escaped email content.
+- `src/core/src/alerts/templates.rs`: With RBAC enabled, template fallback stops at org boundaries, shared or non-custom templates cannot be updated, and foreign references are checked before local changes.
+- `src/core/src/dashboards/reports.rs`: With RBAC enabled, scheduled report sends require authorization, render in an isolated browser limited to the report's own requests, recheck recipients, and escape email content.
 - `src/core/src/dashboards/reports/browser_scope.rs`
 - `src/core/src/dashboards/reports/scoped.rs`
-- `src/core/src/http.rs`: maps `TemplateError::AuthorizationDenied` to an HTTP 403 "Access denied" response.
-- `src/core/src/ingestion_tokens.rs`: with RBAC enabled, hides default, system and writer tokens from the token listing so only manageable org ingestion tokens are visible.
-- `src/core/src/logs/bulk.rs`: mechanical; uses `line_str.as_ref()` in string concatenation to resolve the trait ambiguity introduced by Casbin's smartstring dependency.
-- `src/core/src/logs/ingest.rs`: with RBAC enabled, `authorize_scoped_destinations` checks Ingest on the typed logs stream for a user or org ingestion token and loads only scoped pipelines before any write; derived ingestion is refused. OTLP logs share this check.
-- `src/core/src/logs/otlp.rs`: with RBAC enabled, authorizes the destination and every scoped pipeline output for the verified user or org token before `check_ingestion_allowed`, and rejects pipeline failures instead of writing the source.
-- `src/core/src/metrics/json.rs`: with RBAC enabled, resolves every record's destination metric stream and authorizes the whole batch for the user or org token, refusing metrics streams that have pipelines; the rest is a refactor splitting `metric_destination` out.
-- `src/core/src/organization.rs`: with RBAC enabled, service-account passcode rotation requires a primary-read check that the target is a non-root member with the exact service-account role, and the service-account passcode path no longer diverts to the root-only branch.
-- `src/core/src/pipeline/batch_execution.rs`: adds an optional `scoped_context` to `ExecutablePipeline` and, with RBAC enabled, validates it before execution and its outputs afterward, failing closed on task errors.
-- `src/core/src/pipeline/db.rs`: adds `set_scoped` and `update_scoped` so pipeline writes persist the execution subject; the original `set` and `update` delegate with `None`.
-- `src/core/src/pipeline/mod.rs`: registers `pipeline::rbac`, validates pipeline saves against the subject's authority, always treats updates as changes under RBAC, and adds `save_user_pipeline_as_subject` and `update_user_pipeline_as_subject`.
+- `src/core/src/http.rs`: Template authorization denials return an HTTP 403 "Access denied" response.
+- `src/core/src/ingestion_tokens.rs`: With RBAC enabled, default, system and writer tokens are hidden from the token list so only manageable org ingestion tokens are visible.
+- `src/core/src/logs/bulk.rs`: Mechanical: string concatenation uses an explicit string slice to resolve a trait ambiguity.
+- `src/core/src/logs/ingest.rs`: With RBAC enabled, derived ingestion is refused and the destination stream and every pipeline output are authorized before any write; pipeline failures become denials instead of partial writes.
+- `src/core/src/logs/otlp.rs`: OTLP log ingestion accepts the verified org ingestion token, authorizes the destination and every pipeline output before accepting data, attributes writes to the token, and rejects pipeline failures instead of writing the source.
+- `src/core/src/metrics/json.rs`: With RBAC enabled, every destination stream of a metrics batch is authorized before buffering; with RBAC disabled no streams are checked.
+- `src/core/src/metrics/mod.rs`: Mechanical: declares the RBAC-owned metrics module.
+- `src/core/src/organization.rs`: With RBAC enabled, service-account passcode rotation requires a verified org membership and role target, and the service-account path no longer diverts to the root-only branch.
+- `src/core/src/pipeline/batch_execution.rs`: With RBAC enabled, a pipeline's scoped identity is validated before execution and its outputs afterward, failing closed on task errors.
+- `src/core/src/pipeline/db.rs`: Pipeline writes can persist the identity the pipeline executes as; existing writes persist none.
+- `src/core/src/pipeline/mod.rs`: Pipeline saves are validated against the saving user's authority, updates always count as changes under RBAC, and pipelines can be saved or updated as a verified user.
 - `src/core/src/pipeline/rbac.rs`
-- `src/core/src/traces/mod.rs`: with RBAC enabled, authorizes Ingest on the typed traces stream for a user or org token, rejects streams with pipelines, and skips the trace time-index write.
-- `src/core/src/users.rs`: with RBAC enabled, only a verified self password change is allowed, since a password belongs to the global identity; also stops cross-org listing and role-less member listing.
+- `src/core/src/metrics/rbac.rs`
+- `src/core/src/traces/mod.rs`: With RBAC enabled, trace ingestion requires Ingest permission on the traces stream, streams with pipelines are rejected, and the trace time-index write is skipped.
+- `src/core/src/users.rs`: With RBAC enabled, only a verified self password change is allowed, and cross-org and role-less member listing are disabled.
 
 ## Rust integration in db
 
-- `src/db/src/alerts/alert.rs`: mechanical; adds `execution_subject: None` to a test fixture.
-- `src/db/src/alerts/templates.rs`: registers the `rbac` submodule and, with RBAC enabled, reads and lists templates from the primary store without default-org inheritance and checks cross-org references before mutation.
+- `src/db/src/alerts/alert.rs`: Mechanical: a test fixture carries the new alert execution identity, unset.
+- `src/db/src/alerts/templates.rs`: With RBAC enabled, templates are read and listed from the primary store without default-org inheritance, and cross-org references are checked before changes.
 - `src/db/src/alerts/templates/rbac.rs`
-- `src/db/src/dashboards/reports.rs`: mechanical; adds `execution_context: None` and `delivery_destinations: vec![]` to a test fixture.
-- `src/db/src/system_settings.rs`: mechanical; appends `.as_str()` in a string concatenation to resolve the trait ambiguity from Casbin's smartstring dependency.
+- `src/db/src/dashboards/reports.rs`: Mechanical: a test fixture carries the new report execution context and delivery destinations, both empty.
+- `src/db/src/system_settings.rs`: Mechanical: string concatenation uses an explicit string slice to resolve a trait ambiguity.
 
 ## Policy engine
 
@@ -136,101 +137,125 @@ Each entry for a file that exists upstream states the purpose of its hook. Revie
 
 ## Rust integration in infra
 
-- `src/infra/Cargo.toml`: adds the `openobserve-rbac` workspace dependency so infra can host the policy store and Casbin decisions.
-- `src/infra/src/db/nats.rs`: mechanical; four string concatenations now use `.as_str()` to resolve the smartstring trait ambiguity.
-- `src/infra/src/errors/mod.rs`: adds `ErrorCodes::AuthorizationDenied` (code 20015, HTTP 403) so denials keep their status across RPC.
-- `src/infra/src/file_list/mod.rs`: mechanical; `FileKey` key concatenation uses `.as_str()` slices to resolve the smartstring trait ambiguity.
-- `src/infra/src/lib.rs`: declares the new `rbac` module.
+- `src/infra/Cargo.toml`: Mechanical: adds the RBAC extension dependency so infra can host the policy store and decisions.
+- `src/infra/src/db/nats.rs`: Mechanical: string concatenations use explicit string slices to resolve a trait ambiguity.
+- `src/infra/src/errors/mod.rs`: Adds an authorization-denied error (code 20015, HTTP 403) so denials keep their status across RPC.
+- `src/infra/src/file_list/mod.rs`: Mechanical: file key concatenation uses explicit string slices to resolve a trait ambiguity.
+- `src/infra/src/lib.rs`: Mechanical: declares the new RBAC module.
 - `src/infra/src/pipeline/execution.rs`
-- `src/infra/src/pipeline/mod.rs`: declares the `execution` module and extends `PipelineTable::put` and `update` with an optional execution subject (the legacy `put` passes `None`).
-- `src/infra/src/pipeline/postgres.rs`: adds the `execution_subject` column and writes it in the same transaction on pipeline put and update.
-- `src/infra/src/pipeline/sqlite.rs`: adds the `execution_subject` column and writes it in the same transaction on pipeline put and update.
+- `src/infra/src/pipeline/mod.rs`: Pipeline creates and updates can store an execution identity; the legacy create stores none.
+- `src/infra/src/pipeline/postgres.rs`: Stores the pipeline's execution identity in the same transaction as the pipeline write.
+- `src/infra/src/pipeline/sqlite.rs`: Stores the pipeline's execution identity in the same transaction as the pipeline write.
 - `src/infra/src/rbac.rs`
 - `src/infra/src/rbac/cache.rs`
+- `src/infra/src/rbac/caller.rs`
 - `src/infra/src/rbac/destinations.rs`
 - `src/infra/src/rbac/pipelines.rs`
 - `src/infra/src/rbac/tokens.rs`
-- `src/infra/src/table/alerts/mod.rs`: maps `execution_subject` between the alert entity and meta model on read and update; adds a roundtrip test.
-- `src/infra/src/table/entity/alerts.rs`: adds the `execution_subject` column to the alert entity.
-- `src/infra/src/table/entity/reports.rs`: adds the `execution_context` text column holding the serialized report execution context.
+- `src/infra/src/table/alerts/mod.rs`: Reads and updates an alert's execution identity in storage, with a roundtrip test.
+- `src/infra/src/table/entity/alerts.rs`: Adds the execution identity column to stored alerts.
+- `src/infra/src/table/entity/reports.rs`: Adds a text column holding the report's serialized execution context.
 - `src/infra/src/table/migration/m20261223_000001_add_alert_execution_subject.rs`
 - `src/infra/src/table/migration/m20261224_000001_add_report_execution_context.rs`
 - `src/infra/src/table/migration/m20261225_000001_add_pipeline_execution_subject.rs`
-- `src/infra/src/table/migration/mod.rs`: registers three additive migrations (alert execution subject, report execution context, pipeline execution subject) and their schema versions 158 to 160.
-- `src/infra/src/table/org_ingestion_tokens.rs`: adds `find_enabled_token_primary`, a primary-store lookup of enabled non-writer org tokens used for verified ingestion identity, with a rotation and row-identity test.
-- `src/infra/src/table/reports/mod.rs`: persists the report `execution_context` as serialized text on create, update and update-by-id.
-- `src/infra/src/table/reports/queries.rs`: deserializes the stored `execution_context` back into the report and derives `delivery_destinations` from it.
+- `src/infra/src/table/migration/mod.rs`: Registers three additive migrations for alert execution identity, report execution context and pipeline execution identity, raising the schema version from 157 to 160.
+- `src/infra/src/table/org_ingestion_tokens.rs`: Adds a primary-store lookup of enabled non-writer org ingestion tokens used as the verified ingestion identity, with a rotation and row-identity test.
+- `src/infra/src/table/reports/mod.rs`: Persists the report's execution context as text on create and update.
+- `src/infra/src/table/reports/queries.rs`: Restores the stored execution context when reading a report and derives its delivery destinations from it.
 
 ## Rust integration in ingestion_common
 
-- `src/ingestion_common/src/lib.rs`: adds the `IngestUser::OrgToken` variant carrying the org ingestion principal, identified in audit as `org-token:<id>`.
+- `src/ingestion_common/src/lib.rs`: Adds an ingest identity for org ingestion tokens, recorded in audit as `org-token:<id>`.
 
 ## Rust integration in node
 
-- `src/node/src/cluster_info.rs`: with RBAC enabled, the cluster-info RPC fails closed without a scoped execution identity.
+- `src/node/src/cluster_info.rs`: With RBAC enabled, the cluster-info RPC fails closed without a scoped execution identity.
 
 ## Rust integration in promql_service
 
-- `src/promql_service/src/lib.rs`: declares the new `rbac` module.
+- `src/promql_service/src/lib.rs`: Mechanical: declares the new RBAC module.
 - `src/promql_service/src/rbac.rs`
-- `src/promql_service/src/search/grpc/mod.rs`: with RBAC enabled, metrics gRPC search requires the verified `rbac_subject`, authorizes each metric stream, rejects exemplar, data and download operations, and refuses the PromQL data RPC.
-- `src/promql_service/src/search/grpc/wal.rs`: mechanical plumbing; threads `rbac_subject` into WAL context creation and the `super_cluster_info` of the WAL search request.
-- `src/promql_service/src/search/mod.rs`: with RBAC enabled, resolves the user to a subject, authorizes the PromQL query, rejects exemplars and download, sets `req.rbac_subject`, and disables result caching.
-- `src/promql_service/src/service.rs`: mechanical; initializes `rbac_subject: None` in the `MetricsQueryRequest` proto conversion.
+- `src/promql_service/src/search/grpc/mod.rs`: With RBAC enabled, metrics gRPC search allows only named queries (no data, exemplar or download operations), authorizes each scanned metric stream, and refuses the PromQL data RPC.
+- `src/promql_service/src/search/grpc/wal.rs`: Mechanical: passes the verified subject through WAL search so it stays authorized.
+- `src/promql_service/src/search/mod.rs`: With RBAC enabled, the user is resolved to a subject, the PromQL query is authorized, exemplars and download are rejected, the subject travels with the request, and result caching is disabled.
+- `src/promql_service/src/service.rs`: Mechanical: metrics query conversion carries the new subject field, unset.
 
 ## Rust integration in proto
 
-- `src/proto/proto/cluster/metrics.proto`: adds optional `rbac_subject` (tag 16) to `MetricsQueryRequest` so the verified subject crosses nodes.
-- `src/proto/proto/cluster/plan.proto`: adds optional `rbac_subject` (tag 6) to `SuperClusterInfo` for distributed query plans.
-- `src/proto/proto/cluster/search.proto`: adds optional `rbac_subject` (tag 7) to `SearchRequest`.
-- `src/proto/src/generated/cluster.rs`: generated prost bindings for the three new `rbac_subject` fields; mechanical.
+- `src/proto/proto/cluster/metrics.proto`: Adds an optional verified subject to metrics query requests so it crosses nodes.
+- `src/proto/proto/cluster/plan.proto`: Adds an optional verified subject to distributed query plans.
+- `src/proto/proto/cluster/search.proto`: Adds an optional verified subject to search requests.
+- `src/proto/src/generated/cluster.rs`: Mechanical: generated bindings for the three new subject fields.
 
 ## Rust integration in report_server
 
-- `src/report_server/src/router.rs`: with RBAC enabled, the standalone report server rejects send requests with 403 because it has no scoped execution identity; adds a test.
+- `src/report_server/src/router.rs`: With RBAC enabled, the standalone report server rejects send requests with 403 because it has no scoped execution identity; tested.
 
 ## Rust integration in search
 
-- `src/search/src/datafusion/distributed/remote_scan/node.rs`: copies `rbac_subject` into the forwarded `SuperClusterInfo` so remote scans authorize as the same subject.
-- `src/search/src/datafusion/exec.rs`: with RBAC enabled, `register_udf` returns early so custom UDFs are not registered in scoped queries.
-- `src/search/src/lib.rs`: declares the new `rbac` module.
+- `src/search/src/datafusion/distributed/remote_scan/node.rs`: Remote scans receive the verified subject so they authorize as the same caller.
+- `src/search/src/datafusion/exec.rs`: With RBAC enabled, custom user-defined functions are not registered in scoped queries.
+- `src/search/src/lib.rs`: Mechanical: declares the new RBAC module.
 - `src/search/src/rbac.rs`
-- `src/search/src/sql/mod.rs`: authorizes the SQL's typed stream resources during `Sql` construction, by subject or user id, adds `new_for_user`, and also authorizes the no-identity path, which fails closed under RBAC.
+- `src/search/src/sql/mod.rs`: While a query's SQL is parsed, every stream it references is authorized for the request's subject or user, or for the current caller scope, and denied when no identity exists.
 
 ## Rust integration in search_service
 
-- `src/search_service/src/cache/mod.rs`: with RBAC enabled, authorizes the SQL, refuses query functions, forces cache bypass, and surfaces authorization errors instead of falling back to an uncached run.
-- `src/search_service/src/grpc/flight/mod.rs`: with RBAC enabled, authorizes Query on the typed stream for the Flight request by `rbac_subject` or user id, failing closed without an identity.
-- `src/search_service/src/grpc_search.rs`: adds `grpc_search_as_subject` and a shared identity path carrying `rbac_subject`, used by scheduled alert execution.
-- `src/search_service/src/grpc_server.rs`: the search RPC executes by `rbac_subject` or authorizes the user id first, refuses query transforms, rejects table and other RPCs without a scoped identity, and maps 403 to permission_denied.
-- `src/search_service/src/lib.rs`: adds `search_as_subject`, refuses query functions under RBAC, and authorizes every query in `search_multi` with `authorize_batch`.
-- `src/search_service/src/partition/sql_context.rs`: threads `user_id` into partition SQL construction via `Sql::new_for_user` so partition planning authorizes the caller.
-- `src/search_service/src/streaming/collect.rs`: builds the partition-mode SQL with `Sql::new_for_user` so streaming collection authorizes the verified user.
-- `src/search_service/src/streaming/mod.rs`: authorizes the streaming search SQL up front (sending a denial to the client), refuses query transforms, and bypasses caches under RBAC.
+- `src/search_service/src/cache/mod.rs`: With RBAC enabled, query functions are refused, the result cache is bypassed, and authorization errors during cache preparation are returned instead of running uncached.
+- `src/search_service/src/grpc/flight/mod.rs`: With RBAC enabled, Flight requests are authorized for Query on the stream as the request's subject or user, failing closed without an identity.
+- `src/search_service/src/grpc_search.rs`: Outgoing search requests carry the current caller's subject so a delegated identity reaches the querier.
+- `src/search_service/src/grpc_server.rs`: The search RPC runs as the identity in the internal request, other RPCs without a scoped identity are rejected, and 403 maps to permission denied.
+- `src/search_service/src/lib.rs`: With RBAC enabled, query functions are refused, a delegated caller identity is carried into the search request, and every query of a multi-search is authorized.
+- `src/search_service/src/streaming/collect.rs`: Background partition-mode producers keep the caller's identity.
+- `src/search_service/src/streaming/execution.rs`: Background pattern-extraction search slices keep the caller's identity.
+- `src/search_service/src/streaming/mod.rs`: Streaming searches are authorized and query functions refused up front, with a denial sent to the client; background multi-stream tasks keep the caller's identity.
 
 ## Rust integration in web
 
-- `src/web/build.rs`: build script that finds the single hashed `streamWorker-*.js` asset and exports its name as `O2_UI_STREAM_WORKER_ASSET`, failing to empty if not unique.
-- `src/web/src/lib.rs`: exposes `stream_worker_asset()` so scoped report rendering can allow exactly that worker URL.
-- `src/web/src/ui.rs`: serves the embedded stream worker with a no-network CSP so the worker cannot make requests outside the report browser scope guard; adds a test.
+- `src/web/build.rs`: Mechanical: build step that finds the single hashed stream worker asset and exposes its name, leaving it empty if the match is not unique.
+- `src/web/src/lib.rs`: Exposes the stream worker asset name so scoped report rendering can allow exactly that worker URL.
+- `src/web/src/ui.rs`: Serves the embedded stream worker with a no-network content security policy so it cannot make requests outside the report browser's limits; tested.
+
+## RBAC regression tests beside upstream modules
+
+Each file is declared from its upstream module as a test-only module, so upstream test modules stay unchanged.
+
+- `src/api/grpc/src/handler/grpc/auth/rbac_tests.rs`
+- `src/api/http/src/handler/http/router/openapi_coverage/rbac_tests.rs`
+- `src/api/management/src/models/alerts/requests_rbac_tests.rs`
+- `src/api/management/src/request/alerts/templates_rbac_tests.rs`
+- `src/api/pipelines/src/models/pipelines_rbac_tests.rs`
+- `src/api/search/src/promql/rbac_tests.rs`
+- `src/api/search/src/search/saved_view_rbac_tests.rs`
+- `src/core/src/alerts/rbac_tests.rs`
+- `src/core/src/dashboards/reports_rbac_tests.rs`
+- `src/core/src/logs/otlp_rbac_tests.rs`
+- `src/core/src/organization_rbac_tests.rs`
+- `src/core/src/users_rbac_tests.rs`
+- `src/infra/src/errors/rbac_tests.rs`
+- `src/infra/src/table/alerts/rbac_tests.rs`
+- `src/infra/src/table/org_ingestion_tokens_rbac_tests.rs`
+- `src/report_server/src/router_rbac_tests.rs`
+- `src/search_service/src/cache/rbac_tests.rs`
+- `src/web/src/ui_rbac_tests.rs`
 
 ## Web application
 
-- `web/src/components/alerts/AddAlert.vue`: feeds the alert form the approved `deliveryDestinations` instead of all destinations and shows a help banner when delivery approval is required.
+- `web/src/components/alerts/AddAlert.vue`: The alert form offers only approved delivery destinations instead of all destinations and shows a help banner when delivery approval is required.
 - `web/src/components/iam/RbacPolicy.spec.ts`
 - `web/src/components/iam/RbacPolicy.vue`
-- `web/src/composables/useAlertForm.ts`: wires `useApprovedAlertDestinations` into the form so the destination picker lists only approved destination names for the authorized scheduled SQL query.
+- `web/src/composables/useAlertForm.ts`: The alert form's destination picker lists only destinations approved for the authorized scheduled SQL query.
 - `web/src/composables/useApprovedAlertDestinations.spec.ts`
 - `web/src/composables/useApprovedAlertDestinations.ts`
 - `web/src/composables/useDashboardRbac.spec.ts`
 - `web/src/composables/useDashboardRbac.ts`
-- `web/src/locales/languages/en-US.json`: adds the `ossRbac` string block for the permissions editor, delivery approvals and role names.
-- `web/src/services/http.ts`: shows the access-denied toast also in OSS when the response reason is `rbac_denied`.
+- `web/src/locales/languages/en-US.json`: Adds the text for the permissions editor, delivery approvals and role names.
+- `web/src/services/http.ts`: Shows the access-denied toast in OSS too when the response reason is `rbac_denied`.
 - `web/src/services/rbac.ts`
-- `web/src/views/AddAlertView.spec.ts`: tests that destinations and templates are not fetched for an enabled non-admin and that a stale organization's denial cannot clear the new organization's data.
-- `web/src/views/AddAlertView.vue`: fetches destinations and templates only when RBAC is disabled or the caller can manage, and discards responses that arrive after an organization switch.
-- `web/src/views/Dashboards/Dashboards.spec.ts`: mocks `useDashboardRbac` and tests that bulk mutation actions are hidden for an RBAC Viewer.
-- `web/src/views/Dashboards/Dashboards.vue`: hides add, import, move, duplicate, delete and set-home controls unless `useDashboardPermissions` allows the mutation on that dashboard.
-- `web/src/views/Dashboards/ViewDashboard.vue`: gates panel add, settings, JSON edit, layout edit, set-home and alert creation behind the per-dashboard permission, making the view read-only for non-mutators.
+- `web/src/views/AddAlertView.spec.ts`: Tests that destinations and templates are not fetched for an enabled non-admin and that a stale organization's denial cannot clear the new organization's data.
+- `web/src/views/AddAlertView.vue`: Fetches destinations and templates only when RBAC is disabled or the caller can manage them, and discards responses that arrive after an organization switch.
+- `web/src/views/Dashboards/Dashboards.spec.ts`: Tests that bulk mutation actions are hidden for an RBAC Viewer.
+- `web/src/views/Dashboards/Dashboards.vue`: Hides add, import, move, duplicate, delete and set-home controls unless the caller may mutate that dashboard.
+- `web/src/views/Dashboards/ViewDashboard.vue`: Makes the dashboard view read-only for non-mutators by gating panel add, settings, JSON edit, layout edit, set-home and alert creation behind per-dashboard permission.
 - `web/src/views/User.rbac.spec.ts`
-- `web/src/views/User.vue`: embeds the `RbacPolicy` editor and shows the user list only when RBAC is disabled or the caller can manage permissions for the current organization.
+- `web/src/views/User.vue`: Embeds the permissions editor and shows the user list only when RBAC is disabled or the caller can manage permissions for the current organization.

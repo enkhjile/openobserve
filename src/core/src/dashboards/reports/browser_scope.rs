@@ -157,6 +157,32 @@ impl Drop for BrowserScope {
     }
 }
 
+/// An isolated, cache-free browser profile for one scoped report render.
+pub(super) fn launch_config(profile: &std::path::Path) -> Result<chromiumoxide::BrowserConfig> {
+    let cfg = config::get_config();
+    chromiumoxide::browser::BrowserConfig::builder()
+        .chrome_executable(&cfg.chrome.chrome_path)
+        .user_data_dir(profile)
+        .incognito()
+        .respect_https_errors()
+        .window_size(
+            cfg.chrome.chrome_window_width,
+            cfg.chrome.chrome_window_height,
+        )
+        .enable_request_intercept()
+        .disable_cache()
+        .args([
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--no-pings",
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ])
+        .build()
+        .map_err(anyhow::Error::msg)
+}
+
 async fn handle(
     page: &Page,
     event: &EventRequestPaused,

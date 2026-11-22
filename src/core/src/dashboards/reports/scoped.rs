@@ -38,6 +38,50 @@ pub(super) struct Scope {
     pub recipients: Vec<String>,
 }
 
+const UNSUPPORTED: &str = "Unsupported or unauthorized scoped report configuration";
+
+/// Binds a new report to `org` and its author; the error is the public denial message.
+pub async fn bind_new(
+    report: &mut Report,
+    org: &str,
+    email: &str,
+    folder: &str,
+) -> std::result::Result<(), &'static str> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    if !report.org_id.is_empty() && report.org_id != org {
+        return Err("Report organization mismatch");
+    }
+    report.org_id = org.to_owned();
+    bind(report, email, folder).await.map_err(|_| UNSUPPORTED)
+}
+
+/// Rebinds an updated report in place; scoped reports cannot move between orgs or folders.
+pub async fn bind_update(
+    report: &mut Report,
+    org: &str,
+    report_id: &str,
+    email: &str,
+    new_folder: Option<&str>,
+) -> std::result::Result<(), &'static str> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let (folder, _) = super::get_by_id(org, report_id)
+        .await
+        .map_err(|_| "Report authorization denied")?;
+    if (!report.org_id.is_empty() && report.org_id != org)
+        || new_folder.is_some_and(|value| value != folder.folder_id)
+    {
+        return Err("Scoped report moves are unsupported");
+    }
+    report.org_id = org.to_owned();
+    bind(report, email, &folder.folder_id)
+        .await
+        .map_err(|_| UNSUPPORTED)
+}
+
 pub async fn bind(report: &mut Report, email: &str, folder: &str) -> Result<()> {
     if !infra::rbac::enabled() {
         return Ok(());

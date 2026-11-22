@@ -96,16 +96,6 @@ fn custom_roles_differ(requested: &[String], current: &[String]) -> bool {
     requested != current.iter().collect()
 }
 
-fn rbac_password_change_denied(
-    enabled: bool,
-    initiator: &str,
-    target: &str,
-    mode: &UserUpdateMode,
-    new_password: Option<&str>,
-) -> bool {
-    enabled && new_password.is_some() && (initiator != target || !mode.is_self_update())
-}
-
 fn redact_token(token: &str) -> String {
     if token.is_empty() {
         return String::new();
@@ -319,13 +309,11 @@ pub async fn update_user(
         return Ok(MetaHttpResponse::bad_request("Invalid email"));
     }
     // A password belongs to the global identity, so an organization grant cannot reset it.
-    if rbac_password_change_denied(
-        infra::rbac::enabled(),
-        initiator_id,
-        email,
-        &update_mode,
-        user.new_password.as_deref(),
-    ) {
+    let self_update = update_mode.is_self_update();
+    let new_password = user.new_password.is_some();
+    if infra::rbac::enabled()
+        && infra::rbac::password_change_denied(initiator_id, email, self_update, new_password)
+    {
         return Ok(MetaHttpResponse::forbidden(
             "RBAC permits only a verified self password change",
         ));
@@ -1723,6 +1711,9 @@ pub async fn cloud_service_account_refusal(
 }
 
 #[cfg(test)]
+#[path = "users_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use common::infra::config::USERS;
     use config::meta::user::{UserRole, UserType};
@@ -1738,83 +1729,6 @@ mod tests {
 
     // Mutex to ensure test setup is serialized to prevent race conditions
     static TEST_SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
-
-    #[test]
-    fn rbac_password_changes_cannot_cross_identity_boundaries() {
-        use UserUpdateMode::{CliUpdate, OtherUpdate, SelfUpdate};
-        for (enabled, initiator, target, mode, password, denied) in [
-            (
-                true,
-                "alice@example.com",
-                "bob@example.com",
-                OtherUpdate,
-                Some("new"),
-                true,
-            ),
-            (
-                true,
-                "root@example.com",
-                "bob@example.com",
-                OtherUpdate,
-                Some("new"),
-                true,
-            ),
-            (
-                true,
-                "alice@example.com",
-                "bob@example.com",
-                SelfUpdate,
-                Some("new"),
-                true,
-            ),
-            (
-                true,
-                "alice@example.com",
-                "alice@example.com",
-                OtherUpdate,
-                Some("new"),
-                true,
-            ),
-            (
-                true,
-                "alice@example.com",
-                "alice@example.com",
-                CliUpdate,
-                Some("new"),
-                true,
-            ),
-            (
-                true,
-                "alice@example.com",
-                "alice@example.com",
-                SelfUpdate,
-                Some("new"),
-                false,
-            ),
-            (
-                false,
-                "alice@example.com",
-                "bob@example.com",
-                OtherUpdate,
-                Some("new"),
-                false,
-            ),
-            (
-                true,
-                "alice@example.com",
-                "bob@example.com",
-                OtherUpdate,
-                None,
-                false,
-            ),
-        ] {
-            assert_eq!(
-                rbac_password_change_denied(enabled, initiator, target, &mode, password),
-                denied,
-                "{enabled} {initiator} -> {target} {mode:?}"
-            );
-        }
-    }
 
     #[cfg(feature = "enterprise")]
     #[test]

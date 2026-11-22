@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod cache;
+pub mod caller;
 mod destinations;
 mod pipelines;
 mod tokens;
@@ -43,6 +44,39 @@ pub fn enabled() -> bool {
     config::get_config().common.rbac_enabled
 }
 
+/// An authorization failure as the error every API layer already maps to HTTP 403.
+pub fn denied(reason: impl std::fmt::Display) -> crate::errors::Error {
+    crate::errors::Error::ErrorCode(crate::errors::ErrorCodes::AuthorizationDenied(
+        reason.to_string(),
+    ))
+}
+
+/// A password belongs to the global identity: only a verified self-update may change it.
+pub fn password_change_denied(
+    initiator: &str,
+    target: &str,
+    self_update: bool,
+    new_password: bool,
+) -> bool {
+    new_password && (initiator != target || !self_update)
+}
+
+/// Whether `error` is an RBAC denial, which APIs answer with HTTP 403.
+pub fn is_denied(error: &crate::errors::Error) -> bool {
+    matches!(
+        error,
+        crate::errors::Error::ErrorCode(crate::errors::ErrorCodes::AuthorizationDenied(_))
+    )
+}
+
+/// Refuses an RPC that has no scoped execution adapter while RBAC is enabled.
+pub fn deny_rpc_when_enabled(reason: &'static str) -> Result<(), tonic::Status> {
+    if enabled() {
+        return Err(tonic::Status::permission_denied(reason));
+    }
+    Ok(())
+}
+
 pub async fn user_subject(email: &str) -> Result<String> {
     get_id_by_email_with(db::get_orm_client_rw().await, email)
         .await?
@@ -51,6 +85,39 @@ pub async fn user_subject(email: &str) -> Result<String> {
 
 pub async fn validate_subject(subject: &str, organization: &str) -> Result<()> {
     validate_subject_on(db::get_orm_client_rw().await, subject, organization).await
+}
+
+/// Fails unless `user_id` is a non-root service account of `org_id`, read from the primary store.
+pub async fn validate_service_account_target(org_id: &str, user_id: &str) -> Result<()> {
+    if !enabled() {
+        return Ok(());
+    }
+    validate_service_account_target_on(db::get_orm_client_rw().await, org_id, user_id).await
+}
+
+pub async fn validate_service_account_target_on<C: ConnectionTrait>(
+    client: &C,
+    org_id: &str,
+    user_id: &str,
+) -> Result<()> {
+    // Mutation also resolves email case-insensitively, so ambiguous identities must deny.
+    let records = client
+        .query_all(Statement::from_sql_and_values(
+            client.get_database_backend(),
+            "SELECT users.is_root, org_users.role FROM users INNER JOIN org_users ON users.email = org_users.email WHERE LOWER(users.email) = LOWER($1) AND org_users.org_id = $2 AND (SELECT COUNT(*) FROM users AS candidates WHERE LOWER(candidates.email) = LOWER($1)) = 1",
+            [user_id.into(), org_id.into()],
+        ))
+        .await?;
+    let [record] = records.as_slice() else {
+        anyhow::bail!("Service account target is not permitted");
+    };
+    let is_root: bool = record.try_get("", "is_root")?;
+    let role: i16 = record.try_get("", "role")?;
+    anyhow::ensure!(
+        !is_root && role == i16::from(config::meta::user::UserRole::ServiceAccount),
+        "Service account target is not permitted"
+    );
+    Ok(())
 }
 
 pub async fn member_subjects(org: &str) -> Result<Vec<(String, String)>> {
@@ -111,6 +178,11 @@ pub async fn authorize_subject(
 }
 
 /// A wildcard grant leaves the list unrestricted. Named grants must enter paginated queries by ID.
+/// Whether `id` is in a [`readable_object_ids`] result; `None` means every object is readable.
+pub fn readable(ids: &Option<std::collections::BTreeSet<String>>, id: &str) -> bool {
+    ids.as_ref().is_none_or(|ids| ids.contains(id))
+}
+
 pub async fn readable_object_ids(
     email: &str,
     organization: &str,
@@ -153,6 +225,27 @@ pub async fn allowed_resources(
     resources: &[Resource],
 ) -> Result<Vec<bool>> {
     allowed_resource_actions(email, organization, &[action], resources).await
+}
+
+/// Keeps the `items` whose resource `email` may `action`; with RBAC disabled, all of them.
+pub async fn retain_allowed<T>(
+    email: &str,
+    organization: &str,
+    action: Action,
+    items: Vec<T>,
+    resource: impl Fn(&T) -> Resource,
+) -> Result<Vec<T>> {
+    if !enabled() {
+        return Ok(items);
+    }
+    let resources: Vec<_> = items.iter().map(resource).collect();
+    let allowed = allowed_resources(email, organization, action, &resources).await?;
+    ensure!(allowed.len() == items.len(), "RBAC decision count mismatch");
+    Ok(items
+        .into_iter()
+        .zip(allowed)
+        .filter_map(|(item, allowed)| allowed.then_some(item))
+        .collect())
 }
 
 pub async fn allowed_resource_actions(

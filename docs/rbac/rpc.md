@@ -1,6 +1,6 @@
 # OSS gRPC authorization matrix
 
-Node services accept only the configured cluster transport credential. That credential identifies trusted infrastructure and can carry a delegated subject. It must be protected as a cluster secret. Public OTLP and Streams use separate interceptors. The classifications below cover the default OSS build in `src/api/grpc/src/server.rs`.
+Node services accept only the configured cluster transport credential. That credential identifies trusted infrastructure and can carry a delegated subject. It must be protected as a cluster secret. Public OTLP and Streams services authenticate callers separately. The classifications below cover the services the default OSS build registers.
 
 | Service | Methods | Enabled behavior |
 | --- | --- | --- |

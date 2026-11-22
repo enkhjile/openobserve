@@ -76,21 +76,11 @@ pub async fn validate_query_fields(
     stream_type: StreamType,
     sql: &str,
 ) -> Result<(), Error> {
-    validate_query_fields_for_user(org_id, stream_name, stream_type, sql, None).await
-}
-
-pub async fn validate_query_fields_for_user(
-    org_id: &str,
-    stream_name: &str,
-    stream_type: StreamType,
-    sql: &str,
-    user_id: Option<&str>,
-) -> Result<(), Error> {
     let search_query = proto::cluster_rpc::SearchQuery {
         sql: sql.to_string(),
         ..Default::default()
     };
-    let sql = Sql::new_for_user(&search_query, org_id, stream_type, None, user_id).await?;
+    let sql = Sql::new_with_options(&search_query, org_id, stream_type, None, false).await?;
 
     // A bare stream name can refer to multiple types within the same query.
     let mut targets: Vec<_> = sql

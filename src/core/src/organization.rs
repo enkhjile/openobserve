@@ -32,7 +32,6 @@ use db::{self, org_users, user::is_root_user};
 use infra::table::{self, org_users::UserOrgExpandedRecord};
 #[cfg(feature = "enterprise")]
 use o2_openfga::config::get_config as get_openfga_config;
-use sea_orm::{ConnectionTrait, Statement};
 use stream::get_streams;
 #[cfg(feature = "cloud")]
 use {
@@ -301,7 +300,12 @@ pub async fn update_passcode(
     }
 }
 
-/// Service-account rotations must never return an organization-wide ingestion token.
+/// Rotate a service account's own API token.
+///
+/// Unlike [`update_passcode`], this never diverts to the org-level "default"
+/// ingestion token (the `o2oi_`-prefixed org token). A service account must
+/// always receive its own per-account token; handing back the org ingestion
+/// token would be both wrong (org-wide scope) and a security issue.
 pub async fn update_service_account_passcode(
     org_id: Option<&str>,
     user_id: &str,
@@ -309,24 +313,13 @@ pub async fn update_service_account_passcode(
     if infra::rbac::enabled() {
         let org_id =
             org_id.ok_or_else(|| anyhow::anyhow!("Service account target is not permitted"))?;
-        validate_rbac_service_account_target(org_id, user_id).await?;
+        infra::rbac::validate_service_account_target(org_id, user_id).await?;
     }
     match update_passcode_inner(org_id, user_id, false, true).await {
         Ok(IngestionTokensContainer::Passcode(response)) => Ok(response),
         Err(e) => Err(e),
         _ => Err(anyhow::Error::msg("User not found")),
     }
-}
-
-/// Primary reads prevent credential-target checks from trailing membership changes.
-pub async fn validate_rbac_service_account_target(
-    org_id: &str,
-    user_id: &str,
-) -> Result<(), anyhow::Error> {
-    if !infra::rbac::enabled() {
-        return Ok(());
-    }
-    validate_service_account_target_on(infra::db::get_orm_client_rw().await, org_id, user_id).await
 }
 
 /// Whether a passcode read/rotation should use the org-wide "default" ingestion
@@ -1573,31 +1566,9 @@ pub async fn get_sre_agent_credentials(org_id: &str) -> Result<(String, String),
     }
 }
 
-async fn validate_service_account_target_on<C: ConnectionTrait>(
-    client: &C,
-    org_id: &str,
-    user_id: &str,
-) -> Result<(), anyhow::Error> {
-    // Mutation also resolves email case-insensitively, so ambiguous identities must deny.
-    let records = client
-        .query_all(Statement::from_sql_and_values(
-            client.get_database_backend(),
-            "SELECT users.is_root, org_users.role FROM users INNER JOIN org_users ON users.email = org_users.email WHERE LOWER(users.email) = LOWER($1) AND org_users.org_id = $2 AND (SELECT COUNT(*) FROM users AS candidates WHERE LOWER(candidates.email) = LOWER($1)) = 1",
-            [user_id.into(), org_id.into()],
-        ))
-        .await?;
-    let [record] = records.as_slice() else {
-        anyhow::bail!("Service account target is not permitted");
-    };
-    let is_root: bool = record.try_get("", "is_root")?;
-    let role: i16 = record.try_get("", "role")?;
-    anyhow::ensure!(
-        !is_root && role == i16::from(UserRole::ServiceAccount),
-        "Service account target is not permitted"
-    );
-    Ok(())
-}
-
+#[cfg(test)]
+#[path = "organization_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use infra::{db as infra_db, table as infra_table};
@@ -1979,47 +1950,5 @@ mod tests {
             let err = validate_auto_created_org_id(org_id).unwrap_err();
             assert!(err.to_string().contains("reserved"), "{org_id}: {err}");
         }
-    }
-
-    #[tokio::test]
-    async fn rbac_service_account_target_requires_nonroot_membership_and_exact_role() {
-        let database = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
-        database
-            .execute_unprepared(
-                "CREATE TABLE users (email TEXT PRIMARY KEY, is_root BOOLEAN NOT NULL)",
-            )
-            .await
-            .unwrap();
-        database.execute_unprepared("CREATE TABLE org_users (email TEXT NOT NULL, org_id TEXT NOT NULL, role SMALLINT NOT NULL)").await.unwrap();
-        database.execute_unprepared("INSERT INTO users VALUES ('root@example.test',true),('human@example.test',false),('service@example.test',false),('other@example.test',false),('duplicate@example.test',false),('DUPLICATE@example.test',true)").await.unwrap();
-        database.execute_unprepared("INSERT INTO org_users VALUES ('root@example.test','a',5),('human@example.test','a',1),('service@example.test','a',5),('other@example.test','b',5),('duplicate@example.test','a',5)").await.unwrap();
-
-        for (org, target, allowed) in [
-            ("a", "root@example.test", false),
-            ("a", "human@example.test", false),
-            ("a", "service@example.test", true),
-            ("a", "SERVICE@example.test", true),
-            ("b", "service@example.test", false),
-            ("a", "other@example.test", false),
-            ("a", "missing@example.test", false),
-            ("a", "duplicate@example.test", false),
-        ] {
-            assert_eq!(
-                validate_service_account_target_on(&database, org, target)
-                    .await
-                    .is_ok(),
-                allowed,
-                "target {target} in organization {org}",
-            );
-        }
-        database
-            .execute_unprepared("DROP TABLE users")
-            .await
-            .unwrap();
-        assert!(
-            validate_service_account_target_on(&database, "a", "service@example.test")
-                .await
-                .is_err()
-        );
     }
 }

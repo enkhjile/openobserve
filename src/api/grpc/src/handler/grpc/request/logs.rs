@@ -51,7 +51,7 @@ impl LogsService for LogsServer {
             None
         };
 
-        let resp = openobserve_core::logs::otlp::handle_request(
+        let resp = openobserve_core::logs::otlp::handle_request_as(
             0,
             org_id,
             in_req,

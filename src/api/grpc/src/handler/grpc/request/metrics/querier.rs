@@ -106,11 +106,9 @@ impl Metrics for MetricsQuerier {
         &self,
         req: Request<MetricsQueryRequest>,
     ) -> Result<Response<Self::DataStream>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Metrics RPC requires a scoped RBAC execution identity",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled(
+            "Metrics RPC requires a scoped RBAC execution identity",
+        )?;
         let mut req: MetricsQueryRequest = req.into_inner();
 
         let (query, trace_id) = query_and_trace_id(&req)?;
@@ -150,11 +148,9 @@ impl Metrics for MetricsQuerier {
         &self,
         req: Request<WalMinTsRequest>,
     ) -> Result<Response<WalMinTsResponse>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Metrics RPC requires a scoped RBAC execution identity",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled(
+            "Metrics RPC requires a scoped RBAC execution identity",
+        )?;
         let req = req.into_inner();
         // the names become directory components of the WAL parquet path
         if !is_path_segment(&req.org_id) || !req.streams.iter().all(|s| is_path_segment(s)) {

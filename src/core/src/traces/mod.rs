@@ -836,30 +836,11 @@ pub async fn handle_otlp_request(
         crate::ingestion::get_stream_executable_pipelines(&stream_param).await;
     if infra::rbac::enabled() {
         let resources = [infra::rbac::Resource::stream("traces", &traces_stream_name)];
-        let allowed = match &user {
-            IngestUser::User(email) => {
-                infra::rbac::allowed_resources(
-                    email,
-                    org_id,
-                    infra::rbac::Action::Ingest,
-                    &resources,
-                )
-                .await
-            }
-            IngestUser::OrgToken(principal) if principal.org_id == org_id => {
-                infra::rbac::allowed_ingestion_token_resources(
-                    org_id,
-                    &principal.token_id,
-                    &resources,
-                )
-                .await
-            }
-            _ => Err(anyhow::anyhow!("Scoped trace ingestion identity required")),
-        };
+        let allowed = crate::pipeline::rbac::authorize_ingest(org_id, &user, &resources).await;
         let has_pipeline =
             infra::pipeline::execution::has_enabled_source(org_id, &traces_stream_name, "traces")
                 .await;
-        if !allowed.is_ok_and(|decisions| decisions == [true])
+        if allowed.is_err()
             || !has_pipeline.is_ok_and(|present| !present)
             || !executable_pipelines.is_empty()
         {

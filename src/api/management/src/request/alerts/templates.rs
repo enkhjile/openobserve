@@ -560,6 +560,9 @@ pub async fn preview_template(
 }
 
 #[cfg(test)]
+#[path = "templates_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
     use db::alerts::templates::TemplateError;
@@ -567,15 +570,6 @@ mod tests {
 
     fn status(err: TemplateError) -> StatusCode {
         template_error_response(err).status()
-    }
-
-    #[test]
-    fn rbac_template_denial_maps_to_forbidden() {
-        assert_eq!(
-            template_error_response(db::alerts::templates::TemplateError::AuthorizationDenied)
-                .status(),
-            StatusCode::FORBIDDEN
-        );
     }
 
     #[test]

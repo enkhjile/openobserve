@@ -54,7 +54,6 @@ impl PartitionSqlContext {
         req: &SearchPartitionRequest,
         org_id: &str,
         stream_type: StreamType,
-        user_id: Option<&str>,
     ) -> Result<Self, Error> {
         let query = cluster_rpc::SearchQuery {
             start_time: req.start_time,
@@ -64,7 +63,7 @@ impl PartitionSqlContext {
             timezone: req.timezone.clone(),
             ..Default::default()
         };
-        let sql = Sql::new_for_user(&query, org_id, stream_type, None, user_id).await?;
+        let sql = Sql::new(&query, org_id, stream_type, None).await?;
 
         let is_explain = is_explain_query(&req.sql);
         let is_complex = is_complex_query(&req.sql).unwrap_or(false);
@@ -166,7 +165,7 @@ mod tests {
             search_type: None,
             timezone: timezone.map(str::to_string),
         };
-        PartitionSqlContext::new(&req, "ranked_hist_test", StreamType::Logs, None)
+        PartitionSqlContext::new(&req, "ranked_hist_test", StreamType::Logs)
             .await
             .unwrap()
     }

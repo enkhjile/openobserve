@@ -30,11 +30,9 @@ impl QueryCache for QueryCacheServerImpl {
         &self,
         request: Request<DeleteResultCacheRequest>,
     ) -> Result<Response<DeleteResultCacheResponse>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Query cache RPC requires a scoped RBAC execution identity",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled(
+            "Query cache RPC requires a scoped RBAC execution identity",
+        )?;
         let req: DeleteResultCacheRequest = request.into_inner();
         if !is_org_scoped(&req.path) {
             return Err(Status::invalid_argument(
@@ -52,11 +50,9 @@ impl QueryCache for QueryCacheServerImpl {
         &self,
         request: Request<PublicDashboardStatusRequest>,
     ) -> Result<Response<PublicDashboardStatusResponse>, Status> {
-        if infra::rbac::enabled() {
-            return Err(Status::permission_denied(
-                "Query cache RPC requires a scoped RBAC execution identity",
-            ));
-        }
+        infra::rbac::deny_rpc_when_enabled(
+            "Query cache RPC requires a scoped RBAC execution identity",
+        )?;
         let req = request.into_inner();
         if req.link_ids.len() > status::MAX_BATCH {
             return Err(Status::invalid_argument("too many public links"));

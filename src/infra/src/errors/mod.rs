@@ -569,16 +569,9 @@ pub enum JwtError {
 }
 
 #[cfg(test)]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
-    #[test]
-    fn authorization_denial_preserves_http_status_across_rpc() {
-        let denial = super::ErrorCodes::AuthorizationDenied("not permitted".into());
-        assert_eq!(denial.http_status(), 403);
-        let decoded = super::ErrorCodes::from_json(&denial.to_json()).unwrap();
-        assert_eq!(decoded.http_status(), 403);
-        assert_eq!(decoded.get_code(), 20015);
-    }
-
     use super::*;
 
     #[test]

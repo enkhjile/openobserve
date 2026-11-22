@@ -243,7 +243,7 @@ pub async fn search_http2_stream(
         return refused;
     }
 
-    let mut sql = match get_sql(&req.query, &org_id, stream_type, req.search_type, &user_id).await {
+    let mut sql = match get_sql(&req.query, &org_id, stream_type, req.search_type).await {
         Ok(sql) => sql,
         Err(e) => {
             log::error!("[trace_id: {trace_id}] Error getting histogram interval: {e:?}");
@@ -320,9 +320,7 @@ pub async fn search_http2_stream(
                 // Since the original query is now converted to a histogram query
                 // and the histogram interval needs to be recalculated
                 // and order by would be also be modified
-                sql = match get_sql(&req.query, &org_id, stream_type, req.search_type, &user_id)
-                    .await
-                {
+                sql = match get_sql(&req.query, &org_id, stream_type, req.search_type).await {
                     Ok(v) => v,
                     Err(e) => {
                         log::error!("[trace_id: {trace_id}] Error parsing sql: {e:?}");
@@ -543,7 +541,7 @@ pub async fn search_http2_stream(
     let audit_ctx = None;
     let search_type = req.search_type;
     // Spawn the search task in a separate task
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.clone(),
         org_id.clone(),
         user_id,
@@ -948,7 +946,7 @@ pub async fn values_http2_stream(
     // Pattern extraction is not supported for values endpoint
     let extract_patterns = false;
     // Spawn the search task to process the request
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.clone(),
         org_id.clone(),
         user_id,
@@ -1020,21 +1018,14 @@ pub async fn values_http2_stream(
         .unwrap()
 }
 
+// Helper function to get histogram interval from sql query
 async fn get_sql(
     query: &config::meta::search::Query,
     org_id: &str,
     stream_type: StreamType,
     search_type: Option<SearchEventType>,
-    user_id: &str,
 ) -> Result<search::sql::Sql, infra::errors::Error> {
-    search::sql::Sql::new_for_user(
-        &query.clone().try_into()?,
-        org_id,
-        stream_type,
-        search_type,
-        Some(user_id),
-    )
-    .await
+    search::sql::Sql::new(&query.clone().try_into()?, org_id, stream_type, search_type).await
 }
 
 #[cfg(test)]

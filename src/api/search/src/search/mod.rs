@@ -343,14 +343,9 @@ pub async fn search(
 
         // Validate query fields if requested
         if validate_query
-            && let Err(e) = utils::validate_query_fields_for_user(
-                &org_id,
-                stream_name,
-                stream_type,
-                &req.query.sql,
-                Some(user_id),
-            )
-            .await
+            && let Err(e) =
+                utils::validate_query_fields(&org_id, stream_name, stream_type, &req.query.sql)
+                    .await
         {
             return map_error_to_http_response(&e, Some(trace_id));
         }

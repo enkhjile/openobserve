@@ -1593,29 +1593,26 @@ async fn search(
             )),
         )
             .into_response(),
-        Err(err) => metrics_search_error_response(err, trace_id),
-    }
-}
-
-fn metrics_search_error_response(err: errors::Error, trace_id: &str) -> Response {
-    let status = match &err {
-        errors::Error::ErrorCode(errors::ErrorCodes::AuthorizationDenied(_)) => {
-            StatusCode::FORBIDDEN
+        Err(err) => {
+            let status = if infra::rbac::is_denied(&err) {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            let err = match err {
+                errors::Error::ErrorCode(code) => code.get_error_detail(),
+                _ => err.to_string(),
+            };
+            (
+                status,
+                axum::Json(config::meta::promql::ApiFuncResponse::<()>::err_bad_data(
+                    err,
+                    Some(trace_id.to_string()),
+                )),
+            )
+                .into_response()
         }
-        _ => StatusCode::BAD_REQUEST,
-    };
-    let detail = match err {
-        errors::Error::ErrorCode(code) => code.get_error_detail(),
-        _ => err.to_string(),
-    };
-    (
-        status,
-        axum::Json(config::meta::promql::ApiFuncResponse::<()>::err_bad_data(
-            detail,
-            Some(trace_id.to_string()),
-        )),
-    )
-        .into_response()
+    }
 }
 
 async fn search_streaming(
@@ -1937,32 +1934,10 @@ impl promql_parser::util::ExprVisitor for MaxLookbackWindowVisitor {
 }
 
 #[cfg(test)]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn metrics_search_denials_are_forbidden_and_syntax_errors_remain_bad_requests() {
-        for (error, expected_status) in [
-            (
-                errors::ErrorCodes::AuthorizationDenied("metric access denied".into()),
-                StatusCode::FORBIDDEN,
-            ),
-            (
-                errors::ErrorCodes::InvalidParams("invalid expression".into()),
-                StatusCode::BAD_REQUEST,
-            ),
-        ] {
-            let response =
-                metrics_search_error_response(errors::Error::ErrorCode(error), "metric-test-trace");
-            assert_eq!(response.status(), expected_status);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["status"], "error");
-            assert!(body.to_string().contains("metric-test-trace"));
-        }
-    }
 
     #[test]
     fn validate_range_window_rejects_negative_and_inverted_windows() {

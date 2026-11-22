@@ -30,11 +30,7 @@ use tonic::{
 };
 
 pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
-    if infra::rbac::enabled() {
-        return Err(Status::permission_denied(
-            "RPC requires a scoped RBAC execution adapter",
-        ));
-    }
+    infra::rbac::deny_rpc_when_enabled("RPC requires a scoped RBAC execution adapter")?;
     check_auth_inner(req, false)
 }
 
@@ -44,11 +40,7 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
 /// logs, metrics, and traces services. Internal cluster RPCs use
 /// [`check_internal_auth`], so an ingestion token cannot authorize query or node APIs.
 pub fn check_otlp_auth(req: Request<()>) -> Result<Request<()>, Status> {
-    if infra::rbac::enabled() {
-        return Err(Status::permission_denied(
-            "RPC requires a scoped RBAC execution adapter",
-        ));
-    }
+    infra::rbac::deny_rpc_when_enabled("RPC requires a scoped RBAC execution adapter")?;
     check_auth_inner(req, true)
 }
 
@@ -96,11 +88,7 @@ pub fn check_internal_auth(req: Request<()>) -> Result<Request<()>, Status> {
 
 /// Authenticate the internal ingest RPC: the internal token, or a feature writer's own org token.
 pub fn check_ingest_auth(mut req: Request<()>) -> Result<Request<()>, Status> {
-    if infra::rbac::enabled() {
-        return Err(Status::permission_denied(
-            "RPC requires a scoped RBAC execution adapter",
-        ));
-    }
+    infra::rbac::deny_rpc_when_enabled("RPC requires a scoped RBAC execution adapter")?;
     req.metadata_mut().remove(WRITER_METADATA_KEY);
     let token = auth_token(req.metadata())?;
     if is_internal_token(token) {
@@ -259,6 +247,8 @@ fn attach_user_id(mut req: Request<()>, user_id: &str) -> Result<Request<()>, St
     Ok(req)
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 pub(crate) mod tests {
     use common::infra::config::{ORG_INGESTION_TOKENS, ORG_USERS, USERS};
@@ -802,61 +792,5 @@ pub(crate) mod tests {
         );
         assert!(check_internal_auth(request).is_err());
         ORG_INGESTION_TOKENS.remove(&key);
-    }
-
-    #[test]
-    fn rbac_scoped_otlp_logs_requires_the_callers_own_credential() {
-        cache_instance_id("instance");
-        seed_org_user(
-            "auth-otlp-rbac",
-            "collector@example.com",
-            "Collectorpass#123",
-            "collector-token",
-        );
-        let internal = || {
-            let mut request = org_token_request("auth-otlp-rbac", "unused");
-            request
-                .metadata_mut()
-                .insert("authorization", get_internal_grpc_token().parse().unwrap());
-            request
-                .metadata_mut()
-                .insert("user_id", "collector@example.com".parse().unwrap());
-            request
-        };
-        if std::env::var_os("O2_OTLP_LOGS_RBAC_CHILD").is_none() {
-            assert!(check_otlp_logs_auth(internal()).is_ok());
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "handler::grpc::auth::tests::rbac_scoped_otlp_logs_requires_the_callers_own_credential",
-                    "--nocapture",
-                ])
-                .env("O2_OTLP_LOGS_RBAC_CHILD", "1")
-                .env("ZO_RBAC_ENABLED", "true")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            return;
-        }
-        assert!(infra::rbac::enabled());
-        let status = check_otlp_logs_auth(internal()).unwrap_err();
-        assert_eq!(status.code(), tonic::Code::PermissionDenied);
-        let mut forged = basic_request(
-            "auth-otlp-rbac",
-            "collector@example.com",
-            "Collectorpass#123",
-        );
-        forged
-            .metadata_mut()
-            .insert("user_id", "root@example.com".parse().unwrap());
-        let verified = check_otlp_logs_auth(forged).unwrap();
-        assert_eq!(user_ids(&verified), ["collector@example.com"]);
-        let other = basic_request(
-            "auth-otlp-rbac",
-            "collector@example.com",
-            "Collectorpass#123",
-        );
-        let status = check_otlp_auth(other).unwrap_err();
-        assert_eq!(status.code(), tonic::Code::PermissionDenied);
     }
 }

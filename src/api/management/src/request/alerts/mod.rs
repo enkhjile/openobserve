@@ -402,9 +402,7 @@ pub async fn create_alert(
     Headers(user_email): Headers<UserEmail>,
     Json(req_body): Json<CreateAlertRequestBody>,
 ) -> Response {
-    if infra::rbac::enabled()
-        && !matches!(req_body.alert_type, None | Some(AlertTypeFilter::Scheduled))
-    {
+    if !openobserve_core::alerts::rbac::allows_type(req_body.alert_type.as_ref()) {
         return MetaHttpResponse::forbidden("Unsupported scoped alert type");
     }
     let query_str = uri.query().unwrap_or("");
@@ -470,11 +468,8 @@ pub async fn create_alert(
     {
         return resp;
     }
-    alert.org_id = org_id.clone();
-    if openobserve_core::alerts::rbac::bind(&mut alert, &user_email.user_id)
-        .await
-        .is_err()
-    {
+    let bound = openobserve_core::alerts::rbac::bind(&mut alert, &org_id, &user_email.user_id);
+    if bound.await.is_err() {
         return MetaHttpResponse::forbidden("Alert authorization denied");
     }
     alert.last_edited_by = Some(user_email.user_id);
@@ -819,10 +814,7 @@ async fn composite_detail_response(
 
     let mut children = Vec::with_capacity(composite.children.len());
     for child in composite.children {
-        if readable_ids
-            .as_ref()
-            .is_some_and(|ids| !ids.contains(&child.child_alert_id))
-        {
+        if !infra::rbac::readable(&readable_ids, &child.child_alert_id) {
             continue;
         }
         #[cfg(feature = "enterprise")]
@@ -2467,9 +2459,7 @@ pub async fn update_alert(
     Headers(user_email): Headers<UserEmail>,
     Json(req_body): Json<UpdateAlertRequestBody>,
 ) -> Response {
-    if infra::rbac::enabled()
-        && !matches!(req_body.alert_type, None | Some(AlertTypeFilter::Scheduled))
-    {
+    if !openobserve_core::alerts::rbac::allows_type(req_body.alert_type.as_ref()) {
         return MetaHttpResponse::forbidden("Unsupported scoped alert type");
     }
     let alert_id_str = alert_id.clone();
@@ -2525,11 +2515,8 @@ pub async fn update_alert(
     }
     alert.last_edited_by = Some(user_email.user_id.clone());
     alert.id = Some(alert_id);
-    alert.org_id = org_id.clone();
-    if openobserve_core::alerts::rbac::bind(&mut alert, &user_email.user_id)
-        .await
-        .is_err()
-    {
+    let bound = openobserve_core::alerts::rbac::bind(&mut alert, &org_id, &user_email.user_id);
+    if bound.await.is_err() {
         return MetaHttpResponse::forbidden("Alert authorization denied");
     }
     #[cfg(feature = "enterprise")]
@@ -2819,10 +2806,7 @@ async fn readable_parent_snapshot(
     #[cfg(not(feature = "enterprise"))]
     let hidden = 0;
     for (alert_id, name, folder_id) in parents {
-        if readable_ids
-            .as_ref()
-            .is_some_and(|ids| !ids.contains(&alert_id))
-        {
+        if !infra::rbac::readable(&readable_ids, &alert_id) {
             continue;
         }
         #[cfg(feature = "enterprise")]
@@ -3505,11 +3489,7 @@ pub async fn list_alerts(
                 .await
                 .into_iter()
                 .filter(|item| in_listable_folder(&listable_folders, &item.folder_id))
-                .filter(|item| {
-                    readable_ids
-                        .as_ref()
-                        .is_none_or(|ids| ids.contains(&item.alert_id.to_string()))
-                })
+                .filter(|item| infra::rbac::readable(&readable_ids, &item.alert_id.to_string()))
                 .filter(|item| anomaly_row_visible(&visibility, item))
                 .filter(|item| enabled_filter.is_none_or(|enabled| item.enabled == enabled))
                 .filter(|item| match &priority_filter {

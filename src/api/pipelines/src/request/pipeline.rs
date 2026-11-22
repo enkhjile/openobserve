@@ -228,28 +228,19 @@ pub async fn list_pipelines(
         Err(e) => return e.into(),
     };
 
-    if infra::rbac::enabled() {
-        let resources: Vec<_> = pipelines
-            .iter()
-            .map(|p| infra::rbac::Resource::new(infra::rbac::ResourceKind::Pipeline, &p.id))
-            .collect();
-        let allowed = match infra::rbac::allowed_resources(
-            &user_email.user_id,
-            &org_id,
-            infra::rbac::Action::Read,
-            &resources,
-        )
-        .await
-        {
-            Ok(allowed) if allowed.len() == pipelines.len() => allowed,
-            _ => return MetaHttpResponse::forbidden("Pipeline listing denied"),
-        };
-        pipelines = pipelines
-            .into_iter()
-            .zip(allowed)
-            .filter_map(|(p, allowed)| allowed.then_some(p))
-            .collect();
-    }
+    let (kind, read) = (
+        infra::rbac::ResourceKind::Pipeline,
+        infra::rbac::Action::Read,
+    );
+    let user = &user_email.user_id;
+    pipelines = match infra::rbac::retain_allowed(user, &org_id, read, pipelines, |p| {
+        infra::rbac::Resource::new(kind, &p.id)
+    })
+    .await
+    {
+        Ok(pipelines) => pipelines,
+        Err(_) => return MetaHttpResponse::forbidden("Pipeline listing denied"),
+    };
     let pipeline_triggers = match pipeline::list_pipeline_triggers(&org_id).await {
         Ok(pipelines) => pipelines,
         Err(e) => return e.into(),

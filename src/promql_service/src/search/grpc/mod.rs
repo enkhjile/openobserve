@@ -155,18 +155,7 @@ pub async fn search(
     req: &cluster_rpc::MetricsQueryRequest,
     query_tracker: &QueryTracker,
 ) -> Result<cluster_rpc::MetricsQueryResponse> {
-    if infra::rbac::enabled() {
-        let query = req
-            .query
-            .as_ref()
-            .ok_or_else(|| crate::rbac::denied("Missing metrics query"))?;
-        if query.query_data || query.query_exemplars || req.search_event_type == "download" {
-            return Err(crate::rbac::denied(
-                "Metrics operation requires a scoped adapter",
-            ));
-        }
-        crate::rbac::authorize(req.rbac_subject.as_deref(), &req.org_id, &query.query).await?;
-    }
+    crate::rbac::guard(req).await?;
 
     let cfg = config::get_config();
     let start_ts = std::time::Instant::now();
@@ -291,10 +280,8 @@ pub async fn data(
     tx: mpsc::Sender<Result<cluster_rpc::MetricsQueryResponse, tonic::Status>>,
 ) -> Result<()> {
     if infra::rbac::enabled() {
-        return Err(infra::errors::Error::ErrorCode(
-            infra::errors::ErrorCodes::AuthorizationDenied(
-                "PromQL RPC requires a scoped RBAC execution adapter".into(),
-            ),
+        return Err(infra::rbac::denied(
+            "PromQL RPC requires a scoped RBAC execution adapter",
         ));
     }
 
@@ -441,18 +428,7 @@ pub async fn search_inner(
     need_wal: bool,
     query_tracker: &QueryTracker,
 ) -> Result<(value::Value, String, ScanStats, i64, Vec<String>)> {
-    if infra::rbac::enabled() {
-        let query = req
-            .query
-            .as_ref()
-            .ok_or_else(|| crate::rbac::denied("Missing metrics query"))?;
-        if query.query_data || query.query_exemplars || req.search_event_type == "download" {
-            return Err(crate::rbac::denied(
-                "Metrics operation requires a scoped adapter",
-            ));
-        }
-        crate::rbac::authorize(req.rbac_subject.as_deref(), &req.org_id, &query.query).await?;
-    }
+    crate::rbac::guard(req).await?;
 
     let start = std::time::Instant::now();
     let trace_id = req.job.as_ref().unwrap().trace_id.to_string();

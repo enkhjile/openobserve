@@ -189,6 +189,9 @@ async fn require_shared_secret(secret: &str, request: Request, next: Next) -> Re
 }
 
 #[cfg(test)]
+#[path = "router_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use axum::body::Body;
     use tower::ServiceExt;
@@ -313,39 +316,5 @@ mod tests {
     #[test]
     fn test_create_router_does_not_panic_on_axum_08_path_syntax() {
         let _ = create_router();
-    }
-    #[tokio::test]
-    async fn rbac_rejects_standalone_report_execution() {
-        if std::env::var_os("O2_REPORT_SERVER_RBAC_CHILD").is_none() {
-            assert!(!config::get_config().common.rbac_enabled);
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "router::tests::rbac_rejects_standalone_report_execution",
-                    "--nocapture",
-                ])
-                .env("O2_REPORT_SERVER_RBAC_CHILD", "1")
-                .env("ZO_RBAC_ENABLED", "true")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            return;
-        }
-        let request = axum::http::Request::builder().method("PUT").uri("/api/org_a/reports/r1/send")
-            .header(REPORT_SECRET_HEADER, "secret").header("Content-Type", "application/json")
-            .body(Body::from(r#"{"dashboards":[],"email_details":{"recipients":[],"title":"","name":"","message":"","dashb_url":""}}"#)).unwrap();
-        let response = router_with_secret("secret".into())
-            .oneshot(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            router_with_secret("secret".into())
-                .oneshot(healthz_request())
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::OK
-        );
     }
 }

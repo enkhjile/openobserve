@@ -38,46 +38,7 @@ pub async fn grpc_search(
     in_req: &search::Request,
     role_group: Option<RoleGroup>,
 ) -> Result<search::Response, Error> {
-    grpc_search_with_identity(
-        trace_id,
-        org_id,
-        stream_type,
-        user_id,
-        None,
-        in_req,
-        role_group,
-    )
-    .await
-}
-
-pub async fn grpc_search_as_subject(
-    trace_id: &str,
-    org_id: &str,
-    stream_type: StreamType,
-    subject: &str,
-    in_req: &search::Request,
-) -> Result<search::Response, Error> {
-    grpc_search_with_identity(
-        trace_id,
-        org_id,
-        stream_type,
-        None,
-        Some(subject.to_string()),
-        in_req,
-        Some(RoleGroup::Background),
-    )
-    .await
-}
-
-async fn grpc_search_with_identity(
-    trace_id: &str,
-    org_id: &str,
-    stream_type: StreamType,
-    user_id: Option<String>,
-    rbac_subject: Option<String>,
-    in_req: &search::Request,
-    role_group: Option<RoleGroup>,
-) -> Result<search::Response, Error> {
+    let rbac_subject = infra::rbac::caller::subject();
     let mut nodes = cluster::get_cached_online_querier_nodes(role_group)
         .await
         .unwrap_or_default();

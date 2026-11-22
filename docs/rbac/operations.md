@@ -77,7 +77,7 @@ Scheduled SQL alerts carry their creator's stable subject and require explicit d
 
 Policies are additive versioned documents in the existing `meta` table under the `rbac` module and organization key. Atomic conditional INSERT/UPDATE statements use the existing primary SeaORM pool and metadata unique index, with start_dt fixed at zero. SQLite and PostgreSQL reuse existing metadata storage; no external server or separate database is introduced. Existing users, memberships and resource records are preserved. Back up metadata before changes. Disabling `ZO_RBAC_ENABLED` and restarting restores upstream authorization behavior; this intentionally removes the new restrictions and must be treated as an operator-controlled security rollback. Policy documents may remain for re-enabling. Do not delete them during routine rollback.
 
-The alert, report and pipeline migrations add nullable text fields for execution identity or context. Existing rows keep their IDs and data. With RBAC enabled, an unbound scheduled definition cannot run until an authorized editor saves a supported definition. Review the intended executor, source grants and delivery approvals before doing so. Upgrade all schedulers, ingesters and query nodes before turning the feature on. Before restoring an older binary, stop or drain jobs that depend on these checks. Keep the additive columns and policy records for a subsequent upgrade.
+The upgrade adds one optional stored field each to alerts, reports and pipelines, holding the identity they run as. Existing rows keep their IDs and data. With RBAC enabled, an unbound scheduled definition cannot run until an authorized editor saves a supported definition. Review the intended executor, source grants and delivery approvals before doing so. Upgrade all schedulers, ingesters and query nodes before turning the feature on. Before restoring an older binary, stop or drain jobs that depend on these checks. Keep the additive columns and policy records for a subsequent upgrade.
 
 For the scoped dashboard report renderer, set `ZO_REPORT_SERVER_URL` to an empty value to select the embedded browser. Use a dedicated organization-local renderer login with the grants described in `scheduled-reports.md`. The default points at the separate report service, whose requests are denied while RBAC is enabled.
 
@@ -110,12 +110,13 @@ Set `OLD` to the stock commit the branch currently sits on and `NEW` to the targ
 4. Run the authorization regressions: route gate and coverage snapshot, Casbin engine, gRPC interceptors and ingestion hooks.
 
    ```sh
-   cargo test -p openobserve-api-http --lib rbac
-   cargo test -p openobserve-api-http --lib openapi_coverage
    cargo test -p openobserve-rbac
-   cargo test -p openobserve-api-grpc --lib auth
-   cargo test -p openobserve-core --lib logs::otlp
+   cargo test --no-fail-fast -p infra -p search_service -p openobserve-api-http -p openobserve-api-grpc -p openobserve-core \
+     -p openobserve-api-search -p openobserve-api-management -p openobserve-api-pipelines -p report_server \
+     --lib -- rbac openapi_coverage handler::grpc::auth logs::otlp cache::tests
    ```
+
+   One invocation compiles the crates in parallel. RBAC tests live in `*rbac_tests.rs` files beside their upstream modules. `rbac_saved_view_listing_filters_metadata_and_revocation` currently fails: its fixture never adds the viewer's organization membership, which policy checks require. The test and the listing code are unchanged by the decoupling work.
 
 5. Run `cargo fmt --all`, workspace Clippy with the `AGENTS.md` flags, the debug build, and the relevant Vue format/type/lint/unit checks. Report any check you could not run. The Enterprise stubs do not verify an Enterprise build.
 6. Run the live suites. The HTTP launcher covers Admin, Editor, Viewer and Ingester identities, restricted and cross-org streams, SQL joins/CTEs/unions and revocation on SQLite and PostgreSQL. The OTLP log suite covers collectors over HTTP and gRPC. Use the scripts listed under the smoke-test sections below.
@@ -186,26 +187,28 @@ python3 scripts/rbac/report_smoke.py --binary target/debug/openobserve --acknowl
 
 Enable RBAC on the router and its data nodes. The router forwards supported API requests to the downstream `/internal/rbac/v1/api` mount. The receiving node authenticates the request and applies its own policy checks. A downstream version without the enforcing mount returns an error during a rolling upgrade. Upgrade data nodes before directing traffic through an enabled router. Keep direct access to legacy or RBAC-disabled data nodes closed during rollout. A configured base URI applies at both ends.
 
-## Upstream integration points
+## Where enforcement happens
 
-- `src/api/http/src/handler/http/router/mod.rs`: post-auth identity adapter, RBAC management routes, safe organization list adapter, outer deny gate.
-- `src/api/http/src/handler/http/router/rbac.rs`: isolated HTTP declarations, typed enforcement, management handlers and gate tests.
-- `src/api/http/src/handler/http/router/openapi_coverage/`: existing parser reused for the review snapshot; UI-only extension endpoints explicitly excluded from public data OpenAPI.
-- `src/api/management/src/request/stream/mod.rs`: filter allowed typed streams before totals/pagination.
-- `src/api/common/src/auth/validator.rs`: prevent authentication-driven organization auto-creation when enabled.
-- `src/core/src/users.rs`: deny cross-identity global password resets so organization administration cannot take over a principal authorized elsewhere.
-- `src/infra/src/db/nats.rs` and `src/infra/src/file_list/mod.rs`: explicit string-slice concatenation resolves type ambiguity introduced by Casbin’s transitive smartstring implementation.
-- `src/config/src/config.rs`, root/infra Cargo manifests, and `src/infra/src/lib.rs`: opt-in configuration and module wiring.
-- `src/infra/src/rbac.rs` and `src/extensions/rbac/`: persistence, bootstrap, stable identities, Casbin policy model and typed decisions.
-- `src/core/src/logs/ingest.rs` (`authorize_scoped_destinations`): the shared pre-write check for log destinations. Both `_json`/`_multi` and OTLP logs call it. It authorizes the destination stream and loads only scoped pipelines, whose outputs the trigger identity must also hold Ingest on.
-- `src/core/src/logs/otlp.rs`: takes the verified org-token principal, calls the shared check before `check_ingestion_allowed`, and returns pipeline failures as denials instead of writing the source.
-- `src/api/ingest/src/request/logs/ingest.rs` (`otlp_logs_write`): passes the authenticated org-token principal and maps a denial to 403.
-- `src/api/grpc/src/handler/grpc/auth/mod.rs`, `src/api/grpc/src/server.rs`, `src/api/grpc/src/handler/grpc/request/{otlp,logs}.rs`: a logs-only interceptor that refuses the internal token while RBAC is enabled, and the async primary re-read of org ingestion tokens. Other OTLP services keep the deny-all interceptor.
-- `src/api/grpc/src/router/grpc/ingest/logs.rs`: forwards the caller's credential instead of the internal token when RBAC is enabled.
-- Search, streaming/cache, logs ingestion, PromQL, Flight/gRPC guards: consult the final branch diff for the exact execution hooks; they must remain aligned with HTTP supported declarations.
-- Vue IAM panel and shared access-denied handling: UI consumes server grants; it is not the security boundary.
+The exact file list, with each hook's purpose, is in `modified-files.md`. In behaviour terms:
 
-The endpoint exporter compiles only the existing route parser and classifier in a temporary crate. Its output documents all editions, but its active flag reflects OSS defaults. The CI snapshot requires conscious review after route or disposition changes. Preserve all AGPL notices when redistributing this branch.
+- **HTTP:**
+  - every request passes an outer gate that denies undeclared routes;
+  - authenticated requests are checked against their declared permission;
+  - listings return only objects the caller may read, filtered before pagination.
+- **Search:** every stream named by the SQL is authorized for the verified caller. The caller is kept across background tasks and querier nodes, and a search with no verified caller is denied. See `identity-context.md`.
+- **Ingestion:**
+  - every destination stream, and every pipeline output, is authorized before the first write;
+  - one unauthorized destination rejects the whole request with nothing written;
+  - organization ingestion tokens act only as their own policy subject.
+- **gRPC:**
+  - node-to-node RPCs that could return or change data outside a checked search are refused while RBAC is enabled;
+  - OTLP log export accepts only the caller's own credential.
+- **Scheduled work:** alerts, reports and pipelines run as the identity recorded when they were last saved. An object with no recorded identity does not run.
+- **Accounts:** organization administration cannot reset another identity's global password or create organizations as a side effect of login.
+
+If an upstream change adds a background task on a search path, that path denies until the task is given the caller. The live suites catch this as an unexpected 403.
+
+The endpoint inventory uses OpenObserve's own route parser. It lists routes of every edition, and the active column reflects the OSS build. The CI snapshot requires conscious review after route or disposition changes. Preserve all AGPL notices when redistributing this branch.
 
 ### Scheduled delivery approvals
 
@@ -223,9 +226,9 @@ The gRPC service refuses the cluster's internal token while RBAC is enabled, bec
 
 ### Scoped organization ingestion tokens
 
-The Admin member picker also lists enabled organization ingestion tokens by name, without exposing credential values. Their policy subjects are `org-token:<persisted-row-id>`; despite the historical `ider::uuid()` function name, current row IDs are KSUIDs. Token subjects accept only Ingester grants on exact typed stream names. Namespace validation rejects malformed IDs, other roles, and wildcard scopes.
+The Admin member picker also lists enabled organization ingestion tokens by name, without exposing credential values. Their policy subject is `org-token:` followed by the token's stored ID. Token subjects accept only Ingester grants on exact typed stream names. Namespace validation rejects malformed IDs, other roles, and wildcard scopes.
 
-Assignments and ingestion authorization re-read the primary token row and require its organization, enabled state and non-feature-writer status. Reserved `_o2_` token names and `created_by = system` rows cannot receive ordinary policy grants. Deleting and recreating a token changes its subject; rotating the secret on the same row preserves its scopes. The authentication adapter must derive this identity from a validated secret; names and caller-supplied subject strings are not credentials.
+Assignments and ingestion authorization re-read the primary token row and require its organization, enabled state and non-feature-writer status. Reserved `_o2_` tokens and system-created tokens cannot receive ordinary policy grants. Deleting and recreating a token changes its subject; rotating the secret on the same row preserves its scopes. The authentication adapter must derive this identity from a validated secret; names and caller-supplied subject strings are not credentials.
 
 ### Organization-local template administration
 

@@ -671,19 +671,11 @@ pub fn combine_detection_function(
 }
 
 #[cfg(test)]
+#[path = "requests_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn client_execution_subject_is_not_an_alert_authority() {
-        let mut body: serde_json::Value =
-            serde_json::from_str(&body_with_warning_value("null")).unwrap();
-        body["execution_subject"] = serde_json::json!("forged-root-uuid");
-        let create: CreateAlertRequestBody = serde_json::from_value(body.clone()).unwrap();
-        let update: UpdateAlertRequestBody = serde_json::from_value(body).unwrap();
-        assert!(meta_alerts::Alert::from(create).execution_subject.is_none());
-        assert!(meta_alerts::Alert::from(update).execution_subject.is_none());
-    }
 
     /// Minimal create body carrying an aggregation warning threshold.
     fn body_with_warning_value(warning: &str) -> String {

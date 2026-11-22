@@ -165,28 +165,14 @@ pub fn ui_routes(base_href: &str) -> Router {
 }
 
 #[cfg(test)]
+#[path = "ui_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
     use super::*;
-
-    #[test]
-    fn embedded_stream_worker_cannot_access_the_network() {
-        if let Some(worker) = crate::stream_worker_asset() {
-            let response = serve_file(&worker);
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.headers()[header::CONTENT_SECURITY_POLICY],
-                "default-src 'none'; connect-src 'none'"
-            );
-        }
-        assert!(
-            !serve_file("index.html")
-                .headers()
-                .contains_key(header::CONTENT_SECURITY_POLICY)
-        );
-    }
 
     #[tokio::test]
     async fn test_index_ok() {

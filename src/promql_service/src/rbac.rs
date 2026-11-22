@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use infra::errors::{Error, ErrorCodes, Result};
+use infra::errors::{Error, Result};
 use promql::ast::{name_visitor::MetricNameVisitor, visitor::walk_expr};
 
 pub fn sources(query: &str) -> Result<Vec<infra::rbac::Resource>> {
@@ -52,8 +52,24 @@ pub async fn authorize(subject: Option<&str>, org: &str, query: &str) -> Result<
     Ok(())
 }
 
+/// Authorizes a metrics query request: an explicitly named query only, never data,
+/// exemplar or download operations.
+pub async fn guard(req: &proto::cluster_rpc::MetricsQueryRequest) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let query = req
+        .query
+        .as_ref()
+        .ok_or_else(|| denied("Missing metrics query"))?;
+    if query.query_data || query.query_exemplars || req.search_event_type == "download" {
+        return Err(denied("Metrics operation requires a scoped adapter"));
+    }
+    authorize(req.rbac_subject.as_deref(), &req.org_id, &query.query).await
+}
+
 pub fn denied(message: impl std::fmt::Display) -> Error {
-    Error::ErrorCode(ErrorCodes::AuthorizationDenied(message.to_string()))
+    infra::rbac::denied(message)
 }
 
 #[cfg(test)]

@@ -14,7 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use anyhow::{Result, ensure};
-use config::meta::alerts::{QueryCondition, QueryType, alert::Alert};
+use config::meta::alerts::{
+    QueryCondition, QueryType,
+    alert::{Alert, AlertTypeFilter},
+};
 use infra::rbac::{Action, Resource, ResourceKind};
 
 pub fn validate_query(query: &QueryCondition) -> Result<()> {
@@ -46,10 +49,16 @@ pub fn validate_shape(alert: &Alert) -> Result<()> {
     Ok(())
 }
 
-pub async fn bind(alert: &mut Alert, email: &str) -> Result<()> {
+/// Whether RBAC permits saving an alert of this type; only scheduled alerts have an adapter.
+pub fn allows_type(alert_type: Option<&AlertTypeFilter>) -> bool {
+    !infra::rbac::enabled() || matches!(alert_type, None | Some(AlertTypeFilter::Scheduled))
+}
+
+pub async fn bind(alert: &mut Alert, org: &str, email: &str) -> Result<()> {
     if !infra::rbac::enabled() {
         return Ok(());
     }
+    alert.org_id = org.to_owned();
     validate_shape(alert)?;
     let subject = infra::rbac::user_subject(email).await?;
     infra::rbac::validate_subject(&subject, &alert.org_id).await?;

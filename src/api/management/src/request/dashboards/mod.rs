@@ -216,33 +216,20 @@ pub async fn list_dashboards(
         Err(err) => return err.into(),
     };
     if rbac_enabled {
-        let resources: Vec<_> = dashboards
-            .iter()
-            .map(|(_, dashboard)| {
-                infra::rbac::Resource::new(
-                    infra::rbac::ResourceKind::Dashboard,
-                    dashboard.dashboard_id().unwrap_or_default(),
-                )
-            })
-            .collect();
-        let decisions = match infra::rbac::allowed_resources(
-            &user_id,
-            &org_id,
+        let (kind, read) = (
+            infra::rbac::ResourceKind::Dashboard,
             infra::rbac::Action::Read,
-            &resources,
-        )
+        );
+        dashboards = match infra::rbac::retain_allowed(&user_id, &org_id, read, dashboards, |d| {
+            infra::rbac::Resource::new(kind, d.1.dashboard_id().unwrap_or_default())
+        })
         .await
         {
-            Ok(decisions) => decisions,
+            Ok(dashboards) => dashboards,
             Err(_) => {
                 return MetaHttpResponse::forbidden("Organization RBAC policy is unavailable");
             }
         };
-        dashboards = dashboards
-            .into_iter()
-            .zip(decisions)
-            .filter_map(|(dashboard, allowed)| allowed.then_some(dashboard))
-            .collect();
         if let Some((size, index)) = pagination {
             dashboards = dashboards
                 .into_iter()

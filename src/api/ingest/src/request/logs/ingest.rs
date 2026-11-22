@@ -45,7 +45,7 @@ use crate::{
     request::logs::otlp_utf8::sanitize_invalid_utf8,
     service::{
         ingestion::get_thread_id,
-        logs::{self, otlp::handle_request},
+        logs::{self, otlp::handle_request_as},
     },
 };
 
@@ -247,10 +247,7 @@ pub async fn multi(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_multi: {e}");
             }
-            if matches!(
-                e,
-                infra::errors::Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(_))
-            ) {
+            if infra::rbac::is_denied(&e) {
                 MetaHttpResponse::forbidden(e.to_string())
             } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
@@ -339,10 +336,7 @@ pub async fn json(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_json: {e}");
             }
-            if matches!(
-                e,
-                infra::errors::Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(_))
-            ) {
+            if infra::rbac::is_denied(&e) {
                 MetaHttpResponse::forbidden(e.to_string())
             } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
@@ -640,7 +634,7 @@ pub async fn otlp_logs_write(
         }
     };
 
-    match handle_request(
+    match handle_request_as(
         thread_id,
         &org_id,
         request,
@@ -662,9 +656,7 @@ pub async fn otlp_logs_write(
             let status = match e {
                 infra::errors::Error::ResourceError(_) => StatusCode::SERVICE_UNAVAILABLE,
                 infra::errors::Error::TrialPeriodExpired => StatusCode::TOO_MANY_REQUESTS,
-                infra::errors::Error::ErrorCode(
-                    infra::errors::ErrorCodes::AuthorizationDenied(_),
-                ) => StatusCode::FORBIDDEN,
+                ref denied if infra::rbac::is_denied(denied) => StatusCode::FORBIDDEN,
                 _ => StatusCode::BAD_REQUEST,
             };
             otlp_rejection_response(request_type, status, e.to_string())

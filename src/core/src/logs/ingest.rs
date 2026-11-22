@@ -287,34 +287,6 @@ pub fn prepare_record(
     }
 }
 
-/// Authorizes `stream_name` and every scoped pipeline output for `user`, before any write.
-pub(super) async fn authorize_scoped_destinations(
-    org_id: &str,
-    stream_name: &str,
-    user: &IngestUser,
-) -> Result<Vec<ExecutablePipeline>> {
-    let deny = |e: String| Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(e));
-    let resources = [infra::rbac::Resource::stream("logs", stream_name)];
-    let decisions = match user {
-        IngestUser::User(email) => {
-            infra::rbac::allowed_resources(email, org_id, infra::rbac::Action::Ingest, &resources)
-                .await
-        }
-        IngestUser::OrgToken(principal) if principal.org_id == org_id => {
-            infra::rbac::allowed_ingestion_token_resources(org_id, &principal.token_id, &resources)
-                .await
-        }
-        _ => Err(anyhow::anyhow!("Scoped ingestion identity required")),
-    }
-    .map_err(|e| deny(e.to_string()))?;
-    if decisions != [true] {
-        return Err(deny("Ingestion destination access denied".into()));
-    }
-    crate::pipeline::rbac::load(org_id, stream_name, user)
-        .await
-        .map_err(|e| deny(e.to_string()))
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn ingest_inner(
     thread_id: usize,
@@ -358,13 +330,11 @@ async fn ingest_inner(
     }
     let scoped_pipelines = if infra::rbac::enabled() {
         if is_derived {
-            return Err(Error::ErrorCode(
-                infra::errors::ErrorCodes::AuthorizationDenied(
-                    "Derived ingestion requires a scoped adapter".into(),
-                ),
+            return Err(infra::rbac::denied(
+                "Derived ingestion requires a scoped adapter",
             ));
         }
-        Some(authorize_scoped_destinations(org_id, &stream_name, &user).await?)
+        Some(crate::pipeline::rbac::authorize_log_destinations(org_id, &stream_name, &user).await?)
     } else {
         None
     };
@@ -656,9 +626,7 @@ async fn ingest_inner(
             match pl_result {
                 Err(e) => {
                     if infra::rbac::enabled() {
-                        return Err(Error::ErrorCode(
-                            infra::errors::ErrorCodes::AuthorizationDenied(e.to_string()),
-                        ));
+                        return Err(infra::rbac::denied(e));
                     }
                     log::error!(
                         "[Pipeline] for stream {org_id}/{stream_name}: Batch execution error: {e}.",

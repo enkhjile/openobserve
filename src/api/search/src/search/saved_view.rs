@@ -108,35 +108,18 @@ pub async fn get_views(Path(path): Path<String>, Headers(user): Headers<UserEmai
     let org_id = path;
     match saved_view::get_views_list_only(&org_id).await {
         Ok(mut views) => {
-            if infra::rbac::enabled() {
-                let resources: Vec<_> = views
-                    .views
-                    .iter()
-                    .map(|view| {
-                        infra::rbac::Resource::new(
-                            infra::rbac::ResourceKind::SavedQuery,
-                            &view.view_id,
-                        )
-                    })
-                    .collect();
-                let decisions = match infra::rbac::allowed_resources(
-                    &user.user_id,
-                    &org_id,
-                    infra::rbac::Action::Read,
-                    &resources,
-                )
+            let kind = infra::rbac::ResourceKind::SavedQuery;
+            let read = infra::rbac::Action::Read;
+            let all = views.views;
+            views.views =
+                match infra::rbac::retain_allowed(&user.user_id, &org_id, read, all, |v| {
+                    infra::rbac::Resource::new(kind, &v.view_id)
+                })
                 .await
                 {
-                    Ok(decisions) if decisions.len() == views.views.len() => decisions,
-                    _ => return MetaHttpResponse::forbidden("RBAC access denied"),
+                    Ok(views) => views,
+                    Err(_) => return MetaHttpResponse::forbidden("RBAC access denied"),
                 };
-                views.views = views
-                    .views
-                    .into_iter()
-                    .zip(decisions)
-                    .filter_map(|(view, allow)| allow.then_some(view))
-                    .collect();
-            }
             MetaHttpResponse::json(views)
         }
         Err(e) => MetaHttpResponse::bad_request(e),
@@ -278,6 +261,9 @@ pub async fn update_view(
     }
 }
 
+#[cfg(test)]
+#[path = "saved_view_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -441,98 +427,5 @@ mod tests {
         assert_eq!(create(&longer_org, "shared", None).await.0, StatusCode::OK);
         assert!(list(&org).await.is_empty());
         assert_eq!(create(&org, "shared", None).await.0, StatusCode::OK);
-    }
-    #[tokio::test]
-    async fn rbac_saved_view_listing_filters_metadata_and_revocation() {
-        if std::env::var_os("O2_SAVED_VIEW_RBAC_CHILD").is_none() {
-            let directory =
-                std::env::temp_dir().join(format!("saved-view-rbac-{}", config::ider::uuid()));
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "search::saved_view::tests::rbac_saved_view_listing_filters_metadata_and_revocation", "--nocapture"])
-                .env("O2_SAVED_VIEW_RBAC_CHILD", "1").env("ZO_RBAC_ENABLED", "true")
-                .env("ZO_DATA_DIR", &directory).status().unwrap();
-            if directory.exists() {
-                std::fs::remove_dir_all(directory).unwrap();
-            }
-            assert!(status.success());
-            return;
-        }
-        infra::db::create_table().await.unwrap();
-        infra::table::users::create_table().await.unwrap();
-        let user = infra::table::users::UserRecord {
-            email: "viewer@example.com".into(),
-            first_name: String::new(),
-            last_name: String::new(),
-            password: String::new(),
-            salt: String::new(),
-            is_root: false,
-            password_ext: None,
-            user_type: config::meta::user::UserType::Internal,
-            created_at: 0,
-            updated_at: 0,
-            must_reset_password: false,
-            password_reset_reason: None,
-            flagged_at: None,
-            password_updated_at: None,
-        };
-        infra::table::users::add(user).await.unwrap();
-        let org = new_org();
-        let (_, allowed) = create(&org, "visible", None).await;
-        let (_, hidden) = create(&org, "secret-metadata", Some("traces")).await;
-        let subject = infra::rbac::user_subject("viewer@example.com")
-            .await
-            .unwrap();
-        let mut policy = infra::rbac::PolicyDocument {
-            destination_approvals: vec![],
-            schema_version: 1,
-            version: 1,
-            organization: org.clone(),
-            grants: vec![infra::rbac::Grant {
-                subject,
-                role: infra::rbac::Role::Viewer,
-                resources: vec![infra::rbac::Resource::new(
-                    infra::rbac::ResourceKind::SavedQuery,
-                    allowed["view_id"].as_str().unwrap(),
-                )],
-            }],
-        };
-        let key = format!("/rbac/{org}/policy");
-        db::put(
-            &key,
-            serde_json::to_vec(&policy).unwrap().into(),
-            infra::db::NO_NEED_WATCH,
-            None,
-        )
-        .await
-        .unwrap();
-        let (status, response) = call("GET", &format!("/{org}/savedviews"), None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(response["views"].as_array().unwrap().len(), 1);
-        assert_eq!(response["views"][0]["view_id"], allowed["view_id"]);
-        assert!(!response.to_string().contains("secret-metadata"));
-        assert!(
-            !response
-                .to_string()
-                .contains(hidden["view_id"].as_str().unwrap())
-        );
-        assert!(response.get("total").is_none());
-        policy.version += 1;
-        policy.grants[0].resources[0].name = "different-view".into();
-        db::put(
-            &key,
-            serde_json::to_vec(&policy).unwrap().into(),
-            infra::db::NO_NEED_WATCH,
-            None,
-        )
-        .await
-        .unwrap();
-        assert!(list(&org).await.is_empty());
-        db::delete(&key, false, infra::db::NO_NEED_WATCH, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            call("GET", &format!("/{org}/savedviews"), None).await.0,
-            StatusCode::FORBIDDEN
-        );
     }
 }

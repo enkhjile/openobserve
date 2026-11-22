@@ -228,7 +228,7 @@ pub async fn update(
 
     let email_id = email_id.trim().to_string();
 
-    if openobserve_core::organization::validate_rbac_service_account_target(&org_id, &email_id)
+    if infra::rbac::validate_service_account_target(&org_id, &email_id)
         .await
         .is_err()
     {

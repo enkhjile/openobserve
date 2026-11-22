@@ -56,6 +56,16 @@ impl Visitor for SourceGuard {
     }
 }
 
+/// Refuses a query function (VRL): it can read data that source authorization never sees.
+pub fn reject_query_fn(present: bool) -> Result<(), infra::errors::Error> {
+    if infra::rbac::enabled() && present {
+        return Err(infra::rbac::denied(
+            "Query transforms require a scoped adapter",
+        ));
+    }
+    Ok(())
+}
+
 pub fn reject_custom_functions(sql: &str, forbidden: &[String]) -> Result<()> {
     let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)?;
     let mut guard = FunctionGuard { forbidden };
@@ -119,6 +129,95 @@ pub async fn authorize(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("RBAC execution identity required"))?;
     let subject = infra::rbac::user_subject(user).await?;
+    authorize_subject_event(sql, org, stream_type, &subject, event).await?;
+    Ok(())
+}
+
+/// Authorizes `sql` for the identity a search `Request` carries: its subject, else its user.
+pub async fn authorize_request(
+    req: &config::datafusion::request::Request,
+    sql: &str,
+) -> Result<(), infra::errors::Error> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let event = req
+        .search_event_type
+        .as_ref()
+        .and_then(|s| s.parse::<config::meta::search::SearchEventType>().ok());
+    match req.rbac_subject.as_deref() {
+        Some(subject) => authorize_subject_event(sql, &req.org_id, req.stream_type, subject, event)
+            .await
+            .map(drop),
+        None => {
+            authorize(
+                sql,
+                &req.org_id,
+                req.stream_type,
+                req.user_id.as_deref(),
+                event,
+            )
+            .await
+        }
+    }
+    .map_err(infra::rbac::denied)
+}
+
+/// Authorizes a streaming search for `user`, refusing a query function as well.
+pub async fn authorize_search(
+    sql: &str,
+    org: &str,
+    stream_type: StreamType,
+    user: &str,
+    event: Option<config::meta::search::SearchEventType>,
+    has_query_fn: bool,
+) -> Result<(), infra::errors::Error> {
+    authorize(sql, org, stream_type, Some(user), event)
+        .await
+        .map_err(infra::rbac::denied)?;
+    reject_query_fn(has_query_fn)
+}
+
+/// Authorizes every query of a multi-stream search against one policy snapshot.
+pub async fn authorize_multi(
+    queries: &[config::meta::search::Request],
+    multi_req: &config::meta::search::MultiStreamRequest,
+    org: &str,
+    stream_type: StreamType,
+    user: &str,
+    event: Option<config::meta::search::SearchEventType>,
+) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let download = Some(config::meta::search::SearchEventType::Download);
+    let event = if multi_req.search_type == download {
+        download
+    } else {
+        event
+    };
+    authorize_batch(
+        queries.iter().map(|req| req.query.sql.as_str()),
+        org,
+        stream_type,
+        Some(user),
+        event,
+        multi_req.query_fn.is_some() || multi_req.sql.iter().any(|query| query.query_fn.is_some()),
+    )
+    .await
+}
+
+/// Authorizes `sql` for the caller of the current task; outside any caller scope this denies.
+pub async fn authorize_current(
+    sql: &str,
+    org: &str,
+    stream_type: StreamType,
+    event: Option<config::meta::search::SearchEventType>,
+) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let subject = infra::rbac::caller::current_subject().await?;
     authorize_subject_event(sql, org, stream_type, &subject, event).await?;
     Ok(())
 }

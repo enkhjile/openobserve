@@ -86,6 +86,46 @@ pub fn resources(pipeline: &Pipeline) -> Result<Vec<Resource>> {
     Ok(resources)
 }
 
+/// The ingest decision for each resource, for a verified user or this org's ingestion token.
+pub async fn allowed_ingest(
+    org: &str,
+    user: &IngestUser,
+    resources: &[Resource],
+) -> Result<Vec<bool>> {
+    match user {
+        IngestUser::User(email) => {
+            infra::rbac::allowed_resources(email, org, Action::Ingest, resources).await
+        }
+        IngestUser::OrgToken(principal) if principal.org_id == org => {
+            infra::rbac::allowed_ingestion_token_resources(org, &principal.token_id, resources)
+                .await
+        }
+        _ => bail!("Scoped ingestion identity required"),
+    }
+}
+
+/// Fails unless `user` may ingest into every resource.
+pub async fn authorize_ingest(org: &str, user: &IngestUser, resources: &[Resource]) -> Result<()> {
+    let decisions = allowed_ingest(org, user, resources).await?;
+    ensure!(
+        decisions.len() == resources.len() && decisions.into_iter().all(|allowed| allowed),
+        "Ingestion destination access denied"
+    );
+    Ok(())
+}
+
+/// Authorizes a log destination and every scoped pipeline output for `user`, before any write.
+pub async fn authorize_log_destinations(
+    org: &str,
+    stream: &str,
+    user: &IngestUser,
+) -> infra::errors::Result<Vec<ExecutablePipeline>> {
+    authorize_ingest(org, user, &[Resource::stream("logs", stream)])
+        .await
+        .map_err(infra::rbac::denied)?;
+    load(org, stream, user).await.map_err(infra::rbac::denied)
+}
+
 pub async fn validate_save(pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
     if !infra::rbac::enabled() {
         return Ok(());

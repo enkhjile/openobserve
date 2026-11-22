@@ -1001,27 +1001,7 @@ async fn generate_report(
         None
     };
     let browser_config = if let Some(profile) = &profile {
-        let cfg = get_config();
-        chromiumoxide::browser::BrowserConfig::builder()
-            .chrome_executable(&cfg.chrome.chrome_path)
-            .user_data_dir(profile.path())
-            .incognito()
-            .respect_https_errors()
-            .window_size(
-                cfg.chrome.chrome_window_width,
-                cfg.chrome.chrome_window_height,
-            )
-            .enable_request_intercept()
-            .disable_cache()
-            .args([
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-sync",
-                "--no-pings",
-                "--disable-quic",
-                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            ])
-            .build()
+        browser_scope::launch_config(profile.path())
             .map_err(|_| GenerateReportError::ScopedRenderingDenied)?
     } else {
         get_chrome_launch_options().await.as_ref().unwrap().clone()
@@ -1405,6 +1385,9 @@ fn validate_schedule(report: &mut Report) -> Result<(), ReportError> {
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "reports_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use chrono::Datelike;
@@ -1845,26 +1828,5 @@ mod tests {
             report.send_subscribers().await,
             Err(SendReportError::DashboardNotInOrg)
         ));
-    }
-    #[tokio::test]
-    async fn rbac_rejects_report_execution_without_scoped_identity() {
-        if std::env::var_os("O2_REPORT_RBAC_TEST_CHILD").is_none() {
-            assert!(!infra::rbac::enabled());
-            assert!(matches!(
-                Report::default().send_subscribers().await,
-                Err(SendReportError::NoDashboards)
-            ));
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "dashboards::reports::tests::rbac_rejects_report_execution_without_scoped_identity", "--nocapture"])
-                .env("O2_REPORT_RBAC_TEST_CHILD", "1").env("ZO_RBAC_ENABLED", "true").status().unwrap();
-            assert!(status.success());
-            return;
-        }
-        let error = Report::default().send_subscribers().await.unwrap_err();
-        assert!(
-            error.to_string().contains("scoped RBAC execution identity"),
-            "{error}"
-        );
-        assert_eq!(error.delivery_attempted(), Some(false));
     }
 }

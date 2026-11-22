@@ -54,12 +54,11 @@ pub async fn search_partition_mode(
     }
 
     // partition scan direction follows the query's ORDER BY
-    let sql = crate::sql::Sql::new_for_user(
+    let sql = crate::sql::Sql::new(
         &req.query.clone().try_into()?,
         org_id,
         stream_type,
         req.search_type,
-        Some(user_id),
     )
     .await?;
     let req_order_by = sql.order_by.first().map(|v| v.1).unwrap_or_default();
@@ -105,7 +104,7 @@ async fn search_stream_collect(
 ) -> Result<Response, infra::errors::Error> {
     let (tx, mut rx) = mpsc::channel(EVENT_CHANNEL_SIZE);
 
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.to_string(),
         org_id.to_string(),
         user_id.to_string(),

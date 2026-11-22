@@ -65,11 +65,7 @@ pub async fn search(
                 .user_id
                 .as_deref()
                 .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
-                        "Flight requires an execution identity".into(),
-                    ))
-                })?;
+                .ok_or_else(|| infra::rbac::denied("Flight requires an execution identity"))?;
             infra::rbac::authorize_user(
                 user,
                 &req.query_identifier.org_id,
@@ -78,11 +74,7 @@ pub async fn search(
             )
             .await
         };
-        decision.map_err(|e| {
-            Error::ErrorCode(infra::errors::ErrorCodes::AuthorizationDenied(
-                e.to_string(),
-            ))
-        })?;
+        decision.map_err(infra::rbac::denied)?;
     }
     let redaction = ScanRedaction::load(
         &req.query_identifier.org_id,

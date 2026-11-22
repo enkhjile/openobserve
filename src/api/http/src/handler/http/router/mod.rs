@@ -424,7 +424,10 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         parts.extensions.insert(caller);
     }
 
-    let mut response = next.run(Request::from_parts(parts, body)).await;
+    let response = next.run(Request::from_parts(parts, body));
+    let mut response = infra::rbac::caller::scope_user(&result.user_email, response)
+        .await
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response());
     if let Some(token_name) = result.token_name {
         response.extensions_mut().insert(
             openobserve_core::ingestion::rejections::RejectionTokenName(token_name),
