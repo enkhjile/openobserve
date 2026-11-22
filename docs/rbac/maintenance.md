@@ -46,6 +46,7 @@ With RBAC off, every hook below leaves upstream behaviour unchanged. A file whos
 | `src/api/management/src/request/{stream,service_accounts}/mod.rs`, `src/core/src/{users,organization}.rs` | Filter stream listings, and block cross-identity password resets and service-account takeover. |
 | `src/infra/src/db/nats.rs`, `src/infra/src/file_list/mod.rs`, `src/db/src/system_settings.rs` | Mechanical: string concatenations that a Casbin dependency made ambiguous. |
 | `web/src/views/{User,AddAlertView,Dashboards/Dashboards,Dashboards/ViewDashboard}.vue`, `web/src/components/alerts/AddAlert.vue`, `web/src/composables/useAlertForm.ts`, `web/src/services/http.ts`, `web/src/locales/languages/en-US.json` | IAM page, permission-aware controls, approved alert destinations and the access-denied message. |
+| `web/src/views/Dashboards/viewDashboard{,.timeRange}.spec.ts`, `src/infra/src/table/reports/queries.rs` (tests) | Run the dashboard specs as an RBAC-off server, and expect the recorded-identity column in report queries. |
 
 ## Updating from upstream
 
@@ -82,8 +83,6 @@ cargo test --no-fail-fast -p infra -p search_service -p openobserve-api-http -p 
   --lib -- rbac openapi_coverage handler::grpc::auth logs::otlp cache::tests
 cargo build
 ```
-
-`rbac_saved_view_listing_filters_metadata_and_revocation` currently fails because its fixture never adds the viewer's organization membership.
 
 Live suites against the compiled server, each on fresh loopback servers with temporary data (install `grpcio`, have `protoc` on the path, and Docker for PostgreSQL):
 

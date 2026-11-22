@@ -86,7 +86,7 @@ async fn rbac_saved_view_listing_filters_metadata_and_revocation() {
         return;
     }
     infra::db::create_table().await.unwrap();
-    infra::table::users::create_table().await.unwrap();
+    infra::table::create_user_tables().await.unwrap();
     let user = infra::table::users::UserRecord {
         email: "viewer@example.com".into(),
         first_name: String::new(),
@@ -105,6 +105,22 @@ async fn rbac_saved_view_listing_filters_metadata_and_revocation() {
     };
     infra::table::users::add(user).await.unwrap();
     let org = new_org();
+    infra::table::organizations::add(
+        &org,
+        "Saved view fixture",
+        config::meta::organization::OrganizationType::Default,
+    )
+    .await
+    .unwrap();
+    infra::table::org_users::add(
+        &org,
+        "viewer@example.com",
+        config::meta::user::UserRole::Viewer,
+        "fixture-token",
+        None,
+    )
+    .await
+    .unwrap();
     let (_, allowed) = create(&org, "visible", None).await;
     let (_, hidden) = create(&org, "secret-metadata", Some("traces")).await;
     let subject = infra::rbac::user_subject("viewer@example.com")
