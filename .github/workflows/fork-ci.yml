@@ -3,6 +3,9 @@ name: Fork CI
 
 on:
   pull_request:
+  # PRs restore caches only from their own branch or main, so main must save them.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -25,9 +28,12 @@ jobs:
       # The hosted image ships ~14 GB free; the workspace build needs more.
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-      - uses: actions/checkout@v5
+      # github-auth sets its own header; checkout v6+ keeps its copy outside .git/config, where github-auth cannot remove it.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/github-auth
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: nightly-2026-10-24
           components: rustfmt, clippy
@@ -35,10 +41,9 @@ jobs:
         with:
           shared-key: lint
           cache-on-failure: true
+      # .github/protoc.sh needs `uname -p`, which hosted runners leave unknown; noble ships the same 3.21.12.
       - name: Install protoc and libclang
-        run: |
-          bash ./.github/protoc.sh
-          sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev libclang-dev
       # The server embeds web/dist at compile time.
       - run: mkdir -p web/dist && touch web/dist/index.html
       - run: cargo fmt --all -- --check
@@ -56,9 +61,11 @@ jobs:
     steps:
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/github-auth
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: nightly-2026-10-24
           components: llvm-tools
@@ -67,9 +74,7 @@ jobs:
           shared-key: test
           cache-on-failure: true
       - name: Install protoc and libclang
-        run: |
-          bash ./.github/protoc.sh
-          sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev libclang-dev
       - run: mkdir -p web/dist && touch web/dist/index.html
       # Upstream's own test entry point: nextest over the whole workspace, one database per slot.
       - run: ./coverage.sh run-cov
@@ -79,11 +84,13 @@ jobs:
   web-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CYPRESS_INSTALL_BINARY: 0
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -100,11 +107,13 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    env:
+      CYPRESS_INSTALL_BINARY: 0
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -120,7 +129,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24

@@ -5,6 +5,8 @@ on:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+  push:
+    branches: [main]
 
 concurrency: upstream-sync
 
@@ -12,7 +14,30 @@ permissions:
   contents: read
 
 jobs:
+  # GitHub enables every workflow file new to main, so a merged sync can switch upstream ones back on.
+  disable-upstream-workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEEP: fork-ci.yml upstream-sync.yml fork-release.yml gitleaks.yml
+    steps:
+      - run: |
+          gh workflow list --repo "$GITHUB_REPOSITORY" --limit 500 --json id,path,state \
+            --jq '.[] | select(.state == "active") | "\(.id) \(.path)"' |
+          while read -r id file; do
+            case " $KEEP " in *" ${file##*/} "*) continue ;; esac
+            if gh workflow disable "$id" --repo "$GITHUB_REPOSITORY"; then
+              echo "Disabled $file" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not disable $file"
+            fi
+          done
+
   sync:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -22,7 +47,7 @@ jobs:
     steps:
       - name: Require SYNC_TOKEN
         run: '[ -n "$GH_TOKEN" ] || { echo "::error::Add the SYNC_TOKEN secret described in FORK.md"; exit 1; }'
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

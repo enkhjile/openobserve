@@ -10,12 +10,12 @@ An independent build of [OpenObserve](https://github.com/openobserve/openobserve
 
 ## CI
 
-Upstream workflows need runners only upstream has, so they are disabled in this repository's Actions settings; re-enable one with `gh workflow enable <name>`. Of upstream's workflows only `gitleaks` stays on, next to the fork's own:
+Upstream workflows need runners only upstream has, so `upstream-sync.yml` disables every workflow outside its `KEEP` list, including ones a sync brings in. Of upstream's workflows only `gitleaks` is kept; to run another, add its file name to `KEEP` and `gh workflow enable` it.
 
 | Workflow | Runs | Does |
 | --- | --- | --- |
-| `fork-ci.yml` | Every pull request | Rust fmt, clippy and the workspace tests; web format, lint, unit tests and Cypress specs |
-| `upstream-sync.yml` | Mondays 03:17 UTC, or on demand | Merges upstream `main` into the `sync/upstream` pull request |
+| `fork-ci.yml` | Every pull request and push to `main` | Rust fmt, clippy and the workspace tests; web format, lint, unit tests and Cypress specs |
+| `upstream-sync.yml` | Mondays 03:17 UTC, on demand, and on push to `main` | Merges upstream `main` into the `sync/upstream` pull request (not on push), and disables workflows outside `KEEP` |
 | `fork-release.yml` | Every pushed `v*` tag | Builds `deploy/build/Dockerfile` and pushes it to `ghcr.io/<owner>/openobserve` |
 
 ## Upstream sync
@@ -47,4 +47,4 @@ git tag -a v2026.11.23 -m "Release 2026.11.23" origin/main
 git push origin v2026.11.23
 ```
 
-The image is published as `ghcr.io/<owner>/openobserve:<tag>` and `:latest`. Upstream's versions keep advancing on `main`, so the tag is this fork's own version; a date works well. The first push creates a private package; make it public in the package settings if needed. Back up the metadata database before deploying a new image.
+The image is published as `ghcr.io/<owner>/openobserve:<tag>` and `:latest`. Upstream's versions keep advancing on `main`, so the tag is this fork's own version; a date works well. After the first release, check the package's visibility in its settings. Back up the metadata database before deploying a new image.
