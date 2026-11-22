@@ -57,6 +57,15 @@ fn compact_session_key(secret: &str) -> String {
     )
 }
 
+async fn users_with_email(email: &str) -> usize {
+    infra::table::entity::users::Entity::find()
+        .filter(infra::table::entity::users::Column::Email.eq(email))
+        .all(infra::db::get_orm_client_rw().await)
+        .await
+        .unwrap()
+        .len()
+}
+
 async fn establish(
     identity: VerifiedIdentity,
     headers: &HeaderMap,
@@ -304,12 +313,7 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
         establish(identity("case-lower", "race@example.com"), &empty),
     );
     assert_ne!(upper.is_ok(), lower.is_ok());
-    let rows = infra::table::entity::users::Entity::find()
-        .filter(infra::table::entity::users::Column::Email.eq("race@example.com"))
-        .all(infra::db::get_orm_client_rw().await)
-        .await
-        .unwrap();
-    assert_eq!(rows.len(), 1);
+    assert_eq!(users_with_email("race@example.com").await, 1);
     assert!(
         establish(identity("bad-email", "invalid-address"), &empty)
             .await
@@ -329,12 +333,7 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
             let resolved = oidc::resolve_session(&cookie(&secret), &Method::GET).await;
             assert_eq!(resolved.unwrap().user_id, first.user_id);
         }
-        let rows = infra::table::entity::users::Entity::find()
-            .filter(infra::table::entity::users::Column::Email.eq(email.as_str()))
-            .all(infra::db::get_orm_client_rw().await)
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(users_with_email(&email).await, 1);
     }
 
     let reserved_id = config::ider::uuid();
