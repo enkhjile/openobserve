@@ -150,6 +150,19 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         ("DELETE", "/api/{org_id}/pipelines/{pipeline_id}") => {
             Permission(Action::Delete, ResourceKind::Pipeline, "pipeline_id")
         }
+        (
+            "GET",
+            "/api/v2/{org_id}/folders/{folder_type}"
+            | "/api/v2/{org_id}/folders/{folder_type}/{folder_id}"
+            | "/api/v2/{org_id}/folders/{folder_type}/name/{folder_name}",
+        )
+        | ("PATCH", "/api/{org_id}/dashboards/move")
+        | ("PUT", "/api/{org_id}/folders/dashboards/{dashboard_id}")
+        | ("PATCH", "/api/v2/{org_id}/alerts/move" | "/api/v2/{org_id}/reports/move") => Member,
+        ("POST", "/api/v2/{org_id}/folders/{folder_type}")
+        | ("PUT" | "DELETE", "/api/v2/{org_id}/folders/{folder_type}/{folder_id}") => {
+            Permission(Action::Manage, Organization, "")
+        }
         ("GET", "/api/{org_id}/savedviews") => Member,
         ("POST", "/api/{org_id}/savedviews") => Permission(Action::Write, SavedQuery, "*"),
         ("GET", "/api/{org_id}/savedviews/{view_id}") => {
@@ -417,6 +430,12 @@ async fn authorize_enabled(
         .find(|(key, _)| *key == "org_id")
         .map(|(_, value)| value)
         .ok_or_else(forbidden)?;
+    if params
+        .iter()
+        .any(|(key, value)| key == "folder_type" && !folder_type_supported(value))
+    {
+        return Err(forbidden());
+    }
     match rule {
         Disposition::Identity => {}
         Disposition::Member => {
@@ -453,6 +472,10 @@ async fn authorize_enabled(
     }
     parts.extensions.insert(VerifiedUser(email.to_owned()));
     Ok(())
+}
+
+fn folder_type_supported(folder_type: &str) -> bool {
+    matches!(folder_type, "dashboards" | "alerts" | "reports")
 }
 
 fn resource_for(parts: &Parts, kind: ResourceKind, name: &str) -> Result<Resource, Response> {
@@ -679,6 +702,44 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn folders_list_for_members_change_for_admins_and_moves_check_each_object() {
+        let folders = "/api/v2/{org_id}/folders/{folder_type}";
+        let folder = "/api/v2/{org_id}/folders/{folder_type}/{folder_id}";
+        let by_name = "/api/v2/{org_id}/folders/{folder_type}/name/{folder_name}";
+        for (method, path) in [("GET", folders), ("GET", folder), ("GET", by_name)] {
+            assert_eq!(disposition(method, path), Disposition::Member, "{path}");
+        }
+        for (method, path) in [("POST", folders), ("PUT", folder), ("DELETE", folder)] {
+            assert_eq!(
+                disposition(method, path),
+                Disposition::Permission(Action::Manage, ResourceKind::Organization, ""),
+                "{method} {path}"
+            );
+        }
+        for (method, path) in [
+            ("PATCH", "/api/{org_id}/dashboards/move"),
+            ("PUT", "/api/{org_id}/folders/dashboards/{dashboard_id}"),
+            ("PATCH", "/api/v2/{org_id}/alerts/move"),
+            ("PATCH", "/api/v2/{org_id}/reports/move"),
+        ] {
+            assert_eq!(disposition(method, path), Disposition::Member, "{path}");
+        }
+        for supported in ["dashboards", "alerts", "reports"] {
+            assert!(folder_type_supported(supported));
+        }
+        for refused in [
+            "synthetics",
+            "workflows",
+            "prompts",
+            "downtimes",
+            "fleets",
+            "",
+        ] {
+            assert!(!folder_type_supported(refused), "{refused}");
+        }
+    }
+
     #[test]
     fn scoped_collections_delegate_to_permission_filtered_handlers() {
         for path in [

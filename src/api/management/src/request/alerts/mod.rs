@@ -4566,6 +4566,18 @@ pub async fn move_alerts(
     Headers(user_email): Headers<UserEmail>,
     Json(req_body): Json<MoveAlertsRequestBody>,
 ) -> Response {
+    if infra::rbac::enabled() {
+        let ids: Vec<String> = req_body.alert_ids.iter().map(ToString::to_string).collect();
+        let alerts = config::meta::folder::FolderType::Alerts;
+        // Anomaly configs have no RBAC resource, so a batch naming one is refused whole.
+        if !req_body.anomaly_config_ids.is_empty()
+            || infra::rbac::authorize_folder_move(&org_id, alerts, &ids, &req_body.dst_folder_id)
+                .await
+                .is_err()
+        {
+            return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+        }
+    }
     #[cfg(feature = "enterprise")]
     {
         let ids: Vec<String> = req_body.alert_ids.iter().map(ToString::to_string).collect();

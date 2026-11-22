@@ -1098,6 +1098,13 @@ pub async fn move_reports(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req): axum::Json<MoveReportsRequestBody>,
 ) -> Response {
+    let reports = config::meta::folder::FolderType::Reports;
+    if infra::rbac::authorize_folder_move(&org_id, reports, &req.report_ids, &req.dst_folder_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     let _user_id = user_email.user_id;
     #[cfg(feature = "enterprise")]
     for id in &req.report_ids {

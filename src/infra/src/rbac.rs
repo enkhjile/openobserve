@@ -16,6 +16,7 @@
 mod cache;
 pub mod caller;
 mod destinations;
+mod folders;
 mod pipelines;
 mod tokens;
 use anyhow::{Context, Result, ensure};
@@ -24,6 +25,7 @@ pub use destinations::{
     authorized_alert_destination_with_template, available_alert_destinations,
     replace_destination_approvals, validate_report_renderer,
 };
+pub use folders::{authorize_folder_move, visible_folders};
 use openobserve_rbac::Engine;
 pub use openobserve_rbac::{
     Action, DestinationApproval, Grant, PolicyDocument, Resource, ResourceKind, Role,
@@ -191,12 +193,23 @@ pub async fn readable_object_ids(
     if !enabled() {
         return Ok(None);
     }
-    let subject = user_subject(email).await?;
-    validate_subject(&subject, organization).await?;
+    readable_subject_object_ids(&user_subject(email).await?, organization, kind).await
+}
+
+/// [`readable_object_ids`] for an already resolved policy subject.
+pub async fn readable_subject_object_ids(
+    subject: &str,
+    organization: &str,
+    kind: ResourceKind,
+) -> Result<Option<std::collections::BTreeSet<String>>> {
+    if !enabled() {
+        return Ok(None);
+    }
+    validate_subject(subject, organization).await?;
     let document = read_policy(organization).await?;
     let engine = cache::engine(&document).await?;
     if engine.authorize(
-        &subject,
+        subject,
         organization,
         Action::Read,
         &Resource::new(kind, "*"),
@@ -211,7 +224,7 @@ pub async fn readable_object_ids(
         .flat_map(|grant| &grant.resources)
         .filter(|resource| resource.kind == kind)
     {
-        if engine.authorize(&subject, organization, Action::Read, resource)? {
+        if engine.authorize(subject, organization, Action::Read, resource)? {
             ids.insert(resource.name.clone());
         }
     }

@@ -443,6 +443,14 @@ pub async fn move_dashboard(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req_body): axum::Json<MoveDashboardRequestBody>,
 ) -> Response {
+    let ids = [dashboard_id.clone()];
+    let dashboards = config::meta::folder::FolderType::Dashboards;
+    if infra::rbac::authorize_folder_move(&org_id, dashboards, &ids, &req_body.to)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     if !ensure_dashboard_in_org(&org_id, &dashboard_id).await {
         return MetaHttpResponse::not_found("Dashboard not found");
     }
@@ -494,6 +502,16 @@ pub async fn move_dashboards(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req_body): axum::Json<MoveDashboardsRequestBody>,
 ) -> Response {
+    let (ids, dashboards) = (
+        &req_body.dashboard_ids,
+        config::meta::folder::FolderType::Dashboards,
+    );
+    if infra::rbac::authorize_folder_move(&org_id, dashboards, ids, &req_body.dst_folder_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     if !dashboards_db::all_dashboards_in_org(&org_id, &req_body.dashboard_ids).await {
         return MetaHttpResponse::not_found("Dashboard not found");
     }
