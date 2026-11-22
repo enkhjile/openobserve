@@ -1,0 +1,107 @@
+# Merges upstream main into a PR against this fork's main; see FORK.md.
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency: upstream-sync
+
+permissions:
+  contents: read
+
+# An explicit shell adds pipefail, so a failing gh before `| tee` or `| while` fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # GITHUB_TOKEN cannot push upstream's workflow changes, and its PRs would not start Fork CI.
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      # gh would otherwise target the `upstream` remote added below, i.e. openobserve/openobserve.
+      GH_REPO: ${{ github.repository }}
+      BRANCH: sync/upstream
+    steps:
+      - name: Require SYNC_TOKEN
+        run: '[ -n "$GH_TOKEN" ] || { echo "::error::Add the SYNC_TOKEN secret described in FORK.md"; exit 1; }'
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+      - name: Merge upstream main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/openobserve/openobserve.git
+          git fetch --no-tags upstream main
+          upstream=$(git rev-parse --short upstream/main)
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "main already contains upstream $upstream." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          pr=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          # An open sync PR keeps its branch, so review comments and fixes pushed to it survive.
+          if [ -n "$pr" ]; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -B "$BRANCH"
+          fi
+          if ! git merge --no-edit -m "chore: merge upstream main ($upstream)" upstream/main; then
+            {
+              echo "## Upstream $upstream conflicts with $BRANCH"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+              echo "Resolve locally as described in FORK.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ -n "$pr" ]; then
+            git push origin "$BRANCH"
+            echo "Updated PR #$pr with upstream $upstream." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+          git push origin "HEAD:refs/heads/$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "chore: merge upstream main ($upstream)" \
+            --body "Automated merge of openobserve/openobserve main at $upstream. Merge with a merge commit, never squash, so the next sync starts from here." \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Runs after the sync: GitHub enables workflow files new to main, and a sync PR runs the ones it adds.
+  disable-upstream-workflows:
+    needs: sync
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      KEEP: fork-ci.yml upstream-sync.yml fork-release.yml gitleaks.yml
+    steps:
+      # A new PR's workflow runs appear a few seconds after it opens.
+      - if: needs.sync.result == 'success'
+        run: sleep 60
+      - run: |
+          gh workflow list --limit 500 --json id,path,state \
+            --jq '.[] | select(.state == "active") | "\(.id) \(.path)"' |
+          while read -r id file; do
+            case " $KEEP " in *" ${file##*/} "*) continue ;; esac
+            gh run list --workflow "${file##*/}" --limit 100 --json databaseId,status \
+              --jq '.[] | select(.status != "completed") | .databaseId' < /dev/null |
+            while read -r run; do gh run cancel "$run" < /dev/null || true; done
+            if gh workflow disable "$id" < /dev/null; then
+              echo "Disabled $file" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not disable $file"
+            fi
+          done

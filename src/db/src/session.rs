@@ -242,7 +242,9 @@ pub async fn cache() -> Result<(), anyhow::Error> {
     let sessions_list = infra::table::sessions::list().await?;
 
     for session in sessions_list {
-        if !session.access_token.is_empty() {
+        if !session.session_id.starts_with(config::oidc::SESSION_PREFIX)
+            && !session.access_token.is_empty()
+        {
             USER_SESSIONS.insert(session.session_id.clone(), session.access_token);
             // Cache expiry time
             USER_SESSIONS_EXPIRY.insert(session.session_id, session.expires_at);

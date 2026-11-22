@@ -23,6 +23,7 @@ pub mod datafusion;
 pub mod ider;
 pub mod meta;
 pub mod metrics;
+pub mod oidc;
 pub mod prebuilt_loader;
 pub mod router;
 pub mod stats;

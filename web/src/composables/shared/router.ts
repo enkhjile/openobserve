@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import { routeGuard, getPath } from "@/utils/zincutils";
+import { routeGuard } from "@/utils/zincutils";
 import type { LocationQuery, LocationQueryRaw, RouteLocationRaw } from "vue-router";
 import config from "@/aws-exports";
 import { resolveTraceSearchMode, type TraceSearchMode } from "@/ts/interfaces/traces/trace.types";
@@ -33,8 +33,6 @@ import {
 import { PA_ROUTES, redirectHeatmaps } from "@/utils/rum/productAnalyticsRoutes";
 import { ALERT_LIST_ALL_FOLDERS } from "@/utils/alerts/alertListLink";
 import { PUBLIC_LINKS_FOLDER_ID } from "@/utils/dashboard/pseudoFolders";
-import { endSignedInSession } from "@/utils/drafts/signOutFlow";
-import { silenceUnloadPrompts } from "@/utils/sessionServices";
 import {
   PLAYLIST_TV_PATH,
   buildPlaylistQuery,
@@ -272,22 +270,15 @@ const useRoutes = () => {
     },
     {
       path: "/logout",
-      // vue-router drops a record with no component/children/redirect, which
-      // made this deep link a 404 — the component never renders (the guard
-      // hard-navigates first), it only keeps the record registrable.
-      component: Login,
-      beforeEnter(_to: any, _from: any, _next: any) {
-        // Clear backend auth cookies before redirecting to login. The redirect
-        // must run even if a clear throws, and must respect the app base —
-        // a bare "/login" 404s when the app is served under /web/.
-        try {
-          // Only the menu's sign-out confirms discarding drafts, so a direct link or a retried navigation keeps them, as an expired session does.
-          endSignedInSession(store, { keepDrafts: true });
-        } finally {
-          silenceUnloadPrompts();
-          window.location.href = `${getPath()}login`;
-        }
-      },
+      // An HttpOnly session can outlive its locally cached display profile.
+      meta: { public: true },
+      component: () => import("@/views/ConfirmSignOut.vue"),
+    },
+    {
+      path: "/oidc/cb",
+      // The view reads identity from the HttpOnly session and needs no cached profile.
+      meta: { public: true },
+      component: () => import("@/views/OidcCallback.vue"),
     },
     {
       path: "/cb",

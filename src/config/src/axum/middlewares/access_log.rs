@@ -225,10 +225,12 @@ where
                         resp.headers()
                             .iter()
                             .map(|(name, value)| {
-                                (
-                                    name.as_str().to_string(),
-                                    value.to_str().unwrap_or("-").to_string(),
-                                )
+                                let value = if name == axum::http::header::SET_COOKIE {
+                                    "[REDACTED]"
+                                } else {
+                                    value.to_str().unwrap_or("-")
+                                };
+                                (name.as_str().to_string(), value.to_string())
                             })
                             .collect()
                     } else {
@@ -310,6 +312,11 @@ where
 
 /// `url` as the access log may write it, with every known credential in it cut.
 pub fn mask_log_url(url: &str) -> String {
+    if let Some((path, _)) = url.split_once('?')
+        && crate::oidc::is_callback_path(path)
+    {
+        return path.to_owned();
+    }
     let masked = mask_slack_callback_query(&mask_share_tokens(url));
     if !masked.contains("api_key=") {
         return masked;
@@ -440,6 +447,12 @@ fn mask_query_values(url: &str, keys: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oidc_callback_query_is_omitted_from_request_and_referer_logs() {
+        let path = "https://example.test/observe/auth/oidc/callback";
+        assert_eq!(mask_log_url(&format!("{path}?code=a&state=b")), path);
+    }
 
     static LOG_LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;
@@ -636,6 +649,32 @@ mod tests {
             .expect("access line");
         assert!(line.contains("dd=[REDACTED]"), "{line}");
         assert!(!line.contains(secret), "{line}");
+    }
+
+    #[tokio::test]
+    async fn custom_response_headers_redact_set_cookie() {
+        let _ = log::set_logger(&CAPTURE_LOGGER);
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut svc = AccessLogLayer::new("cookies=%{sEt-CoOkIe}o id=%{X-Request-Id}o".into())
+            .layer(tower::service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(
+                    Response::builder()
+                        .header("Set-Cookie", "session=first")
+                        .header("Set-Cookie", "transaction=second")
+                        .header("X-Request-Id", "request-123")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        svc.call(Request::new(Body::empty())).await.unwrap();
+        let lines = LOG_LINES.lock().unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .find(|line| line.starts_with("cookies="))
+                .map(String::as_str),
+            Some("cookies=[REDACTED] id=request-123")
+        );
     }
 
     #[test]

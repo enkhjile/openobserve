@@ -157,6 +157,9 @@ async fn run() -> Result<(), anyhow::Error> {
             .expect("Failed to install rustls crypto provider");
     }
 
+    #[cfg(not(feature = "enterprise"))]
+    openobserve_core::extensions::oidc::init().await?;
+
     // init backend jobs
     let (job_init_tx, job_init_rx) = oneshot::channel();
     let (job_shutudown_tx, job_shutdown_rx) = oneshot::channel();

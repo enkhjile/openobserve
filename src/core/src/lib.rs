@@ -38,6 +38,7 @@ pub mod downtimes;
 use ::common;
 use ::db;
 pub mod error_suggest;
+pub mod extensions;
 use ::db::folders;
 #[cfg(feature = "enterprise")]
 pub mod fleet;

@@ -66,7 +66,7 @@ const makeRouter = () =>
   });
 
 const makeStore = () => ({
-  state: { userInfo: { email }, zoConfig: { rum: { enabled: true } } },
+  state: { userInfo: { email }, zoConfig: { oidc_enabled: false, rum: { enabled: true } } },
   dispatch: vi.fn(),
 });
 

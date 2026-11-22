@@ -16,6 +16,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import Login from "@/components/login/Login.vue";
+vi.mock("@/services/oidc", () => ({ default: { loginUrl: () => "/auth/oidc/login" } }));
 import i18n from "@/locales";
 import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";

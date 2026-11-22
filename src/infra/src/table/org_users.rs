@@ -547,11 +547,28 @@ pub async fn list_users_by_org(org_id: &str) -> Result<Vec<OrgUserRecord>, error
 }
 
 pub async fn list_orgs_by_user(email: &str) -> Result<Vec<UserOrgExpandedRecord>, errors::Error> {
-    let client = get_orm_client_ro().await;
-    let records = Entity::find()
-        .filter(
-            Expr::expr(Func::lower(Expr::col((Entity, Column::Email)))).eq(email.to_lowercase()),
-        )
+    let query = Entity::find().filter(
+        Expr::expr(Func::lower(Expr::col((Entity, Column::Email)))).eq(email.to_lowercase()),
+    );
+    list_orgs_with(get_orm_client_ro().await, query).await
+}
+
+/// Compare the canonical foreign key exactly so the (email, org_id) index serves session checks.
+pub async fn list_orgs_by_user_id(id: &str) -> Result<Vec<UserOrgExpandedRecord>, errors::Error> {
+    let email = Query::select()
+        .column(users::Column::Email)
+        .from(users::Entity)
+        .and_where(users::Column::Id.eq(id))
+        .to_owned();
+    let query = Entity::find().filter(Column::Email.in_subquery(email));
+    list_orgs_with(get_orm_client_rw().await, query).await
+}
+
+async fn list_orgs_with<C: ConnectionTrait>(
+    client: &C,
+    query: sea_orm::Select<Entity>,
+) -> Result<Vec<UserOrgExpandedRecord>, errors::Error> {
+    let records = query
         .order_by(Column::CreatedAt, Order::Desc)
         .inner_join(super::entity::organizations::Entity)
         .select_only()
