@@ -18,8 +18,9 @@ import {
   getPath,
   useLocalCurrentUser,
   useLocalUserInfo,
-  invalidateLoginData,
+  rememberRevokedProfile,
 } from "@/utils/zincutils";
+import { reportSignOutFailure, revokeServerSession } from "@/utils/serverSignOut";
 import { forgetLinkRequest } from "@/utils/slackLink";
 import {
   beginDraftSignOut,
@@ -30,11 +31,15 @@ import { countAllDraftsFor, endEditorDraftSession } from "@/utils/drafts/editorD
 import {
   silenceUnloadPrompts,
   stopSessionServices,
+  tryClearBrowserStorage,
   type SessionServicesStore,
 } from "@/utils/sessionServices";
 
 interface SignOutStore extends SessionServicesStore {
-  state: SessionServicesStore["state"] & { userInfo?: { email?: string } };
+  state: SessionServicesStore["state"] & {
+    userInfo?: { email?: string };
+    zoConfig?: { oidc_enabled?: boolean };
+  };
   dispatch: (type: "logout", payload?: { draftsOf?: string }) => unknown;
 }
 
@@ -53,17 +58,24 @@ export const reloadToLogin = (): void => {
 };
 
 /** Ends the signed-in session here: services stopped, login data gone and, unless kept, this user's drafts gone with no draft written after. */
-export const endSignedInSession = (
+export const endSignedInSession = async (
   store: SignOutStore,
-  { keepDrafts = false }: { keepDrafts?: boolean } = {},
-): void => {
+  {
+    keepDrafts = false,
+    awaitNativeLogout = false,
+  }: { keepDrafts?: boolean; awaitNativeLogout?: boolean } = {},
+): Promise<void> => {
+  await revokeServerSession(store, { confirmNative: awaitNativeLogout });
+  clearSignedInSession(store, keepDrafts);
+};
+
+const clearSignedInSession = (store: SignOutStore, keepDrafts: boolean): void => {
   const userEmail = String(store.state.userInfo?.email ?? "");
   stopSessionServices(store);
-  invalidateLoginData();
   // A deep-link first login keeps the flag for a later Home visit; it must not pass to the next user.
-  localStorage.removeItem("isFirstTimeLogin");
+  tryClearBrowserStorage(() => localStorage.removeItem("isFirstTimeLogin"));
   // the open sample tour is this user's; the full reload that follows drops its in-memory copy
-  localStorage.removeItem("o2_sample_tour");
+  tryClearBrowserStorage(() => localStorage.removeItem("o2_sample_tour"));
   if (keepDrafts) store.dispatch("logout");
   else {
     store.dispatch("logout", { draftsOf: userEmail });
@@ -71,6 +83,7 @@ export const endSignedInSession = (
   }
   useLocalCurrentUser("", true);
   useLocalUserInfo("", true);
+  tryClearBrowserStorage(rememberRevokedProfile);
   forgetLinkRequest();
 };
 
@@ -87,26 +100,28 @@ export const signOutThroughLeaveGuards = (
   { discardOnly = false, forced = false }: SignOutOptions = {},
 ): Promise<boolean> => {
   beginDraftSignOut({ discardOnly, forced });
-  let signedOut = false;
-  const endSession = () => {
-    if (signedOut) return;
-    signedOut = true;
-    endSignedInSession(store, { keepDrafts: forced });
-  };
+  let ending: Promise<void> | undefined;
+  const endSession = () => (ending ??= endSignedInSession(store, { keepDrafts: forced }));
   // Global guards run after the leave guards; a redirect would run every leave guard again, so the reload ends the navigation.
-  const removeGuard = router.beforeEach((to) => {
+  const removeGuard = router.beforeEach(async (to) => {
     removeGuard();
     if (to.path !== "/logout") return true;
-    endSession();
+    await endSession();
     return false;
   });
-  const finish = (refused: boolean) => {
+  const finish = async (refused: boolean) => {
     removeGuard();
-    if (refused && !forced && !signedOut) {
+    if (refused && !forced && !ending) {
       cancelDraftSignOut();
       return false;
     }
-    endSession();
+    try {
+      await endSession();
+    } catch {
+      cancelDraftSignOut();
+      reportSignOutFailure();
+      return false;
+    }
     reloadToLogin();
     return true;
   };

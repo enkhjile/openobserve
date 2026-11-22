@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod oidc;
+
 use axum::{
     body::Body,
     extract::Request,
@@ -762,6 +764,10 @@ pub async fn validate_credentials(
         return Ok(build_token_validation_response(&user));
     }
 
+    if !oidc::password_login_allowed(&user.email, user.role == UserRole::Root) {
+        return Ok(TokenValidationResponse::default());
+    }
+
     // Enforce native login restrictions only for password-based authentication
     // (Token authentication has already been checked above)
     #[cfg(feature = "enterprise")]
@@ -1056,6 +1062,9 @@ async fn validate_user_from_db(
     // let db_user = db::user::get_db_user(user_id).await;
     match db_user {
         Ok(mut user) => {
+            if !oidc::password_login_allowed(&user.email, is_root_user(&user.email)) {
+                return Err(AuthError::Forbidden("Not allowed".to_string()));
+            }
             // Only this branch is a raw password guess; the password_ext branches below are not.
             let password_check = if req_time.is_none() {
                 enforce_lockout_and_compare_password(&user.email, !user.is_external, || {
@@ -1352,6 +1361,9 @@ async fn oo_validator_internal(
     auth_info: &AuthExtractor,
     path_prefix: &str,
 ) -> Result<AuthValidationResult, AuthError> {
+    if oidc::has_session_cookie(&req_data.headers) {
+        return oidc::validate_session(req_data, auth_info, path_prefix).await;
+    }
     // Format: "Session::<session_id>::<actual_token>"
     let (is_from_session, auth_str) = match auth_info.auth.strip_prefix(SESSION_AUTH_MARKER) {
         Some(rest) => match rest.split_once("::") {

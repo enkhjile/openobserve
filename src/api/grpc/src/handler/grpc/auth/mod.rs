@@ -22,6 +22,7 @@ use infra::table::org_ingestion_tokens::{ORG_INGESTION_TOKEN_PREFIX, is_writer_t
 use openobserve_core::auth::get_hash;
 use openobserve_core::{
     auth::try_get_hash,
+    extensions::oidc::password_login_allowed,
     ingestion::feature_writer::{FeatureWriter, WRITER_METADATA_KEY},
 };
 use tonic::{
@@ -143,6 +144,7 @@ fn check_auth_inner(
         return attach_user_id(req, &user_id);
     }
     if user_id.eq(&user.email)
+        && password_login_allowed(&user.email, is_root_user(&user_id))
         && try_get_hash(&credentials.password, &user.salt).is_some_and(|h| h == user.password)
     {
         attach_user_id(req, &user_id)

@@ -41,6 +41,7 @@ use crate::{
         meta_store::MetaStore,
         stream::{DataRetentionDefaults, QueryPartitionStrategy, StreamType},
     },
+    oidc::StartupOidc,
     utils::{str::redact_dsn, sysinfo},
 };
 
@@ -1111,6 +1112,7 @@ impl<'de> Deserialize<'de> for FileFormatConfig {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Config {
+    pub oidc: StartupOidc,
     pub auth: Auth,
     pub http_streaming: HttpStreaming,
     pub report_server: ReportServer,

@@ -32,6 +32,7 @@ use config::{
 use openobserve_api_common::{auth::validator::AuthError, extractors::Headers};
 use openobserve_core::{
     auth::{UserEmail, generate_presigned_url, is_valid_email},
+    extensions::oidc,
     users,
 };
 use serde::Serialize;
@@ -689,7 +690,7 @@ context_path = "/auth",
     )
 )]
 pub async fn authentication(
-    #[cfg(feature = "enterprise")] headers: HeaderMap,
+    headers: HeaderMap,
     #[cfg(feature = "enterprise")] real_ip: Option<Extension<RealIp>>,
     #[cfg(feature = "enterprise")] Query(_query): Query<HashMap<String, String>>,
     auth: Option<axum::Json<SignInUser>>,
@@ -833,12 +834,16 @@ pub async fn authentication(
         } else {
             auth_cookie.set_same_site(SameSite::None);
         }
+        let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
+            return AuthError::Unavailable("Unable to switch login session".into()).into_response();
+        };
         // audit the successful login
         #[cfg(feature = "enterprise")]
         audit(audit_message).await;
         (
             StatusCode::OK,
             [(header::SET_COOKIE, auth_cookie.to_string())],
+            cleared,
             axum::Json(resp),
         )
             .into_response()
@@ -916,6 +921,9 @@ pub async fn get_presigned_url(
     };
 
     let cfg = get_config();
+    if !oidc::password_login_allowed(&user_id, db::user::is_root_user(&user_id)) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let time = chrono::Utc::now().timestamp();
     let password_ext_salt = &config::get_ext_auth_salt();
 

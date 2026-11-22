@@ -33,7 +33,10 @@ import {
 import { stopSessionServices } from "@/utils/sessionServices";
 
 vi.mock("@/services/config", () => ({
-  default: { get_config_full: vi.fn(() => new Promise(() => {})) },
+  default: {
+    get_config: vi.fn(async () => ({ data: { oidc_enabled: false } })),
+    get_config_full: vi.fn(() => new Promise(() => {})),
+  },
 }));
 vi.mock("@/utils/zincutils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/zincutils")>()),

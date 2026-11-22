@@ -1,0 +1,239 @@
+// Copyright 2026 OpenObserve Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use anyhow::Context;
+use axum::{
+    Json, Router,
+    extract::Query,
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
+    routing::{get, post},
+};
+use config::oidc::Oidc;
+use openobserve_core::extensions::oidc::{self, browser_transactions};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct Callback {
+    code: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Profile {
+    email: String,
+    name: String,
+    given_name: String,
+    family_name: String,
+    exp: i64,
+}
+
+/// Browser sign-in routes, mounted under `/auth` without authentication.
+pub fn routes() -> Router {
+    Router::new()
+        .route("/oidc/login", get(login))
+        .route("/oidc/callback", get(callback))
+        .route("/oidc/session", get(session))
+        .route("/oidc/logout", post(logout))
+}
+
+async fn login(headers: HeaderMap) -> Response {
+    let cfg = config::get_config();
+    if !cfg.oidc.enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if browser_transactions::pending_cookie_names(&headers, &cfg.oidc).len()
+        >= browser_transactions::MAX_BROWSER_TRANSACTIONS
+    {
+        return no_store(
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many sign-ins are open in this browser. Finish one of them, or wait up to \
+                 five minutes for one to expire, then try again.",
+            )
+                .into_response(),
+        );
+    }
+    let binding = oidc::random_secret();
+    let result = async {
+        let request = oidc::provider().await?.begin(&binding).await?;
+        let name = browser_transactions::cookie_for_state(&cfg.oidc, &request.state)
+            .context("invalid provider state")?;
+        browser_transactions::register(&binding).await?;
+        anyhow::Ok((request.url, name))
+    }
+    .await;
+    let (url, name) = match result {
+        Ok(started) => started,
+        Err(err) => {
+            log::warn!("[OIDC] sign-in could not start: {err:#}");
+            return unavailable();
+        }
+    };
+    let mut response = Redirect::temporary(&url).into_response();
+    let age = oidc::TRANSACTION_TTL.as_secs() as i64;
+    set_cookie(&mut response, &cfg.oidc, &name, &binding, age);
+    no_store(response)
+}
+
+async fn callback(headers: HeaderMap, Query(query): Query<Callback>) -> Response {
+    let cfg = config::get_config();
+    if !cfg.oidc.enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let transaction = query.state.as_deref().and_then(|state| {
+        browser_transactions::cookie_for_state(&cfg.oidc, state).map(|name| (state, name))
+    });
+    let result = async {
+        let (state, name) = transaction.as_ref().context("invalid OIDC state")?;
+        let binding = oidc::unique_cookie(&headers, name)?.context("missing OIDC transaction")?;
+        let code = query.code.as_deref().context("missing OIDC code")?;
+        let identity = oidc::provider()
+            .await?
+            .complete(code, state, binding)
+            .await?;
+        oidc::establish(identity, &headers, &browser_transactions::marker(binding)).await
+    }
+    .await;
+    let mut response = match result {
+        Ok((secret, session)) => {
+            let mut response =
+                Redirect::to(&format!("{}/web/oidc/cb", cfg.common.base_uri)).into_response();
+            let age = session.expires_at - chrono::Utc::now().timestamp();
+            set_cookie(
+                &mut response,
+                &cfg.oidc,
+                oidc::cookie_name(&cfg.oidc),
+                &secret,
+                age,
+            );
+            clear_native_cookies(&mut response, &cfg.oidc);
+            response
+        }
+        Err(err) => {
+            // The chain names the failed check; the callback query never enters it.
+            log::warn!("[OIDC] sign-in failed: {err:#}");
+            Redirect::to(&format!("{}/web/login?oidc_error=1", cfg.common.base_uri)).into_response()
+        }
+    };
+    if let Some((_, name)) = transaction {
+        set_cookie(&mut response, &cfg.oidc, &name, "", 0);
+    }
+    no_store(response)
+}
+
+async fn session(headers: HeaderMap) -> Response {
+    if !config::get_config().oidc.enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let (session, user) = match oidc::resolve_session_account(&headers, &Method::GET).await {
+        Ok(account) => account,
+        Err(err) if oidc::session_unavailable(&err) => return unavailable(),
+        Err(_) => return no_store(StatusCode::UNAUTHORIZED.into_response()),
+    };
+    no_store(
+        Json(Profile {
+            email: user.email,
+            name: format!("{} {}", user.first_name, user.last_name)
+                .trim()
+                .to_owned(),
+            given_name: user.first_name,
+            family_name: user.last_name,
+            exp: session.expires_at,
+        })
+        .into_response(),
+    )
+}
+
+async fn logout(headers: HeaderMap) -> Response {
+    let cfg = config::get_config();
+    if !cfg.oidc.enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if oidc::check_csrf(&headers, &Method::POST, &cfg.oidc.redirect_uri).is_err() {
+        return no_store(StatusCode::FORBIDDEN.into_response());
+    }
+    let Ok(cleared) = oidc::retire_browser_session(&headers).await else {
+        return unavailable();
+    };
+    let mut response = (StatusCode::NO_CONTENT, cleared).into_response();
+    clear_native_cookies(&mut response, &cfg.oidc);
+    no_store(response)
+}
+
+fn set_cookie(response: &mut Response, cfg: &Oidc, name: &str, value: &str, age: i64) {
+    let cookie = oidc::cookie_header(cfg, name, value, age);
+    response.headers_mut().append(header::SET_COOKIE, cookie);
+}
+
+/// The OIDC session replaces any native session this browser held.
+fn clear_native_cookies(response: &mut Response, cfg: &Oidc) {
+    for name in ["auth_tokens", "auth_ext"] {
+        set_cookie(response, cfg, name, "", 0);
+    }
+}
+
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
+fn unavailable() -> Response {
+    no_store(
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Single sign-on is unavailable. Please try again.",
+        )
+            .into_response(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_oidc_routes_do_not_issue_cookies() {
+        assert!(!config::get_config().oidc.enabled);
+        for (method, path) in [
+            ("GET", "/login"),
+            ("GET", "/session"),
+            ("GET", "/callback"),
+            ("POST", "/logout"),
+        ] {
+            let response = crate::handler::http::router::basic_routes()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("/auth/oidc{path}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+        }
+    }
+}
