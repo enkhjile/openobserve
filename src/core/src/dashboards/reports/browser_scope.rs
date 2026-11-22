@@ -183,6 +183,24 @@ pub(super) fn launch_config(profile: &std::path::Path) -> Result<chromiumoxide::
         .map_err(anyhow::Error::msg)
 }
 
+/// Waits until the login form exists and the web app has stopped replacing it while starting up.
+pub(super) async fn await_login_form(page: &Page) -> Result<()> {
+    const STABLE_PASSWORD_INPUT: &str = "(() => { \
+        const input = document.querySelector(\"input[type='password']\"); \
+        const stable = input !== null && window.__o2ReportLoginInput === input; \
+        window.__o2ReportLoginInput = input; \
+        return stable; })()";
+    for _ in 0..60 {
+        // Evaluation fails while a navigation replaces the document; the next poll retries.
+        let stable = page.evaluate(STABLE_PASSWORD_INPUT).await.ok();
+        if stable.and_then(|result| result.into_value::<bool>().ok()) == Some(true) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    anyhow::bail!("Report login form did not render")
+}
+
 async fn handle(
     page: &Page,
     event: &EventRequestPaused,

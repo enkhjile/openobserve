@@ -1038,6 +1038,10 @@ async fn generate_report(
     page.goto(&format!("{web_url}/login?login_as_internal_user=true"))
         .await?;
     page.disable_log().await?;
+    if browser_scope.is_some() {
+        let ready = browser_scope::await_login_form(&page).await;
+        ready.map_err(|_| GenerateReportError::ScopedRenderingDenied)?;
+    }
     log::debug!("headless: new page created");
 
     page.find_element("input[type='email']")

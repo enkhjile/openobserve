@@ -101,7 +101,7 @@ Each entry for a file that exists upstream states the behaviour its hook adds. R
 - `src/core/src/alerts/mod.rs`: With RBAC enabled, scheduled alert queries validate the stored execution identity, authorize their SQL and run as that identity; realtime evaluation and hybrid caching are refused or disabled.
 - `src/core/src/alerts/rbac.rs`
 - `src/core/src/alerts/templates.rs`: With RBAC enabled, template fallback stops at org boundaries, shared or non-custom templates cannot be updated, and foreign references are checked before local changes.
-- `src/core/src/dashboards/reports.rs`: With RBAC enabled, scheduled report sends require authorization, render in an isolated browser limited to the report's own requests, recheck recipients, and escape email content.
+- `src/core/src/dashboards/reports.rs`: With RBAC enabled, scheduled report sends require authorization, render in an isolated browser limited to the report's own requests that signs in only once the login form has settled, recheck recipients, and escape email content.
 - `src/core/src/dashboards/reports/browser_scope.rs`
 - `src/core/src/dashboards/reports/scoped.rs`
 - `src/core/src/http.rs`: Template authorization denials return an HTTP 403 "Access denied" response.
