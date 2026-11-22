@@ -57,7 +57,9 @@ pub(super) async fn validate_session(
     let Some(role) = oidc_role(&record, path, &req.method, is_root_user(&record.email)) else {
         return Err(AuthError::RoleRefused("Not allowed".into()));
     };
-    check_and_create_org(&record.email, &req.method, path, req.route.as_deref()).await?;
+    if !infra::rbac::enabled() {
+        check_and_create_org(&record.email, &req.method, path, req.route.as_deref()).await?;
+    }
     if !auth.bypass_check
         && !check_permissions(&record.email, auth.clone(), role.clone(), true).await
     {
@@ -132,6 +134,29 @@ mod tests {
                 "{}",
                 &before[guard..]
             );
+        }
+    }
+
+    /// With RBAC on, signing in must never create an organization, on either login path.
+    #[test]
+    fn org_auto_creation_is_skipped_while_rbac_is_enabled() {
+        for source in [include_str!("oidc.rs"), include_str!("../validator.rs")] {
+            let (production, _) = source.split_once("\n#[cfg(test)]\nmod tests {").unwrap();
+            let calls: Vec<usize> = production
+                .match_indices("check_and_create_org(")
+                .map(|(at, _)| at)
+                .filter(|&at| {
+                    !production[..at].ends_with("fn ") && !production[..at].ends_with("::")
+                })
+                .collect();
+            assert!(!calls.is_empty(), "expected an org auto-creation call");
+            for at in calls {
+                let guard = production[..at].rfind("if !infra::rbac::enabled() {");
+                assert!(
+                    guard.is_some_and(|g| !production[g..at].contains('}')),
+                    "org auto-creation must sit inside the RBAC guard"
+                );
+            }
         }
     }
 
