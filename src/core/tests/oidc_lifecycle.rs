@@ -315,6 +315,27 @@ async fn oidc_sessions_and_account_bindings_fail_closed() {
             .await
             .is_err()
     );
+    // Both callbacks of one new identity must share a reservation; repeated since timing varies.
+    for round in 0..4 {
+        let subject = format!("same-{round}");
+        let email = format!("{subject}@example.com");
+        let (first, second) = tokio::join!(
+            establish(identity(&subject, &email), &empty),
+            establish(identity(&subject, &email), &empty),
+        );
+        let ((first_secret, first), (second_secret, second)) = (first.unwrap(), second.unwrap());
+        assert_eq!(first.user_id, second.user_id);
+        for secret in [first_secret, second_secret] {
+            let resolved = oidc::resolve_session(&cookie(&secret), &Method::GET).await;
+            assert_eq!(resolved.unwrap().user_id, first.user_id);
+        }
+        let rows = infra::table::entity::users::Entity::find()
+            .filter(infra::table::entity::users::Column::Email.eq(email.as_str()))
+            .all(infra::db::get_orm_client_rw().await)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
 
     let reserved_id = config::ider::uuid();
     let binding_key = format!(
