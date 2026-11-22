@@ -866,6 +866,7 @@
     "loading": "Loading...",
     "getStartedRUM": "Get Started with RUM",
     "beta": "Beta",
+    "alpha": "Alpha",
     "optional": "optional",
     "play": "Play",
     "pause": "Pause",
@@ -14975,6 +14976,12 @@
       "moreGroups": "+{count}",
       "quickMuteTooltip": "Quick mute from an alert",
       "endedLabel": "ended"
+    },
+    "lease": {
+      "temporary": "Temporary, created by {who}, ends at {time}",
+      "incidentsOn": "Incident creation turned on by {who} until {time}",
+      "incidentsOff": "Incident creation turned off by {who} until {time}",
+      "why": "{label}. Why: {reason}"
     },
     "ack": {
       "acknowledge": "Acknowledge",
