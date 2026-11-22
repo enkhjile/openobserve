@@ -1,6 +1,6 @@
 # Modular OSS RBAC design
 
-Feature tier. Baseline: c828ccec7a43f58e98cc51e0838b745544a15789. Requirements: requirements.md.
+Feature tier. Baseline: c828ccec7a43f58e98cc51e0838b745544a15789.
 
 ## Architecture and permission map
 

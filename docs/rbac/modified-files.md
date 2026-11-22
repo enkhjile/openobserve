@@ -24,12 +24,10 @@ Each entry for a file that exists upstream states the behaviour its hook adds. R
 - `docs/rbac/identity-context.md`
 - `docs/rbac/modified-files.md`
 - `docs/rbac/operations.md`
-- `docs/rbac/requirements.md`
 - `docs/rbac/rpc.md`
 - `docs/rbac/scheduled-alerts.md`
 - `docs/rbac/scheduled-reports.md`
 - `docs/rbac/verification.md`
-- `docs/superpowers/plans/2026-11-20-rbac.md`
 
 ## Verification and CI
 
