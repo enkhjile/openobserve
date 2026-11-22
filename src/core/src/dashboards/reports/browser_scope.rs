@@ -190,15 +190,19 @@ pub(super) async fn await_login_form(page: &Page) -> Result<()> {
         const stable = input !== null && window.__o2ReportLoginInput === input; \
         window.__o2ReportLoginInput = input; \
         return stable; })()";
-    for _ in 0..60 {
-        // Evaluation fails while a navigation replaces the document; the next poll retries.
-        let stable = page.evaluate(STABLE_PASSWORD_INPUT).await.ok();
-        if stable.and_then(|result| result.into_value::<bool>().ok()) == Some(true) {
-            return Ok(());
+    let settled = async {
+        loop {
+            // Evaluation fails while a navigation replaces the document; the next poll retries.
+            let stable = page.evaluate(STABLE_PASSWORD_INPUT).await.ok();
+            if stable.and_then(|result| result.into_value::<bool>().ok()) == Some(true) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    anyhow::bail!("Report login form did not render")
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(15), settled)
+        .await
+        .context("Report login form did not render")
 }
 
 async fn handle(

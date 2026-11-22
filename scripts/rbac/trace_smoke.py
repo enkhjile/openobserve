@@ -53,6 +53,9 @@ def exercise_traces(root, viewer, ingester, org_path, streams, run_id, start_tim
     params = urllib.parse.urlencode({"start_time": start_time, "end_time": time.time_ns() // 1000 + 60000000, "size": 10})
     latest = expect(viewer, "Viewer latest traces returns scoped trace", "GET", f"{org_path}/{allowed}/traces/latest?{params}")
     require(trace_id in str(latest), "latest trace response missed ingested trace")
+    streamed = expect(viewer, "Viewer streamed trace listing returns scoped trace", "GET",
+                      f"{org_path}/{allowed}/traces/latest_stream?{params}")
+    require(trace_id in str(streamed), "streamed trace listing missed ingested trace")
     for client, stream in ((viewer, denied), (ingester, allowed)):
         expect(client, "trace listing denies missing Query scope", "GET", f"{org_path}/{stream}/traces/latest?{params}", status=403)
         expect(client, "streamed trace listing denies before producing data", "GET", f"{org_path}/{stream}/traces/latest_stream?{params}", status=403)

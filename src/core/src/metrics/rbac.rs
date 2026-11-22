@@ -31,11 +31,12 @@ pub(super) async fn authorize_batch(
     stream_name: Option<&str>,
     records: &[json::Value],
     user: &IngestUser,
-) -> infra::errors::Result<Vec<String>> {
+) -> Result<Vec<String>> {
     if !infra::rbac::enabled() {
         return Ok(Vec::new());
     }
-    let resources = batch_destinations(stream_name, records).map_err(infra::rbac::denied)?;
+    // A malformed record stays a bad request; only decisions become denials.
+    let resources = batch_destinations(stream_name, records)?;
     crate::pipeline::rbac::authorize_ingest(org_id, user, &resources)
         .await
         .map_err(infra::rbac::denied)?;
@@ -53,7 +54,8 @@ pub(super) async fn authorize_batch(
         {
             return Err(infra::rbac::denied(
                 "Metrics pipelines require a scoped execution adapter",
-            ));
+            )
+            .into());
         }
         names.push(resource.name);
     }

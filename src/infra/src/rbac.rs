@@ -177,12 +177,12 @@ pub async fn authorize_subject(
     Ok(())
 }
 
-/// A wildcard grant leaves the list unrestricted. Named grants must enter paginated queries by ID.
 /// Whether `id` is in a [`readable_object_ids`] result; `None` means every object is readable.
 pub fn readable(ids: &Option<std::collections::BTreeSet<String>>, id: &str) -> bool {
     ids.as_ref().is_none_or(|ids| ids.contains(id))
 }
 
+/// A wildcard grant leaves the list unrestricted. Named grants must enter paginated queries by ID.
 pub async fn readable_object_ids(
     email: &str,
     organization: &str,

@@ -62,6 +62,8 @@ def exercise_tokens(args, root, editor, org_path, policy, grants, streams, run_i
         expect(writer, "scoped org token writes named metrics", "POST", f"{org_path}/ingest/metrics/_json", [sample])
         expect(writer, "org token mixed metrics batch denied", "POST", f"{org_path}/ingest/metrics/_json",
                [sample, dict(sample, __name__=args.denied_metric)], status=403)
+        expect(writer, "malformed metric batch is a bad request, not a denial", "POST",
+               f"{org_path}/ingest/metrics/_json", [{"value": 1, "token_id": run_id}], status=400)
     from trace_smoke import span_batch
     import uuid
     expect(writer, "scoped org token writes authorized trace", "POST", f"{org_path}/v1/traces",

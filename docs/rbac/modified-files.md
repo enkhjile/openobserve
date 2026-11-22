@@ -84,6 +84,7 @@ Each entry for a file that exists upstream states the behaviour its hook adds. R
 - `src/api/search/src/search/search_stream.rs`: Background streaming producers keep the request's caller so their SQL is authorized for it.
 - `src/api/search/src/traces/list/query.rs`: With RBAC enabled, the trace-list time index is disabled so trace listing goes through the authorized search path.
 - `src/api/search/src/traces/mod.rs`: With RBAC enabled, trace queries require Query permission on the traces stream, trace writes use the verified org ingestion token, and an org header differing from the route org is rejected.
+- `src/api/search/src/traces/list/stream.rs`: The streamed trace listing's background task keeps the request's caller, so its search is authorized for that caller instead of being denied.
 
 ## Rust integration in config
 
