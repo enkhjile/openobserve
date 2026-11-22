@@ -48,6 +48,8 @@ jobs:
     env:
       # GITHUB_TOKEN cannot push upstream's workflow changes, and its PRs would not start Fork CI.
       GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      # gh would otherwise target the `upstream` remote added below, i.e. openobserve/openobserve.
+      GH_REPO: ${{ github.repository }}
       BRANCH: sync/upstream
     steps:
       - name: Require SYNC_TOKEN

@@ -14,7 +14,7 @@ Upstream workflows need runners only upstream has, so `upstream-sync.yml` disabl
 
 | Workflow | Runs | Does |
 | --- | --- | --- |
-| `fork-ci.yml` | Every pull request and push to `main` | Rust fmt, clippy and the workspace tests; web format, lint, unit tests and Cypress specs |
+| `fork-ci.yml` | Every pull request and push to `main`, for the areas the change touches | Rust fmt, clippy and the workspace tests; web format, lint, unit tests and Cypress specs |
 | `upstream-sync.yml` | Mondays 03:17 UTC, on demand, and on push to `main` | Merges upstream `main` into the `sync/upstream` pull request (not on push), and disables workflows outside `KEEP` |
 | `fork-release.yml` | Every pushed `v*` tag | Builds `deploy/build/Dockerfile` and pushes it to `ghcr.io/<owner>/openobserve` |
 
