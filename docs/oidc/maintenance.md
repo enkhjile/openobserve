@@ -31,7 +31,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/core/src/auth.rs` | Recognizes the session cookie in the request extractor. |
 | `src/api/common/src/auth/validator.rs` | Routes requests with the session cookie to `validator/oidc.rs`, and applies OIDC-only policy to human passwords. |
 | `src/api/grpc/src/handler/grpc/auth/mod.rs` | Applies OIDC-only policy to gRPC and OTLP passwords. |
-| `src/api/http/src/handler/http/router/mod.rs`, `src/api/http/src/lib.rs`, `.../openapi_coverage/excluded_routes.txt` | Mount `oidc::routes()`, pin the public `oidc_enabled` field, and exclude browser routes from the OpenAPI check. |
+| `src/api/http/src/handler/http/router/mod.rs`, `src/api/http/src/lib.rs` | Mount `oidc::routes()` and pin the public `oidc_enabled` field. The OpenAPI coverage test reads routes only from `router/mod.rs`, so the browser routes in `oidc.rs` need no exclusion. |
 | `src/api/management/src/request/users/mod.rs` | Applies native login policy, and revokes the browser's OIDC session on password login (`retire_browser_session`). |
 | `src/api/management/src/request/status/mod.rs` | Reports `oidc_enabled`, and folds OIDC-only policy into `native_login_enabled`. |
 | `src/config/src/axum/middlewares/access_log.rs`, `src/api/http/src/server.rs` | Drop callback queries from logs and traces (`oidc::is_callback_path`), and redact Set-Cookie values in custom access logs. |
