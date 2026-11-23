@@ -128,15 +128,15 @@ pub async fn authorize_log_destinations(
     load(org, stream, user).await.map_err(infra::rbac::denied)
 }
 
-pub async fn validate_save(pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+pub async fn validate_save(pipeline: &Pipeline) -> Result<()> {
     if !infra::rbac::enabled() {
         return Ok(());
     }
-    let subject =
-        subject.ok_or_else(|| anyhow::anyhow!("Pipeline requires a verified execution subject"))?;
+    // The saving request's caller becomes the identity the pipeline later runs as.
+    let subject = infra::rbac::caller::current_subject().await?;
     let execution = PipelineExecution {
         pipeline: pipeline.clone(),
-        subject: Some(subject.to_owned()),
+        subject: Some(subject),
     };
     authorize(&pipeline.org, &[execution], None).await
 }
@@ -292,6 +292,29 @@ mod tests {
             ],
             edges: vec![Edge::new("source".into(), "destination".into())],
         }
+    }
+
+    #[tokio::test]
+    async fn a_save_without_a_verified_caller_is_refused() {
+        if std::env::var_os("O2_RBAC_SAVE_CHILD").is_none() {
+            assert!(
+                validate_save(&local()).await.is_ok(),
+                "RBAC off saves as upstream"
+            );
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pipeline::rbac::tests::a_save_without_a_verified_caller_is_refused",
+                    "--nocapture",
+                ])
+                .env("O2_RBAC_SAVE_CHILD", "1")
+                .env("ZO_RBAC_ENABLED", "true")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert!(validate_save(&local()).await.is_err());
     }
 
     #[tokio::test]

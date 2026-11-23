@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS pipeline
         Ok(())
     }
 
-    async fn put(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+    async fn put(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
@@ -194,7 +195,8 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
         Ok(())
     }
 
-    async fn update(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+    async fn update(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
