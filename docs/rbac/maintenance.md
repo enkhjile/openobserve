@@ -9,7 +9,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/extensions/rbac` | Casbin model, roles and typed permission decisions, with engine tests |
 | `src/infra/src/rbac.rs`, `src/infra/src/rbac/` | Policy storage, stable identities, the request caller, ingestion tokens, delivery approvals, pipeline checks, the gRPC gate and shared helpers |
 | `src/infra/src/table/migration/m2026122*` | The three migrations that add the recorded execution identity to alerts, reports and pipelines |
-| `src/infra/src/pipeline/execution.rs` | Reads pipelines with their recorded identity, and records the saving request's caller as it |
+| `src/infra/src/pipeline/execution.rs` | Reads pipelines with their recorded identity, records the saving request's caller as it, and chooses insert or update from the primary store so a lagging replica cannot pair a new identity with an old definition |
 | `src/search/src/rbac.rs`, `src/promql_service/src/rbac.rs` | SQL and PromQL source authorization |
 | `src/core/src/{alerts,pipeline,metrics}/rbac.rs`, `src/db/src/alerts/templates/rbac.rs` | Scheduled alerts, pipelines, metric batches and organization-local templates |
 | `src/core/src/dashboards/reports/{scoped,browser_scope}.rs` | Scoped report rendering and its browser sandbox |

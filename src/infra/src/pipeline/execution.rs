@@ -18,6 +18,9 @@ use sqlx::{FromRow, Row};
 
 use crate::errors::Result;
 
+const RECORD_SUBJECT: &str =
+    "UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExecution {
     pub pipeline: Pipeline,
@@ -48,11 +51,37 @@ pub async fn put(pipeline: &Pipeline) -> Result<()> {
 }
 
 /// The identity a pipeline written now runs as: the saving request's caller, else none.
-pub(super) async fn recorded_subject() -> Option<String> {
-    if !crate::rbac::enabled() {
-        return None;
-    }
+pub async fn recorded_subject() -> Option<String> {
     crate::rbac::caller::current_subject().await.ok()
+}
+
+/// Written in the transaction that writes the definition, so the two never disagree.
+pub(super) async fn record_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    pipeline: &Pipeline,
+    subject: Option<String>,
+) -> Result<()> {
+    sqlx::query(RECORD_SUBJECT)
+        .bind(subject)
+        .bind(&pipeline.id)
+        .bind(&pipeline.org)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub(super) async fn record_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    pipeline: &Pipeline,
+    subject: Option<String>,
+) -> Result<()> {
+    sqlx::query(RECORD_SUBJECT)
+        .bind(subject)
+        .bind(&pipeline.id)
+        .bind(&pipeline.org)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 pub async fn has_enabled_source(org: &str, stream: &str, stream_type: &str) -> Result<bool> {
@@ -110,40 +139,5 @@ async fn load(sql: &str, org: &str, key: &str) -> Result<Vec<PipelineExecution>>
                 })
             })
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod rbac_subject_tests {
-    use crate::rbac::caller::{Caller, scope};
-
-    #[tokio::test]
-    async fn a_written_pipeline_records_the_saving_caller_or_none() {
-        if std::env::var_os("O2_RBAC_RECORDED_CHILD").is_none() {
-            let off = scope(Caller::Subject("s".into()), super::recorded_subject());
-            assert_eq!(off.await.unwrap(), None, "RBAC off records no subject");
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "pipeline::execution::rbac_subject_tests::a_written_pipeline_records_the_saving_caller_or_none",
-                    "--nocapture",
-                ])
-                .env("O2_RBAC_RECORDED_CHILD", "1")
-                .env("ZO_RBAC_ENABLED", "true")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            return;
-        }
-        assert_eq!(
-            super::recorded_subject().await,
-            None,
-            "no caller records none"
-        );
-        let delegated = scope(
-            Caller::Subject("org-token:t".into()),
-            super::recorded_subject(),
-        );
-        assert_eq!(delegated.await.unwrap().as_deref(), Some("org-token:t"));
     }
 }

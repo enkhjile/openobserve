@@ -500,29 +500,11 @@ pub async fn delete_pipeline_bulk(
 )]
 pub async fn update_pipeline(
     Path(org_id): Path<String>,
-    Headers(user_email): Headers<UserEmail>,
+    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
     Json(mut pipeline): Json<Pipeline>,
 ) -> Response {
     pipeline.org = org_id;
     let org_id = pipeline.org.clone();
-    if infra::rbac::enabled() {
-        let subject = match infra::rbac::user_subject(&user_email.user_id).await {
-            Ok(subject) => subject,
-            Err(_) => {
-                return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
-            }
-        };
-        // Checked before the update reveals whether the pipeline exists.
-        let target = infra::rbac::Resource::new(infra::rbac::ResourceKind::Pipeline, &pipeline.id);
-        let write = infra::rbac::Action::Write;
-        if infra::rbac::authorize_subject(&subject, &org_id, write, target)
-            .await
-            .is_err()
-        {
-            return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
-        }
-    }
-
     #[cfg(feature = "enterprise")]
     let check = StreamReadCheck {
         org_id: &org_id,

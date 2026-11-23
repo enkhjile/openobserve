@@ -181,12 +181,7 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
             return Err(e.into());
         }
 
-        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
-            .bind(subject)
-            .bind(&pipeline.id)
-            .bind(&pipeline.org)
-            .execute(&mut *tx)
-            .await?;
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");
@@ -275,12 +270,7 @@ UPDATE pipeline
             return Err(e.into());
         }
 
-        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
-            .bind(subject)
-            .bind(&pipeline.id)
-            .bind(&pipeline.org)
-            .execute(&mut *tx)
-            .await?;
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");

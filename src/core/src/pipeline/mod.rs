@@ -85,6 +85,12 @@ fn default_node_orgs(pipeline: &mut Pipeline) {
     }
 }
 
+fn rbac_refusal() -> PipelineError {
+    PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+        "Access denied by organization RBAC policy",
+    )))
+}
+
 /// A node's org is where runs read and write, so it must be the request's org.
 fn refuse_cross_org_node(pipeline: &Pipeline) -> Result<(), PipelineError> {
     match pipeline.cross_org_refusal() {
@@ -325,11 +331,9 @@ pub async fn save_pipeline_checked(
     #[cfg(not(feature = "enterprise"))]
     refuse_remote_node(&pipeline)?;
 
-    rbac::validate_save(&pipeline).await.map_err(|_| {
-        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
-            "Access denied by organization RBAC policy",
-        )))
-    })?;
+    rbac::validate_save(&pipeline)
+        .await
+        .map_err(|_| rbac_refusal())?;
     // Runs after validate(), which rebuilds source from the first node: checking
     // pipeline.source before that compares a value which is never persisted.
     // Evaluation pipelines: any number allowed, no exclusivity check
@@ -441,11 +445,9 @@ pub async fn update_pipeline_checked(
     validate_no_javascript_functions(&pipeline).await?;
 
     // Authorized before the stream-in-use check, whose answer would reveal other pipelines.
-    rbac::validate_save(&pipeline).await.map_err(|_| {
-        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
-            "Access denied by organization RBAC policy",
-        )))
-    })?;
+    rbac::validate_save(&pipeline)
+        .await
+        .map_err(|_| rbac_refusal())?;
     // additional checks when the source is changed
     let source_changed = existing_pipeline.source != pipeline.source;
     // check if the new source exists in another pipeline
@@ -487,6 +489,9 @@ pub async fn update_user_pipeline_checked(
     mut pipeline: Pipeline,
     check: Option<&dyn WriteCheck<Pipeline>>,
 ) -> Result<(), PipelineError> {
+    rbac::authorize_update(org_id, &pipeline.id)
+        .await
+        .map_err(|_| rbac_refusal())?;
     get_user_pipeline(org_id, &pipeline.id).await?;
     pipeline.kind = PipelineKind::User;
     update_pipeline_checked(pipeline, check).await
