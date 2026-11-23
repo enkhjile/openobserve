@@ -377,7 +377,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
     };
 
     // Validate authentication using extracted data
-    let result = match oo_validator(&req_data, &auth_info).await {
+    let mut result = match oo_validator(&req_data, &auth_info).await {
         Ok(result) => result,
         Err(e) => {
             let denial = auth_info.feature.and_then(license_denial);
@@ -390,13 +390,10 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         return denied;
     }
 
-    if let Some(principal) = result.ingestion_principal.clone() {
-        parts.extensions.insert(principal);
-    }
-
     if let Err(response) = rbac::authorize(
         &mut parts,
-        &result.user_email,
+        &auth_info.auth,
+        &mut result.user_email,
         result.user_role.is_some(),
         result.token_name.as_deref(),
     )

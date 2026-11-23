@@ -13,7 +13,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/search/src/rbac.rs`, `src/promql_service/src/rbac.rs` | SQL and PromQL source authorization |
 | `src/core/src/{alerts,pipeline,metrics}/rbac.rs`, `src/db/src/alerts/templates/rbac.rs` | Scheduled alerts, pipelines, metric batches and organization-local templates |
 | `src/core/src/dashboards/reports/{scoped,browser_scope}.rs` | Scoped report rendering and its browser sandbox |
-| `src/api/http/src/handler/http/router/rbac*.rs` | Route permissions, the RBAC management API and router-forwarding tests |
+| `src/api/http/src/handler/http/router/rbac*.rs` | Route permissions, org ingestion token identity, the RBAC management API and router-forwarding tests |
 | `**/*rbac_tests.rs` | RBAC regression tests that sit beside the upstream modules they test |
 | `web/src/components/iam/RbacPolicy.vue`, `web/src/composables/use{DashboardRbac,ApprovedAlertDestinations}.ts`, `web/src/services/rbac.ts` | IAM page, permission-aware UI, and their specs |
 | `scripts/rbac`, `tests/ui-testing/scripts/rbac-browser-smoke.cjs` | Live smoke suites and the endpoint inventory generator |
@@ -32,7 +32,7 @@ With RBAC off, every hook below leaves upstream behaviour unchanged. A file whos
 | `src/infra/src/lib.rs`, `src/infra/src/errors/mod.rs`, `src/core/src/http.rs` | Register the RBAC module, and keep authorization denials as HTTP 403 across RPC. |
 | `src/infra/src/table/{alerts,reports,entity,migration}/…`, `src/infra/src/pipeline/{mod,sqlite,postgres}.rs`, `src/core/src/pipeline/db.rs` | Store and read the recorded identity in the same transaction as the object. |
 | `src/infra/src/table/org_ingestion_tokens.rs`, `src/core/src/ingestion_tokens.rs`, `src/api/management/src/request/organization/ingestion_tokens.rs` | Re-read tokens from the primary store, and keep system and feature tokens out of grants. |
-| `src/api/common/src/auth/{validator,token,delegation}.rs`, `src/api/common/src/auth/validator/oidc.rs` | Resolve an org ingestion token to its own row, and stop logins, OIDC sessions included, from creating organizations while RBAC is on. |
+| `src/api/common/src/auth/validator.rs` | Stop logins, OIDC sessions included, from creating organizations while RBAC is on. |
 | `src/api/http/src/handler/http/router/mod.rs`, `src/api/http/src/router/http/mod.rs`, `openapi_coverage/{mod.rs,excluded_routes.txt}` | Apply the route gate after authentication, set the request caller, mount the RBAC API and the router-forwarding path, and keep the route inventory in step. |
 | `src/api/grpc/src/server.rs`, `src/api/grpc/src/handler/grpc/auth/mod.rs`, `request/{event,logs,otlp,metrics/querier}.rs`, `src/api/grpc/src/router/grpc/ingest/logs.rs` | Attach the gRPC gate, and accept only the caller's own credential for OTLP log export. |
 | `src/search/src/{lib.rs,sql/mod.rs,datafusion/…}`, `src/config/src/datafusion/request.rs`, `src/proto/proto/cluster/*.proto`, `src/proto/src/generated/cluster.rs` | Authorize every SQL source when a query is built, and carry the verified identity to other nodes. |
