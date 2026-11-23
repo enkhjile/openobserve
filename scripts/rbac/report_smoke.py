@@ -234,6 +234,15 @@ def run(binary, chrome):
         require(any(part.get_content_type() == "application/pdf" and part.get_payload(decode=True).startswith(b"%PDF")
                     for part in scheduled.walk()), "scheduled report did not deliver a PDF")
         print("PASS elected scheduler delivers approved scoped PDF", flush=True)
+        toggle = reports + "/" + report_id + "/enable"
+        saved_context = row("SELECT execution_context FROM reports WHERE id = ?", (report_id,))[0]
+        expect(root, "another Writer disables the report", "PATCH", toggle + "?value=false")
+        require(expect(author, "read disabled report", "GET", reports + "/" + report_id).get("enabled") is False,
+                "report disable did not apply")
+        expect(root, "another Writer re-enables the report", "PATCH", toggle + "?value=true")
+        require(row("SELECT execution_context FROM reports WHERE id = ?", (report_id,))[0] == saved_context,
+                "a toggle replaced the report's run-as identity")
+        print("PASS a toggled report keeps its author's identity", flush=True)
         grants = [grant for grant in grants if not (grant["subject"] == identities[author_email] and grant["role"] == "exporter")]
         policy = expect(root, "revoke author export", "PUT", org + "/rbac/policy",
                         {"expected_version": policy["version"], "grants": grants})

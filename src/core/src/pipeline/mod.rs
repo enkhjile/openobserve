@@ -619,7 +619,7 @@ pub async fn enable_pipeline(
         }
     }
 
-    pipeline::update(&pipeline, None).await?;
+    infra::pipeline::execution::keeping_subject(pipeline::update(&pipeline, None)).await?;
     Ok(())
 }
 
@@ -1043,5 +1043,45 @@ mod tests {
             "{enabled:?}"
         );
         assert!(still_disabled);
+    }
+
+    #[test]
+    fn rbac_enable_keeps_the_identity_the_pipeline_was_saved_with() {
+        crate::ssrf_test_support::isolated(
+            concat!(
+                module_path!(),
+                "::rbac_enable_keeps_the_identity_the_pipeline_was_saved_with"
+            ),
+            &[("ZO_RBAC_ENABLED", "true")],
+            || async {
+                use infra::rbac::caller::{Caller, scope};
+                if !meta_store().await {
+                    return;
+                }
+                let pipeline = test_pipeline("rbac_keep_pl", PipelineKind::User);
+                let as_subject = |name: &str| Caller::Subject(name.to_string());
+                let recorded = || async {
+                    let row = infra::pipeline::execution::by_id("test_org", "rbac_keep_pl").await;
+                    row.unwrap().unwrap().subject
+                };
+                let save = super::db::set(&pipeline);
+                scope(as_subject("saver"), save).await.unwrap().unwrap();
+                let toggle = super::enable_pipeline("test_org", &pipeline.id, false, false);
+                scope(as_subject("toggler"), toggle).await.unwrap().unwrap();
+                // A background caller, such as a scheduler pause, has no caller at all.
+                super::enable_pipeline("test_org", &pipeline.id, true, false)
+                    .await
+                    .unwrap();
+                assert_eq!(recorded().await.as_deref(), Some("saver"));
+                let save = super::db::set(&pipeline);
+                scope(as_subject("toggler"), save).await.unwrap().unwrap();
+                assert_eq!(
+                    recorded().await.as_deref(),
+                    Some("toggler"),
+                    "a save replaces it"
+                );
+                super::delete_pipeline(&pipeline.id).await.unwrap();
+            },
+        );
     }
 }
