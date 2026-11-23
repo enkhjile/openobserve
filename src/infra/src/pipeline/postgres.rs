@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS pipeline
         Ok(())
     }
 
-    async fn put(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+    async fn put(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
@@ -180,12 +181,7 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
             return Err(e.into());
         }
 
-        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
-            .bind(subject)
-            .bind(&pipeline.id)
-            .bind(&pipeline.org)
-            .execute(&mut *tx)
-            .await?;
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");
@@ -194,7 +190,8 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
         Ok(())
     }
 
-    async fn update(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+    async fn update(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
@@ -273,12 +270,7 @@ UPDATE pipeline
             return Err(e.into());
         }
 
-        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
-            .bind(subject)
-            .bind(&pipeline.id)
-            .bind(&pipeline.org)
-            .execute(&mut *tx)
-            .await?;
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");

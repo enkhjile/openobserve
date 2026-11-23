@@ -114,7 +114,7 @@ EXAMPLE - Simple pipeline with function:
 pub async fn save_pipeline(
     Path(org_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-    Headers(user_email): Headers<UserEmail>,
+    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
     Json(mut pipeline): Json<Pipeline>,
 ) -> Response {
     pipeline.name = pipeline.name.trim().to_lowercase();
@@ -129,23 +129,6 @@ pub async fn save_pipeline(
     }
     let pipeline_id = pipeline.id.to_string();
     let pipeline_name = pipeline.name.clone();
-    if infra::rbac::enabled() {
-        let subject = match infra::rbac::user_subject(&user_email.user_id).await {
-            Ok(subject) => subject,
-            Err(_) => {
-                return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
-            }
-        };
-        return match pipeline::save_user_pipeline_as_subject(pipeline, &subject).await {
-            Ok(()) => MetaHttpResponse::json(
-                MetaHttpResponse::message(StatusCode::OK, "Pipeline created successfully")
-                    .with_id(pipeline_id)
-                    .with_name(pipeline_name),
-            ),
-            Err(e) => e.into(),
-        };
-    }
-
     #[cfg(feature = "enterprise")]
     let saved = {
         let org_id = pipeline.org.clone();
@@ -517,36 +500,11 @@ pub async fn delete_pipeline_bulk(
 )]
 pub async fn update_pipeline(
     Path(org_id): Path<String>,
-    Headers(user_email): Headers<UserEmail>,
+    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
     Json(mut pipeline): Json<Pipeline>,
 ) -> Response {
     pipeline.org = org_id;
     let org_id = pipeline.org.clone();
-    if infra::rbac::enabled() {
-        let subject = match infra::rbac::user_subject(&user_email.user_id).await {
-            Ok(subject) => subject,
-            Err(_) => {
-                return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
-            }
-        };
-        // Checked before the update reveals whether the pipeline exists.
-        let target = infra::rbac::Resource::new(infra::rbac::ResourceKind::Pipeline, &pipeline.id);
-        let write = infra::rbac::Action::Write;
-        if infra::rbac::authorize_subject(&subject, &org_id, write, target)
-            .await
-            .is_err()
-        {
-            return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
-        }
-        return match pipeline::update_user_pipeline_as_subject(&org_id, pipeline, &subject).await {
-            Ok(()) => MetaHttpResponse::json(MetaHttpResponse::message(
-                StatusCode::OK,
-                "Pipeline updated successfully",
-            )),
-            Err(e) => e.into(),
-        };
-    }
-
     #[cfg(feature = "enterprise")]
     let check = StreamReadCheck {
         org_id: &org_id,

@@ -128,17 +128,31 @@ pub async fn authorize_log_destinations(
     load(org, stream, user).await.map_err(infra::rbac::denied)
 }
 
-pub async fn validate_save(pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+pub async fn validate_save(pipeline: &Pipeline) -> Result<()> {
     if !infra::rbac::enabled() {
         return Ok(());
     }
-    let subject =
-        subject.ok_or_else(|| anyhow::anyhow!("Pipeline requires a verified execution subject"))?;
+    // The subject authorized here is the one storage records for the pipeline to run as.
+    let subject = infra::pipeline::execution::recorded_subject().await;
+    ensure!(
+        subject.is_some(),
+        "Pipeline requires a verified execution subject"
+    );
     let execution = PipelineExecution {
         pipeline: pipeline.clone(),
-        subject: Some(subject.to_owned()),
+        subject,
     };
     authorize(&pipeline.org, &[execution], None).await
+}
+
+/// Checked before the pipeline is read, so a refusal never reveals whether it exists.
+pub async fn authorize_update(org: &str, id: &str) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let subject = infra::rbac::caller::current_subject().await?;
+    let target = Resource::new(ResourceKind::Pipeline, id);
+    infra::rbac::authorize_subject(&subject, org, Action::Write, target).await
 }
 
 pub async fn load(org: &str, stream: &str, user: &IngestUser) -> Result<Vec<ExecutablePipeline>> {
@@ -292,6 +306,21 @@ mod tests {
             ],
             edges: vec![Edge::new("source".into(), "destination".into())],
         }
+    }
+
+    #[test]
+    fn rbac_refuses_a_save_or_update_without_a_verified_caller() {
+        crate::ssrf_test_support::isolated(
+            concat!(
+                module_path!(),
+                "::rbac_refuses_a_save_or_update_without_a_verified_caller"
+            ),
+            &[("ZO_RBAC_ENABLED", "true")],
+            || async {
+                assert!(validate_save(&local()).await.is_err());
+                assert!(authorize_update("org", "pipe").await.is_err());
+            },
+        );
     }
 
     #[tokio::test]

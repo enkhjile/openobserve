@@ -9,7 +9,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | `src/extensions/rbac` | Casbin model, roles and typed permission decisions, with engine tests |
 | `src/infra/src/rbac.rs`, `src/infra/src/rbac/` | Policy storage, stable identities, the request caller, ingestion tokens, delivery approvals, pipeline checks, the gRPC gate and shared helpers |
 | `src/infra/src/table/migration/m2026122*` | The three migrations that add the recorded execution identity to alerts, reports and pipelines |
-| `src/infra/src/pipeline/execution.rs` | Reads pipelines with their recorded identity |
+| `src/infra/src/pipeline/execution.rs` | Reads pipelines with their recorded identity, records the saving request's caller as it, and chooses insert or update from the primary store so a lagging replica cannot pair a new identity with an old definition |
 | `src/search/src/rbac.rs`, `src/promql_service/src/rbac.rs` | SQL and PromQL source authorization |
 | `src/core/src/{alerts,pipeline,metrics}/rbac.rs`, `src/db/src/alerts/templates/rbac.rs` | Scheduled alerts, pipelines, metric batches and organization-local templates |
 | `src/core/src/dashboards/reports/{scoped,browser_scope}.rs` | Scoped report rendering and its browser sandbox |
@@ -30,7 +30,7 @@ With RBAC off, every hook below leaves upstream behaviour unchanged. A file whos
 | `src/config/src/config.rs` | The two `ZO_RBAC_*` settings and the schema version for the new migrations. |
 | `src/config/src/meta/{user,alerts/alert,dashboards/reports}.rs`, `src/ingestion_common/src/lib.rs` | Carry the verified ingestion-token identity and the recorded execution identity. |
 | `src/infra/src/lib.rs`, `src/infra/src/errors/mod.rs`, `src/core/src/http.rs` | Register the RBAC module, and keep authorization denials as HTTP 403 across RPC. |
-| `src/infra/src/table/{alerts,reports,entity,migration}/…`, `src/infra/src/pipeline/{mod,sqlite,postgres}.rs`, `src/core/src/pipeline/db.rs` | Store and read the recorded identity in the same transaction as the object. |
+| `src/infra/src/table/{alerts,reports,entity,migration}/…`, `src/infra/src/pipeline/{sqlite,postgres}.rs`, `src/core/src/pipeline/db.rs` | Store and read the recorded identity in the same transaction as the object. |
 | `src/infra/src/table/org_ingestion_tokens.rs`, `src/core/src/ingestion_tokens.rs`, `src/api/management/src/request/organization/ingestion_tokens.rs` | Re-read tokens from the primary store, and keep system and feature tokens out of grants. |
 | `src/api/common/src/auth/validator.rs` | Stop logins, OIDC sessions included, from creating organizations while RBAC is on. |
 | `src/api/http/src/handler/http/router/mod.rs`, `src/api/http/src/router/http/mod.rs`, `openapi_coverage/{mod.rs,excluded_routes.txt}` | Apply the route gate after authentication, set the request caller, mount the RBAC API and the router-forwarding path, and keep the route inventory in step. |

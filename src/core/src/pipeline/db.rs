@@ -98,11 +98,7 @@ struct BrokenPipeline {
 ///
 /// Pipeline validation should be handled by the caller.
 pub async fn set(pipeline: &Pipeline) -> Result<(), PipelineError> {
-    set_scoped(pipeline, None).await
-}
-
-pub async fn set_scoped(pipeline: &Pipeline, subject: Option<&str>) -> Result<(), PipelineError> {
-    infra_pipeline::execution::put(pipeline, subject).await?;
+    infra_pipeline::execution::put(pipeline).await?;
     update_cache(PipelineTableEvent::Add(pipeline)).await;
 
     Ok(())
@@ -115,20 +111,12 @@ pub async fn update(
     pipeline: &Pipeline,
     prev_source_stream: Option<StreamParams>,
 ) -> Result<(), PipelineError> {
-    update_scoped(pipeline, prev_source_stream, None).await
-}
-
-pub async fn update_scoped(
-    pipeline: &Pipeline,
-    prev_source_stream: Option<StreamParams>,
-    subject: Option<&str>,
-) -> Result<(), PipelineError> {
     if prev_source_stream.is_some() {
         // remove first since source stream changed
         update_cache(PipelineTableEvent::Remove(&pipeline.id)).await;
     }
 
-    infra_pipeline::execution::put(pipeline, subject).await?;
+    infra_pipeline::execution::put(pipeline).await?;
     update_cache(PipelineTableEvent::Add(pipeline)).await;
 
     Ok(())

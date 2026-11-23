@@ -18,6 +18,9 @@ use sqlx::{FromRow, Row};
 
 use crate::errors::Result;
 
+const RECORD_SUBJECT: &str =
+    "UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExecution {
     pub pipeline: Pipeline,
@@ -37,12 +40,48 @@ pub async fn by_id(org: &str, id: &str) -> Result<Option<PipelineExecution>> {
     )
 }
 
-pub async fn put(pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
+/// Chooses insert or update from the primary store, so a lagging replica cannot pair a new
+/// subject with an old definition.
+pub async fn put(pipeline: &Pipeline) -> Result<()> {
     if by_id(&pipeline.org, &pipeline.id).await?.is_some() {
-        super::CLIENT.update(pipeline, subject).await
+        super::CLIENT.update(pipeline).await
     } else {
-        super::CLIENT.put(pipeline, subject).await
+        super::CLIENT.put(pipeline).await
     }
+}
+
+/// The identity a pipeline written now runs as: the saving request's caller, else none.
+pub async fn recorded_subject() -> Option<String> {
+    crate::rbac::caller::current_subject().await.ok()
+}
+
+/// Written in the transaction that writes the definition, so the two never disagree.
+pub(super) async fn record_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    pipeline: &Pipeline,
+    subject: Option<String>,
+) -> Result<()> {
+    sqlx::query(RECORD_SUBJECT)
+        .bind(subject)
+        .bind(&pipeline.id)
+        .bind(&pipeline.org)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub(super) async fn record_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    pipeline: &Pipeline,
+    subject: Option<String>,
+) -> Result<()> {
+    sqlx::query(RECORD_SUBJECT)
+        .bind(subject)
+        .bind(&pipeline.id)
+        .bind(&pipeline.org)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 pub async fn has_enabled_source(org: &str, stream: &str, stream_type: &str) -> Result<bool> {
