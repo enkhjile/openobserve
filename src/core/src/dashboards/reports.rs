@@ -421,6 +421,12 @@ pub async fn trigger_by_id(
     user: &str,
 ) -> Result<TriggerData, ReportError> {
     let (_, report) = get_by_id(org_id, report_id).await?;
+    // A refused trigger answers 403 instead of recording a failed run.
+    if infra::rbac::enabled() {
+        scoped::authorize(&report)
+            .await
+            .map_err(|_| SendReportError::AuthorizationDenied)?;
+    }
     Ok(run_manually(&report, report_id, user).await)
 }
 
