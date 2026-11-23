@@ -324,7 +324,6 @@ pub async fn validate_delegated(
         user_email: claims.sub,
         user_role: Some(user.role),
         is_internal_user: !user.is_external,
-        ingestion_principal: None,
         token_name: None,
         delegation: Some(DelegatedCaller {
             link_id: claims.lid,

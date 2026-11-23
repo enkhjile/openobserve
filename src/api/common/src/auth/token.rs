@@ -231,7 +231,6 @@ pub async fn token_validator(
                             user_email: res.0.user_email.clone(),
                             user_role: None,
                             is_internal_user: false,
-                            ingestion_principal: None,
                             token_name: None,
                             delegation: None,
                         })
@@ -254,7 +253,6 @@ pub async fn token_validator(
                                 user_email,
                                 user_role: Some(user_role),
                                 is_internal_user: !is_external,
-                                ingestion_principal: None,
                                 token_name: None,
                                 delegation: None,
                             })

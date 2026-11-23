@@ -21,6 +21,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use infra::rbac::{self, Action, Resource, ResourceKind};
+use openobserve_api_common::auth::validator::AuthValidationResult;
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,15 +219,27 @@ pub(super) async fn route_gate(request: Request, next: Next) -> Response {
 
 pub(super) async fn authorize(
     parts: &mut Parts,
-    email: &str,
-    has_user_role: bool,
-    token_name: Option<&str>,
+    result: &mut AuthValidationResult,
 ) -> Result<(), Response> {
     if !rbac::enabled() {
-        parts.extensions.insert(VerifiedUser(email.to_owned()));
+        parts
+            .extensions
+            .insert(VerifiedUser(result.user_email.clone()));
         return Ok(());
     }
-    authorize_enabled(parts, email, has_user_role, token_name).await
+    if result.token_name.is_some() {
+        // A token acts as its own row; the username it was sent with must reach no caller.
+        result.user_email.clear();
+        let principal = ingestion_principal(parts).await?;
+        parts.extensions.insert(principal);
+    }
+    authorize_enabled(
+        parts,
+        &result.user_email,
+        result.user_role.is_some(),
+        result.token_name.as_deref(),
+    )
+    .await
 }
 
 pub(super) async fn me(
@@ -473,6 +486,47 @@ async fn authorize_enabled(
     Ok(())
 }
 
+/// The token row named by the request's Basic password, re-read so revocation applies at once.
+async fn ingestion_principal(
+    parts: &mut Parts,
+) -> Result<config::meta::user::OrgIngestionPrincipal, Response> {
+    let password = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .get(..6)
+                .filter(|scheme| scheme.eq_ignore_ascii_case("basic "))
+                .map(|_| &value[6..])
+        })
+        .and_then(|encoded| config::utils::base64::decode(encoded.trim()).ok())
+        .and_then(|decoded| Some(decoded.split_once(':')?.1.trim().to_owned()))
+        .ok_or_else(forbidden)?;
+    let params = RawPathParams::from_request_parts(parts, &())
+        .await
+        .map_err(|_| forbidden())?;
+    let org = params
+        .iter()
+        .find(|(key, _)| *key == "org_id")
+        .map(|(_, value)| value.to_owned())
+        .ok_or_else(forbidden)?;
+    let row = infra::table::org_ingestion_tokens::find_enabled_token_primary(&org, &password)
+        .await
+        .map_err(|_| forbidden())?
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"code": 401, "message": "Invalid ingestion credential"})),
+            )
+                .into_response()
+        })?;
+    Ok(config::meta::user::OrgIngestionPrincipal {
+        org_id: row.org_id,
+        token_id: row.id,
+    })
+}
+
 fn folder_type_supported(folder_type: &str) -> bool {
     matches!(folder_type, "dashboards" | "alerts" | "reports")
 }
@@ -510,6 +564,157 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    const TOKEN_ORG: &str = "token-org";
+
+    async fn token_probe(request: Request) -> Response {
+        let (mut parts, _) = request.into_parts();
+        let mut result = AuthValidationResult {
+            user_email: "root@example.test".into(),
+            user_role: None,
+            is_internal_user: true,
+            token_name: Some("collector".into()),
+            delegation: None,
+        };
+        if let Err(response) = authorize(&mut parts, &mut result).await {
+            return response;
+        }
+        let principal = parts
+            .extensions
+            .get::<config::meta::user::OrgIngestionPrincipal>()
+            .map(|principal| principal.token_id.clone());
+        Json(serde_json::json!({"email": result.user_email, "token": principal})).into_response()
+    }
+
+    async fn send_token(path: &str, token: &str) -> (StatusCode, serde_json::Value) {
+        let app = Router::new()
+            .route(
+                "/api/{org_id}/{stream_name}/_json",
+                axum::routing::post(token_probe),
+            )
+            .route("/api/{org_id}/streams", get(token_probe));
+        let method = if path.ends_with("/_json") {
+            "POST"
+        } else {
+            "GET"
+        };
+        let basic = config::utils::base64::encode(&format!("root@example.test:{token}"));
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Basic {basic}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// A token acts only as its own primary-store row, never as the username sent with it.
+    #[tokio::test]
+    async fn rbac_ingestion_token_drops_the_claimed_username_and_is_re_read() {
+        if std::env::var_os("O2_RBAC_TOKEN_CHILD").is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("rbac-token-{}", config::ider::uuid()));
+            let test = "handler::http::router::rbac::tests::rbac_ingestion_token_drops_the_claimed_username_and_is_re_read";
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test, "--nocapture"])
+                .env("O2_RBAC_TOKEN_CHILD", "1")
+                .env("ZO_RBAC_ENABLED", "true")
+                .env("ZO_DATA_DIR", &directory)
+                .status()
+                .unwrap();
+            if directory.exists() {
+                std::fs::remove_dir_all(directory).unwrap();
+            }
+            assert!(status.success());
+            return;
+        }
+        infra::db_init().await.unwrap();
+        infra::table::migrate().await.unwrap();
+        openobserve_core::organization::check_and_create_org_without_ofga(TOKEN_ORG)
+            .await
+            .unwrap();
+        infra::table::users::add(infra::table::users::UserRecord {
+            email: "root@example.test".into(),
+            first_name: String::new(),
+            last_name: String::new(),
+            password: String::new(),
+            salt: String::new(),
+            is_root: true,
+            password_ext: None,
+            user_type: config::meta::user::UserType::Internal,
+            created_at: 0,
+            updated_at: 0,
+            must_reset_password: false,
+            password_reset_reason: None,
+            flagged_at: None,
+            password_updated_at: None,
+        })
+        .await
+        .unwrap();
+        let token = format!(
+            "{}{}",
+            infra::table::org_ingestion_tokens::ORG_INGESTION_TOKEN_PREFIX,
+            config::ider::uuid()
+        );
+        let id = config::ider::uuid();
+        infra::table::org_ingestion_tokens::add(
+            &infra::table::org_ingestion_tokens::OrgIngestionTokenRecord {
+                id: id.clone(),
+                org_id: TOKEN_ORG.into(),
+                name: "collector".into(),
+                token: token.clone(),
+                description: String::new(),
+                is_default: false,
+                enabled: true,
+                created_by: "root@example.test".into(),
+                created_at: 0,
+                updated_at: 0,
+                splunk_token: None,
+            },
+        )
+        .await
+        .unwrap();
+        let policy = rbac::bootstrap("root@example.test", TOKEN_ORG)
+            .await
+            .unwrap();
+        let mut grants = policy.grants;
+        grants.push(rbac::Grant {
+            subject: format!("org-token:{id}"),
+            role: rbac::Role::Ingester,
+            resources: vec![Resource::stream("logs", "permitted")],
+        });
+        rbac::replace_policy("root@example.test", TOKEN_ORG, policy.version, grants)
+            .await
+            .unwrap();
+
+        let ingest = format!("/api/{TOKEN_ORG}/permitted/_json");
+        let (status, body) = send_token(&ingest, &token).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["email"], "", "the claimed username must not survive");
+        assert_eq!(body["token"], id.as_str());
+        let unknown = format!(
+            "{}unknown",
+            infra::table::org_ingestion_tokens::ORG_INGESTION_TOKEN_PREFIX
+        );
+        assert_eq!(
+            send_token(&ingest, &unknown).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let read = format!("/api/{TOKEN_ORG}/streams");
+        assert_eq!(send_token(&read, &token).await.0, StatusCode::FORBIDDEN);
+        infra::table::org_ingestion_tokens::set_enabled(TOKEN_ORG, "collector", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            send_token(&ingest, &token).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
 
     #[tokio::test]
     async fn ingestion_credential_cannot_be_used_as_a_user_without_an_adapted_route() {

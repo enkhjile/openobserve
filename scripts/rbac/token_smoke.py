@@ -50,10 +50,11 @@ def exercise_tokens(args, root, editor, org_path, policy, grants, streams, run_i
     accepted = expect(writer, "scoped org token writes allowed log stream", "POST", write_path, [{"token_id": run_id}])
     require(sum(item.get("successful", 0) for item in accepted.get("status", [])) == 1, "token write did not ingest sample")
     expect(writer, "org token cannot write restricted stream", "POST", f"{org_path}/{streams['finance']}/_json", [{"token_id": run_id}], status=403)
+    # Off its ingestion routes a token is not a credential at all, so authentication answers 401.
     for endpoint in ("rbac/me", "users", "ingestion-tokens"):
-        expect(writer, "org token cannot use identity or management APIs", "GET", f"{org_path}/{endpoint}", status=403)
+        expect(writer, "org token cannot use identity or management APIs", "GET", f"{org_path}/{endpoint}", status=401)
     expect(writer, "org token cannot query", "POST", f"{org_path}/_search?type=logs",
-           query_payload(f'SELECT * FROM "{streams["api"]}"', start_time), status=403)
+           query_payload(f'SELECT * FROM "{streams["api"]}"', start_time), status=401)
     other = args.second_disposable_org or "rbac_other_org"
     expect(writer, "org token cannot cross organization boundary", "POST",
            f"/api/{urllib.parse.quote(other, safe='')}/{streams['api']}/_json", [{"token_id": run_id}], status=401)
