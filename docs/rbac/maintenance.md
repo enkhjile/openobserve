@@ -7,7 +7,7 @@ The branch starts at upstream commit `c828ccec7a43f58e98cc51e0838b745544a15789`.
 | Path | Contents |
 | --- | --- |
 | `src/extensions/rbac` | Casbin model, roles and typed permission decisions, with engine tests |
-| `src/infra/src/rbac.rs`, `src/infra/src/rbac/` | Policy storage, stable identities, the request caller, ingestion tokens, delivery approvals, pipeline checks and shared helpers |
+| `src/infra/src/rbac.rs`, `src/infra/src/rbac/` | Policy storage, stable identities, the request caller, ingestion tokens, delivery approvals, pipeline checks, the gRPC gate and shared helpers |
 | `src/infra/src/table/migration/m2026122*` | The three migrations that add the recorded execution identity to alerts, reports and pipelines |
 | `src/infra/src/pipeline/execution.rs` | Reads pipelines with their recorded identity |
 | `src/search/src/rbac.rs`, `src/promql_service/src/rbac.rs` | SQL and PromQL source authorization |
@@ -34,7 +34,7 @@ With RBAC off, every hook below leaves upstream behaviour unchanged. A file whos
 | `src/infra/src/table/org_ingestion_tokens.rs`, `src/core/src/ingestion_tokens.rs`, `src/api/management/src/request/organization/ingestion_tokens.rs` | Re-read tokens from the primary store, and keep system and feature tokens out of grants. |
 | `src/api/common/src/auth/{validator,token,delegation}.rs`, `src/api/common/src/auth/validator/oidc.rs` | Resolve an org ingestion token to its own row, and stop logins, OIDC sessions included, from creating organizations while RBAC is on. |
 | `src/api/http/src/handler/http/router/mod.rs`, `src/api/http/src/router/http/mod.rs`, `openapi_coverage/{mod.rs,excluded_routes.txt}` | Apply the route gate after authentication, set the request caller, mount the RBAC API and the router-forwarding path, and keep the route inventory in step. |
-| `src/api/grpc/src/server.rs`, `src/api/grpc/src/handler/grpc/auth/mod.rs`, `request/{event,logs,otlp,query_cache,metrics/querier}.rs`, `src/api/grpc/src/router/grpc/ingest/logs.rs`, `src/node/src/cluster_info.rs` | Refuse RPCs that have no scoped check, and accept only the caller's own credential for OTLP log export. |
+| `src/api/grpc/src/server.rs`, `src/api/grpc/src/handler/grpc/auth/mod.rs`, `request/{event,logs,otlp,metrics/querier}.rs`, `src/api/grpc/src/router/grpc/ingest/logs.rs` | Attach the gRPC gate, and accept only the caller's own credential for OTLP log export. |
 | `src/search/src/{lib.rs,sql/mod.rs,datafusion/…}`, `src/config/src/datafusion/request.rs`, `src/proto/proto/cluster/*.proto`, `src/proto/src/generated/cluster.rs` | Authorize every SQL source when a query is built, and carry the verified identity to other nodes. |
 | `src/search_service/src/{lib,grpc_server,grpc_search}.rs`, `cache/mod.rs`, `grpc/flight/mod.rs`, `streaming/{mod,collect,execution}.rs` | Run searches as the verified caller, keep the caller in background search tasks, bypass the result cache, and refuse query functions. |
 | `src/api/search/src/search/{multi_streams,search_stream,saved_view}.rs`, `traces/{mod,details,list/query,list/stream}.rs`, `promql/mod.rs` | Authorize multi-stream batches, field values and trace and PromQL queries, keep the caller in streamed responses, skip the trace time index, and filter saved views. |
@@ -68,7 +68,7 @@ With RBAC off, every hook below leaves upstream behaviour unchanged. A file whos
    python3 scripts/rbac/endpoint_inventory.py --check
    ```
 
-6. If upstream added a `tokio::spawn` on a search path, use `infra::rbac::caller::spawn` there, or that search will be refused.
+6. If upstream added a `tokio::spawn` on a search path, use `infra::rbac::caller::spawn` there, or that search will be refused. New RPCs are refused by the gRPC gate; add one to its allowlist only once it checks its own caller.
 7. Run the [regression checks](#regression-checks), then record the upstream commit and results.
 
 ## Regression checks

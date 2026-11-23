@@ -173,9 +173,6 @@ impl Search for Searcher {
         &self,
         req: Request<GetTableRequest>,
     ) -> Result<Response<GetTableResponse>, Status> {
-        infra::rbac::deny_rpc_when_enabled(
-            "Table retrieval requires a scoped RBAC execution identity",
-        )?;
         let path = req.into_inner().path;
         if !::search::datafusion::distributed::codec::is_join_result_path(&path) {
             return Err(Status::invalid_argument("invalid table path"));
@@ -314,7 +311,6 @@ impl Search for Searcher {
         &self,
         req: Request<GetSourcemapFileRequest>,
     ) -> Result<Response<GetSourcemapFileResponse>, Status> {
-        infra::rbac::deny_rpc_when_enabled("Scoped execution identity required")?;
         let req = req.into_inner();
         log::info!(
             "got get request for sourcemap file : {}/{} at {}",

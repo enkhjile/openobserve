@@ -67,13 +67,6 @@ fn rbac_scoped_otlp_logs_requires_the_callers_own_credential() {
         .insert("user_id", "root@example.com".parse().unwrap());
     let verified = check_otlp_logs_auth(forged).unwrap();
     assert_eq!(user_ids(&verified), ["collector@example.com"]);
-    let other = basic_request(
-        "auth-otlp-rbac",
-        "collector@example.com",
-        "Collectorpass#123",
-    );
-    let status = check_otlp_auth(other).unwrap_err();
-    assert_eq!(status.code(), tonic::Code::PermissionDenied);
 }
 
 fn user_ids(request: &tonic::Request<()>) -> Vec<String> {

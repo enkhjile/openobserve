@@ -186,7 +186,6 @@ impl Event for Eventer {
         &self,
         request: Request<SimpleFileList>,
     ) -> Result<Response<Self::GetFilesStream>, Status> {
-        infra::rbac::deny_rpc_when_enabled("Scoped execution identity required")?;
         let file_list = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 

@@ -17,6 +17,7 @@ mod cache;
 pub mod caller;
 mod destinations;
 mod folders;
+pub mod grpc;
 mod pipelines;
 mod tokens;
 use anyhow::{Context, Result, ensure};
@@ -69,14 +70,6 @@ pub fn is_denied(error: &crate::errors::Error) -> bool {
         error,
         crate::errors::Error::ErrorCode(crate::errors::ErrorCodes::AuthorizationDenied(_))
     )
-}
-
-/// Refuses an RPC that has no scoped execution adapter while RBAC is enabled.
-pub fn deny_rpc_when_enabled(reason: &'static str) -> Result<(), tonic::Status> {
-    if enabled() {
-        return Err(tonic::Status::permission_denied(reason));
-    }
-    Ok(())
 }
 
 pub async fn user_subject(email: &str) -> Result<String> {

@@ -66,7 +66,6 @@ impl proto::cluster_rpc::cluster_info_service_server::ClusterInfoService for Clu
         &self,
         request: Request<GetDeleteJobStatusRequest>,
     ) -> Result<Response<GetDeleteJobStatusResponse>, Status> {
-        infra::rbac::deny_rpc_when_enabled("Scoped execution identity required")?;
         let req = request.into_inner();
 
         // Get the key from the database

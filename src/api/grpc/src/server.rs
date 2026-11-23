@@ -93,7 +93,9 @@ async fn run_common(
     );
     let incoming = TcpIncoming::from(bind_listener(gaddr, init_tx).await?).with_nodelay(Some(true));
 
-    let mut builder = server_builder()?.layer(otel_layer());
+    let mut builder = server_builder()?
+        .layer(otel_layer())
+        .layer(infra::rbac::grpc::GateLayer::new());
     let ret = builder
         .add_routes(common_routes())
         .serve_with_incoming_shutdown(incoming, async {
@@ -256,7 +258,9 @@ async fn run_router(
     );
     let incoming = TcpIncoming::from(bind_listener(gaddr, init_tx).await?).with_nodelay(Some(true));
 
-    let mut builder = server_builder()?.layer(otel_layer());
+    let mut builder = server_builder()?
+        .layer(otel_layer())
+        .layer(infra::rbac::grpc::GateLayer::new());
     let ret = builder
         .add_service(logs_svc)
         .add_service(metrics_svc)
