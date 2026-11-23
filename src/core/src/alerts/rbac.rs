@@ -61,7 +61,6 @@ pub async fn bind(alert: &mut Alert, org: &str, email: &str) -> Result<()> {
     alert.org_id = org.to_owned();
     validate_shape(alert)?;
     let subject = infra::rbac::user_subject(email).await?;
-    infra::rbac::validate_subject(&subject, &alert.org_id).await?;
     infra::rbac::authorize_subject(
         &subject,
         &alert.org_id,
@@ -102,16 +101,13 @@ pub async fn authorize_execution(alert: &Alert) -> Result<Vec<Resource>> {
     let id = alert
         .id
         .ok_or_else(|| anyhow::anyhow!("Missing alert identity"))?;
-    infra::rbac::validate_subject(subject, &alert.org_id).await?;
-    for action in [Action::Read, Action::Write] {
-        infra::rbac::authorize_subject(
-            subject,
-            &alert.org_id,
-            action,
-            Resource::new(ResourceKind::Alert, &id.to_string()),
-        )
-        .await?;
-    }
+    infra::rbac::authorize_subject_all(
+        subject,
+        &alert.org_id,
+        &[Action::Read, Action::Write],
+        &[Resource::new(ResourceKind::Alert, &id.to_string())],
+    )
+    .await?;
     let client = infra::db::get_orm_client_rw().await;
     let (_, current) = db::alerts::alert::get_by_id(client, &alert.org_id, id)
         .await?

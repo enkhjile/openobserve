@@ -120,15 +120,13 @@ pub(super) async fn authorize(report: &Report) -> Result<Scope> {
         serde_json::to_value(&current)? == serde_json::to_value(report)?,
         "Report revision changed"
     );
-    for action in [Action::Read, Action::Write] {
-        infra::rbac::authorize_subject(
-            &context.author_subject,
-            &report.org_id,
-            action,
-            Resource::new(ResourceKind::Report, &id),
-        )
-        .await?;
-    }
+    infra::rbac::authorize_subject_all(
+        &context.author_subject,
+        &report.org_id,
+        &[Action::Read, Action::Write],
+        &[Resource::new(ResourceKind::Report, &id)],
+    )
+    .await?;
     snapshot(report).await
 }
 

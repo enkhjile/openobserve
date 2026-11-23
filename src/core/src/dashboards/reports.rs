@@ -738,16 +738,7 @@ pub trait SendReport {
 impl SendReport for Report {
     /// Sends the report to subscribers
     async fn send_subscribers(&self) -> Result<SendOutcome, SendReportError> {
-        check_send(self).await?;
-        let scoped = if infra::rbac::enabled() {
-            Some(
-                scoped::authorize(self)
-                    .await
-                    .map_err(|_| SendReportError::AuthorizationDenied)?,
-            )
-        } else {
-            None
-        };
+        let scoped = checked_scope(self).await?;
 
         let cfg = get_config();
         let mut recipients = vec![];
@@ -950,15 +941,25 @@ pub enum GenerateReportError {
 
 /// The checks a send runs before it renders anything, so a caller can answer them first.
 pub async fn check_send(report: &Report) -> Result<(), SendReportError> {
-    if infra::rbac::enabled() {
-        scoped::authorize(report)
-            .await
-            .map_err(|_| SendReportError::AuthorizationDenied)?;
-    }
+    checked_scope(report).await.map(drop)
+}
+
+/// [`check_send`], keeping the RBAC scope it authorized for the render.
+async fn checked_scope(report: &Report) -> Result<Option<scoped::Scope>, SendReportError> {
+    let scope = if infra::rbac::enabled() {
+        Some(
+            scoped::authorize(report)
+                .await
+                .map_err(|_| SendReportError::AuthorizationDenied)?,
+        )
+    } else {
+        None
+    };
     if report.dashboards.is_empty() {
         return Err(SendReportError::NoDashboards);
     }
-    ensure_dashboards_readable(&report.org_id, &report.dashboards).await
+    ensure_dashboards_readable(&report.org_id, &report.dashboards).await?;
+    Ok(scope)
 }
 
 async fn generate_report(

@@ -119,7 +119,7 @@ pub async fn available_alert_destinations(
     );
     super::validate_subject(subject, org).await?;
     let policy = super::read_policy(org).await?;
-    let engine = Engine::new(&policy).await?;
+    let engine = super::cache::engine(&policy).await?;
     ensure!(
         engine.authorize(
             subject,
@@ -182,7 +182,7 @@ pub async fn authorized_alert_destination_with_template(
     super::validate_subject(subject, org).await?;
     let policy = super::read_policy(org).await?;
     ensure!(!sources.is_empty(), "delivery authorization denied");
-    let engine = Engine::new(&policy).await?;
+    let engine = super::cache::engine(&policy).await?;
     for source in sources {
         ensure!(
             source.kind == ResourceKind::Stream && source.name != "*" && source.stream_type != "*",

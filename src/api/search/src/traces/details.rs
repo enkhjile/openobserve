@@ -243,9 +243,13 @@ pub async fn get_trace_details(
     };
     let http_span = Span::none();
     let request_trace_id = get_or_create_trace_id(&headers, &http_span);
-    let index_range = match super::time_index::query(&org_id, &stream_name, &trace_id, hint_ts)
-        .await
-    {
+    // RBAC cannot authorize the derived index stream, so callers supply the time range instead.
+    let index_lookup = if infra::rbac::enabled() {
+        Ok(None)
+    } else {
+        super::time_index::query(&org_id, &stream_name, &trace_id, hint_ts).await
+    };
+    let index_range = match index_lookup {
         Ok(range) => range,
         Err(e) => {
             log::error!(

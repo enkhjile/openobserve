@@ -62,6 +62,17 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         | ("POST", "/api/{org_id}/_search_multi_stream")
         | ("POST", "/api/{org_id}/_search_partition")
         | ("POST", "/api/{org_id}/_search_partition_multi") => Query,
+        ("GET" | "POST", "/api/{org_id}/{stream_name}/_around")
+        | ("GET", "/api/{org_id}/{stream_names}/_around_multi")
+        | ("POST", "/api/{org_id}/_values_stream" | "/api/{org_id}/result_schema")
+        | (
+            "GET",
+            "/api/{org_id}/{stream_name}/traces/{trace_id}/details"
+            | "/api/{org_id}/{stream_name}/traces/{trace_id}/dag",
+        ) => Query,
+        ("GET", "/api/{org_id}/{stream_name}/_values") => {
+            Permission(Action::Query, Stream, "stream_name")
+        }
         ("GET" | "POST", "/api/{org_id}/prometheus/api/v1/query")
         | ("GET" | "POST", "/api/{org_id}/prometheus/api/v1/query_range") => MetricsQuery,
         ("GET", "/api/organizations") => Identity,
@@ -184,6 +195,14 @@ pub(super) fn forbidden() -> Response {
     }))).into_response()
 }
 
+/// Any RBAC error is a denial, so callers never learn which check failed.
+pub(super) fn json_or_forbidden<T: serde::Serialize>(result: anyhow::Result<T>) -> Response {
+    match result {
+        Ok(body) => Json(body).into_response(),
+        Err(_) => forbidden(),
+    }
+}
+
 pub(super) async fn require_enabled_forwarding(request: Request, next: Next) -> Response {
     if !rbac::enabled() {
         return forbidden();
@@ -216,29 +235,22 @@ pub(super) async fn me(
         return Json(serde_json::json!({"enabled": false, "can_manage": false, "grants": []}))
             .into_response();
     }
-    let result = async {
-        let can_manage = rbac::authorize_user(&user.0, &org, Action::Manage, Resource::organization()).await.is_ok();
+    json_or_forbidden(async {
         let subject = rbac::user_subject(&user.0).await?;
+        let can_manage = rbac::authorize_subject(&subject, &org, Action::Manage, Resource::organization()).await.is_ok();
         rbac::validate_subject(&subject, &org).await?;
         let policy = rbac::read_policy(&org).await?;
         let grants: Vec<_> = policy.grants.into_iter().filter(|grant| grant.subject == subject).collect();
         anyhow::ensure!(!grants.is_empty(), "No organization grants");
-        Ok::<_, anyhow::Error>(Json(serde_json::json!({"enabled": true, "subject": subject, "version": policy.version, "grants": grants, "can_manage": can_manage})))
-    }.await;
-    match result {
-        Ok(body) => body.into_response(),
-        Err(_) => forbidden(),
-    }
+        Ok(serde_json::json!({"enabled": true, "subject": subject, "version": policy.version, "grants": grants, "can_manage": can_manage}))
+    }.await)
 }
 
 pub(super) async fn get_policy(Path(org): Path<String>) -> Response {
     if !rbac::enabled() {
         return forbidden();
     }
-    match rbac::read_policy(&org).await {
-        Ok(policy) => Json(policy).into_response(),
-        Err(_) => forbidden(),
-    }
+    json_or_forbidden(rbac::read_policy(&org).await)
 }
 
 pub(super) async fn put_policy(
@@ -246,26 +258,16 @@ pub(super) async fn put_policy(
     axum::Extension(user): axum::Extension<VerifiedUser>,
     Json(update): Json<PolicyUpdate>,
 ) -> Response {
-    if !rbac::enabled() {
-        return forbidden();
-    }
-    match rbac::replace_policy(&user.0, &org, update.expected_version, update.grants).await {
-        Ok(policy) => Json(policy).into_response(),
-        Err(_) => forbidden(),
-    }
+    json_or_forbidden(
+        rbac::replace_policy(&user.0, &org, update.expected_version, update.grants).await,
+    )
 }
 
 pub(super) async fn bootstrap(
     Path(org): Path<String>,
     axum::Extension(user): axum::Extension<VerifiedUser>,
 ) -> Response {
-    if !rbac::enabled() {
-        return forbidden();
-    }
-    match rbac::bootstrap(&user.0, &org).await {
-        Ok(policy) => Json(policy).into_response(),
-        Err(_) => forbidden(),
-    }
+    json_or_forbidden(rbac::bootstrap(&user.0, &org).await)
 }
 
 pub(super) async fn organizations(
@@ -306,13 +308,10 @@ pub(super) async fn organizations(
                 search_threshold: THRESHOLD,
             })
             .collect();
-        Ok::<_, anyhow::Error>(Json(OrganizationResponse { data }))
+        Ok::<_, anyhow::Error>(OrganizationResponse { data })
     }
     .await;
-    match result {
-        Ok(body) => body.into_response(),
-        Err(_) => forbidden(),
-    }
+    json_or_forbidden(result)
 }
 
 pub(super) async fn subjects(Path(org): Path<String>) -> Response {
@@ -325,13 +324,10 @@ pub(super) async fn subjects(Path(org): Path<String>) -> Response {
         for token in rbac::ingestion_token_subjects(&org).await? {
             subjects.push(serde_json::json!({"subject": token.subject, "name": token.name, "kind": "ingestion_token"}));
         }
-        Ok::<_, anyhow::Error>(Json(subjects))
+        Ok::<_, anyhow::Error>(subjects)
     }
     .await;
-    match result {
-        Ok(body) => body.into_response(),
-        Err(_) => forbidden(),
-    }
+    json_or_forbidden(result)
 }
 
 pub(super) fn canonical_route(path: &str) -> &str {
@@ -437,7 +433,6 @@ async fn authorize_enabled(
         return Err(forbidden());
     }
     match rule {
-        Disposition::Identity => {}
         Disposition::Member => {
             let subject = rbac::user_subject(email).await.map_err(|_| forbidden())?;
             rbac::validate_subject(&subject, org)
@@ -468,7 +463,9 @@ async fn authorize_enabled(
                 .await
                 .map_err(|_| forbidden())?;
         }
-        Disposition::Public | Disposition::Unsupported => return Err(forbidden()),
+        Disposition::Identity | Disposition::Public | Disposition::Unsupported => {
+            return Err(forbidden());
+        }
     }
     parts.extensions.insert(VerifiedUser(email.to_owned()));
     Ok(())
@@ -738,6 +735,38 @@ mod tests {
         ] {
             assert!(!folder_type_supported(refused), "{refused}");
         }
+    }
+
+    #[test]
+    fn search_helpers_check_their_streams_and_index_lookups_stay_refused() {
+        for (method, path) in [
+            ("GET", "/api/{org_id}/{stream_name}/_around"),
+            ("POST", "/api/{org_id}/{stream_name}/_around"),
+            ("GET", "/api/{org_id}/{stream_names}/_around_multi"),
+            ("POST", "/api/{org_id}/_values_stream"),
+            ("POST", "/api/{org_id}/result_schema"),
+            (
+                "GET",
+                "/api/{org_id}/{stream_name}/traces/{trace_id}/details",
+            ),
+            ("GET", "/api/{org_id}/{stream_name}/traces/{trace_id}/dag"),
+        ] {
+            assert_eq!(disposition(method, path), Disposition::Query, "{path}");
+        }
+        assert_eq!(
+            disposition("GET", "/api/{org_id}/{stream_name}/_values"),
+            Disposition::Permission(Action::Query, ResourceKind::Stream, "stream_name")
+        );
+        for path in [
+            "/api/{org_id}/traces/time_range",
+            "/api/{org_id}/{stream_name}/traces/time_range",
+        ] {
+            assert_eq!(disposition("GET", path), Disposition::Unsupported, "{path}");
+        }
+        assert_eq!(
+            disposition("POST", "/api/{org_id}/_search_history"),
+            Disposition::Unsupported
+        );
     }
 
     #[test]

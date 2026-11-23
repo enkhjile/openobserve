@@ -24,11 +24,7 @@ pub async fn authorize_pipeline_permissions(
     let mut subjects = std::collections::HashSet::new();
     for (subject, ..) in permissions {
         if subjects.insert(subject) {
-            if openobserve_rbac::token_subject_id(subject)?.is_some() {
-                super::tokens::validate_subject_if_token(subject, org).await?;
-            } else {
-                super::validate_subject(subject, org).await?;
-            }
+            super::validate_subject(subject, org).await?;
         }
     }
     let document = super::read_policy(org).await?;

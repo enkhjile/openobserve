@@ -22,7 +22,7 @@ use crate::{
     db,
     table::{
         entity::org_ingestion_tokens,
-        org_ingestion_tokens::{WRITER_TOKEN_CREATOR, WRITER_TOKEN_PREFIX},
+        org_ingestion_tokens::{WRITER_TOKEN_CREATOR, is_writer_token_name},
     },
 };
 
@@ -40,9 +40,7 @@ pub async fn ingestion_token_subjects(org: &str) -> Result<Vec<IngestionTokenSub
         .await?;
     Ok(rows
         .into_iter()
-        .filter(|row| {
-            !row.name.starts_with(WRITER_TOKEN_PREFIX) && row.created_by != WRITER_TOKEN_CREATOR
-        })
+        .filter(|row| !is_writer_token_name(&row.name) && row.created_by != WRITER_TOKEN_CREATOR)
         .filter_map(|row| {
             let subject = format!("org-token:{}", row.id);
             openobserve_rbac::token_subject_id(&subject).ok()?;
@@ -64,13 +62,6 @@ pub async fn allowed_ingestion_token_resources(
     super::allowed_subject_resources(&subject, org_id, Action::Ingest, resources).await
 }
 
-pub(super) async fn validate_subject_if_token(subject: &str, org: &str) -> Result<()> {
-    if let Some(id) = openobserve_rbac::token_subject_id(subject)? {
-        validate_token_on(db::get_orm_client_rw().await, id, org).await?;
-    }
-    Ok(())
-}
-
 pub(super) async fn validate_token_on<C: ConnectionTrait>(
     client: &C,
     id: &str,
@@ -83,7 +74,7 @@ pub(super) async fn validate_token_on<C: ConnectionTrait>(
         .await?
         .context("ingestion token authorization denied")?;
     ensure!(
-        !row.name.starts_with(WRITER_TOKEN_PREFIX) && row.created_by != WRITER_TOKEN_CREATOR,
+        !is_writer_token_name(&row.name) && row.created_by != WRITER_TOKEN_CREATOR,
         "feature writer token cannot receive user policy grants"
     );
     Ok(())

@@ -769,6 +769,13 @@ pub async fn values_http2_stream(
         }
     };
     // Build search requests per field and use only the first one
+    // Checked before the schema read, whose missing-field reply would reveal the stream's fields.
+    let stream = infra::rbac::Resource::stream(stream_type.as_str(), &values_req.stream_name);
+    if let Err(error) =
+        infra::rbac::authorize_user(&user_id, &org_id, infra::rbac::Action::Query, stream).await
+    {
+        return MetaHttpResponse::forbidden(error);
+    }
     let reqs = match build_search_request_per_field(
         &values_req,
         &org_id,
@@ -1028,6 +1035,9 @@ async fn get_sql(
     search::sql::Sql::new(&query.clone().try_into()?, org_id, stream_type, search_type).await
 }
 
+#[cfg(test)]
+#[path = "search_stream_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use axum::{

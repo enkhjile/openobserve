@@ -266,15 +266,8 @@ pub async fn validator(
         Ok(res) => {
             if res.is_valid {
                 // Check and create organization if needed
-                if !infra::rbac::enabled() {
-                    check_and_create_org(
-                        user_id,
-                        &req_data.method,
-                        path,
-                        req_data.route.as_deref(),
-                    )
+                check_and_create_org(user_id, &req_data.method, path, req_data.route.as_deref())
                     .await?;
-                }
 
                 #[cfg(feature = "enterprise")]
                 let path = path.to_owned();
@@ -1016,6 +1009,10 @@ async fn check_and_create_org(
     path: &str,
     route: Option<&str>,
 ) -> Result<(), AuthError> {
+    // Under RBAC no login, password or OIDC, may create an organization.
+    if infra::rbac::enabled() {
+        return Ok(());
+    }
     let cfg = get_config();
     let mut path_columns = path.split('/').collect::<Vec<&str>>();
     if let Some(v) = path_columns.first()

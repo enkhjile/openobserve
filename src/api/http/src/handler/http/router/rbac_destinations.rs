@@ -13,15 +13,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use axum::{
-    Extension, Json,
-    extract::Path,
-    response::{IntoResponse, Response},
-};
+use axum::{Extension, Json, extract::Path, response::Response};
 use infra::rbac;
 use serde::Deserialize;
 
-use super::rbac::VerifiedUser;
+use super::rbac::{VerifiedUser, json_or_forbidden};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,20 +54,12 @@ pub(super) async fn available(
         .await
     }
     .await;
-    match result {
-        Ok(names) => Json(
-            names
-                .into_iter()
-                .map(|name| serde_json::json!({"name":name}))
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        Err(_) => (
-            axum::http::StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error":"Access denied","reason":"rbac_denied"})),
-        )
-            .into_response(),
-    }
+    json_or_forbidden(result.map(|names| {
+        names
+            .into_iter()
+            .map(|name| serde_json::json!({"name":name}))
+            .collect::<Vec<_>>()
+    }))
 }
 
 pub(super) async fn put(
@@ -79,19 +67,13 @@ pub(super) async fn put(
     Extension(user): Extension<VerifiedUser>,
     Json(update): Json<ApprovalUpdate>,
 ) -> Response {
-    match rbac::replace_destination_approvals(
-        &user.0,
-        &org,
-        update.expected_version,
-        update.approvals,
-    )
-    .await
-    {
-        Ok(policy) => Json(policy).into_response(),
-        Err(_) => (
-            axum::http::StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error":"Access denied","reason":"rbac_denied"})),
+    json_or_forbidden(
+        rbac::replace_destination_approvals(
+            &user.0,
+            &org,
+            update.expected_version,
+            update.approvals,
         )
-            .into_response(),
-    }
+        .await,
+    )
 }

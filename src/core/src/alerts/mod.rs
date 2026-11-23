@@ -152,7 +152,6 @@ impl QueryConditionExt for QueryCondition {
         if infra::rbac::enabled() {
             rbac::validate_query(self)?;
             let subject = execution_subject.ok_or(alert::AlertError::PermissionDenied)?;
-            infra::rbac::validate_subject(subject, org_id).await?;
             search::rbac::authorize_subject(
                 self.sql.as_deref().unwrap_or_default(),
                 org_id,

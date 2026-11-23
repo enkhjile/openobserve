@@ -66,73 +66,6 @@ pub fn reject_query_fn(present: bool) -> Result<(), infra::errors::Error> {
     Ok(())
 }
 
-pub fn reject_custom_functions(sql: &str, forbidden: &[String]) -> Result<()> {
-    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)?;
-    let mut guard = FunctionGuard { forbidden };
-    if let ControlFlow::Break(name) = statements.visit(&mut guard) {
-        anyhow::bail!("Custom function {name} requires a scoped RBAC adapter");
-    }
-    Ok(())
-}
-
-pub fn required_actions(
-    event: Option<config::meta::search::SearchEventType>,
-) -> &'static [infra::rbac::Action] {
-    if event == Some(config::meta::search::SearchEventType::Download) {
-        &[infra::rbac::Action::Query, infra::rbac::Action::Export]
-    } else {
-        &[infra::rbac::Action::Query]
-    }
-}
-
-pub fn checked_sources(sql: &str) -> Result<Vec<TableReference>> {
-    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)?;
-    ensure!(
-        statements.len() == 1 && matches!(&statements[0], Statement::Query(_)),
-        "RBAC requires one SELECT query"
-    );
-    ensure!(
-        matches!(
-            statements.visit(&mut SourceGuard),
-            ControlFlow::Continue(())
-        ),
-        "RBAC requires named streams; table functions and special table sources are unsupported"
-    );
-    let sources = config::meta::sql::resolve_stream_names_with_type(sql)?;
-    ensure!(!sources.is_empty(), "RBAC requires explicit source streams");
-    for source in &sources {
-        ensure!(
-            source.catalog().is_none(),
-            "cross-catalog queries are not authorized"
-        );
-        if let Some(schema) = source.schema() {
-            ensure!(
-                matches!(schema, "logs" | "metrics" | "traces" | "enrichment_tables"),
-                "unknown stream type"
-            );
-        }
-    }
-    Ok(sources)
-}
-
-pub async fn authorize(
-    sql: &str,
-    org: &str,
-    stream_type: StreamType,
-    user: Option<&str>,
-    event: Option<config::meta::search::SearchEventType>,
-) -> Result<()> {
-    if !infra::rbac::enabled() {
-        return Ok(());
-    }
-    let user = user
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("RBAC execution identity required"))?;
-    let subject = infra::rbac::user_subject(user).await?;
-    authorize_subject_event(sql, org, stream_type, &subject, event).await?;
-    Ok(())
-}
-
 /// Authorizes `sql` for the identity a search `Request` carries: its subject, else its user.
 pub async fn authorize_request(
     req: &config::datafusion::request::Request,
@@ -289,18 +222,75 @@ async fn authorize_statements<'a>(
         !resources.is_empty(),
         "RBAC requires explicit source streams"
     );
-    let allowed = infra::rbac::allowed_subject_resource_actions(
-        subject,
-        org,
-        required_actions(event),
-        &resources,
-    )
-    .await?;
-    ensure!(
-        allowed.len() == resources.len() && allowed.into_iter().all(|allow| allow),
-        "RBAC access denied"
-    );
+    infra::rbac::authorize_subject_all(subject, org, required_actions(event), &resources).await?;
     Ok(resources)
+}
+
+fn reject_custom_functions(sql: &str, forbidden: &[String]) -> Result<()> {
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)?;
+    let mut guard = FunctionGuard { forbidden };
+    if let ControlFlow::Break(name) = statements.visit(&mut guard) {
+        anyhow::bail!("Custom function {name} requires a scoped RBAC adapter");
+    }
+    Ok(())
+}
+
+fn required_actions(
+    event: Option<config::meta::search::SearchEventType>,
+) -> &'static [infra::rbac::Action] {
+    if event == Some(config::meta::search::SearchEventType::Download) {
+        &[infra::rbac::Action::Query, infra::rbac::Action::Export]
+    } else {
+        &[infra::rbac::Action::Query]
+    }
+}
+
+fn checked_sources(sql: &str) -> Result<Vec<TableReference>> {
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)?;
+    ensure!(
+        statements.len() == 1 && matches!(&statements[0], Statement::Query(_)),
+        "RBAC requires one SELECT query"
+    );
+    ensure!(
+        matches!(
+            statements.visit(&mut SourceGuard),
+            ControlFlow::Continue(())
+        ),
+        "RBAC requires named streams; table functions and special table sources are unsupported"
+    );
+    let sources = config::meta::sql::resolve_stream_names_with_type(sql)?;
+    ensure!(!sources.is_empty(), "RBAC requires explicit source streams");
+    for source in &sources {
+        ensure!(
+            source.catalog().is_none(),
+            "cross-catalog queries are not authorized"
+        );
+        if let Some(schema) = source.schema() {
+            ensure!(
+                matches!(schema, "logs" | "metrics" | "traces" | "enrichment_tables"),
+                "unknown stream type"
+            );
+        }
+    }
+    Ok(sources)
+}
+
+async fn authorize(
+    sql: &str,
+    org: &str,
+    stream_type: StreamType,
+    user: Option<&str>,
+    event: Option<config::meta::search::SearchEventType>,
+) -> Result<()> {
+    if !infra::rbac::enabled() {
+        return Ok(());
+    }
+    let user = user
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("RBAC execution identity required"))?;
+    let subject = infra::rbac::user_subject(user).await?;
+    authorize_subject_event(sql, org, stream_type, &subject, event).await?;
+    Ok(())
 }
 
 #[cfg(test)]

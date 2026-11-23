@@ -165,15 +165,20 @@ pub async fn authorize_subject(
     action: Action,
     resource: Resource,
 ) -> Result<()> {
-    if !enabled() {
-        return Ok(());
-    }
-    validate_subject(subject, organization).await?;
-    let document = read_policy(organization).await?;
+    authorize_subject_all(subject, organization, &[action], &[resource]).await
+}
+
+/// Fails unless `subject` may take every action on every resource, from one policy read.
+pub async fn authorize_subject_all(
+    subject: &str,
+    organization: &str,
+    actions: &[Action],
+    resources: &[Resource],
+) -> Result<()> {
+    let allowed =
+        allowed_subject_resource_actions(subject, organization, actions, resources).await?;
     ensure!(
-        cache::engine(&document)
-            .await?
-            .authorize(subject, organization, action, &resource)?,
+        allowed.len() == resources.len() && allowed.into_iter().all(|allowed| allowed),
         "RBAC access denied"
     );
     Ok(())

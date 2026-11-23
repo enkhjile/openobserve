@@ -33,21 +33,8 @@ pub async fn visible_folders(
     if !super::enabled() {
         return Ok(None);
     }
-    let kind = object_kind(folder_type)?;
     let subject = caller::current_subject().await?;
-    let Some(readable) = super::readable_subject_object_ids(&subject, organization, kind).await?
-    else {
-        return Ok(None);
-    };
-    let mut visible = BTreeSet::from([DEFAULT_FOLDER.to_owned()]);
-    visible.extend(
-        object_folders(organization, kind)
-            .await?
-            .into_iter()
-            .filter(|(id, _)| readable.contains(id))
-            .map(|(_, folder)| folder),
-    );
-    Ok(Some(visible))
+    visible_folders_for(&subject, organization, folder_type).await
 }
 
 /// Requires Write on every object and a visible destination, so one denial moves nothing.
@@ -63,20 +50,31 @@ pub async fn authorize_folder_move(
     let kind = object_kind(folder_type)?;
     let subject = caller::current_subject().await?;
     let resources: Vec<_> = ids.iter().map(|id| Resource::new(kind, id)).collect();
-    let allowed =
-        super::allowed_subject_resources(&subject, organization, Action::Write, &resources).await?;
-    ensure!(
-        allowed.len() == ids.len() && allowed.into_iter().all(|allowed| allowed),
-        "RBAC access denied"
-    );
-    ensure!(
-        super::readable(
-            &visible_folders(organization, folder_type).await?,
-            destination
-        ),
-        "RBAC access denied"
-    );
+    super::authorize_subject_all(&subject, organization, &[Action::Write], &resources).await?;
+    let visible = visible_folders_for(&subject, organization, folder_type).await?;
+    ensure!(super::readable(&visible, destination), "RBAC access denied");
     Ok(())
+}
+
+async fn visible_folders_for(
+    subject: &str,
+    organization: &str,
+    folder_type: FolderType,
+) -> Result<Option<BTreeSet<String>>> {
+    let kind = object_kind(folder_type)?;
+    let Some(readable) = super::readable_subject_object_ids(subject, organization, kind).await?
+    else {
+        return Ok(None);
+    };
+    let mut visible = BTreeSet::from([DEFAULT_FOLDER.to_owned()]);
+    visible.extend(
+        object_folders(organization, kind)
+            .await?
+            .into_iter()
+            .filter(|(id, _)| readable.contains(id))
+            .map(|(_, folder)| folder),
+    );
+    Ok(Some(visible))
 }
 
 fn object_kind(folder_type: FolderType) -> Result<ResourceKind> {
