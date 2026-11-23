@@ -390,7 +390,15 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         return denied;
     }
 
-    if let Err(response) = rbac::authorize(&mut parts, &mut result).await {
+    if let Err(response) = rbac::authorize(
+        &mut parts,
+        &auth_info.auth,
+        &mut result.user_email,
+        result.user_role.is_some(),
+        result.token_name.as_deref(),
+    )
+    .await
+    {
         return response;
     }
 

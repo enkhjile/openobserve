@@ -20,9 +20,20 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use config::meta::user::OrgIngestionPrincipal;
 use infra::rbac::{self, Action, Resource, ResourceKind};
-use openobserve_api_common::auth::validator::AuthValidationResult;
+use openobserve_api_common::auth::validator::AuthError;
 use serde::Deserialize;
+
+/// The ingestion routes whose handlers authorize each destination for an org ingestion token.
+const TOKEN_INGEST_ROUTES: [&str; 6] = [
+    "/api/{org_id}/{stream_name}/_json",
+    "/api/{org_id}/{stream_name}/_multi",
+    "/api/{org_id}/ingest/metrics/_json",
+    "/api/{org_id}/v1/traces",
+    "/api/{org_id}/otel/v1/traces",
+    "/api/{org_id}/v1/logs",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Disposition {
@@ -217,29 +228,26 @@ pub(super) async fn route_gate(request: Request, next: Next) -> Response {
     gate(rbac::enabled(), request, next).await
 }
 
+/// `credential` is the value upstream authenticated; a token is identified from it, not a header.
 pub(super) async fn authorize(
     parts: &mut Parts,
-    result: &mut AuthValidationResult,
+    credential: &str,
+    email: &mut String,
+    has_user_role: bool,
+    token_name: Option<&str>,
 ) -> Result<(), Response> {
     if !rbac::enabled() {
-        parts
-            .extensions
-            .insert(VerifiedUser(result.user_email.clone()));
+        parts.extensions.insert(VerifiedUser(email.clone()));
         return Ok(());
     }
-    if result.token_name.is_some() {
+    if token_name.is_some() {
         // A token acts as its own row; the username it was sent with must reach no caller.
-        result.user_email.clear();
-        let principal = ingestion_principal(parts).await?;
+        email.clear();
+        let principal = authorize_token(parts, credential).await?;
         parts.extensions.insert(principal);
+        return Ok(());
     }
-    authorize_enabled(
-        parts,
-        &result.user_email,
-        result.user_role.is_some(),
-        result.token_name.as_deref(),
-    )
-    .await
+    authorize_enabled(parts, email, has_user_role).await
 }
 
 pub(super) async fn me(
@@ -379,48 +387,8 @@ async fn authorize_enabled(
     parts: &mut Parts,
     email: &str,
     has_user_role: bool,
-    token_name: Option<&str>,
 ) -> Result<(), Response> {
-    if let Some(principal) = parts
-        .extensions
-        .get::<config::meta::user::OrgIngestionPrincipal>()
-        .cloned()
-    {
-        let route = parts
-            .extensions
-            .get::<MatchedPath>()
-            .map(|path| canonical_route(path.as_str()))
-            .unwrap_or("");
-        if parts.method != axum::http::Method::POST
-            || !matches!(
-                route,
-                "/api/{org_id}/{stream_name}/_json"
-                    | "/api/{org_id}/{stream_name}/_multi"
-                    | "/api/{org_id}/ingest/metrics/_json"
-                    | "/api/{org_id}/v1/traces"
-                    | "/api/{org_id}/otel/v1/traces"
-                    | "/api/{org_id}/v1/logs"
-            )
-        {
-            return Err(forbidden());
-        }
-        let params = RawPathParams::from_request_parts(parts, &())
-            .await
-            .map_err(|_| forbidden())?;
-        let org = params
-            .iter()
-            .find(|(key, _)| *key == "org_id")
-            .map(|(_, value)| value)
-            .ok_or_else(forbidden)?;
-        if org != principal.org_id {
-            return Err(forbidden());
-        }
-        rbac::allowed_ingestion_token_resources(org, &principal.token_id, &[])
-            .await
-            .map_err(|_| forbidden())?;
-        return Ok(());
-    }
-    if !has_user_role || token_name.is_some() {
+    if !has_user_role {
         return Err(forbidden());
     }
     let path = parts
@@ -436,11 +404,7 @@ async fn authorize_enabled(
     let params = RawPathParams::from_request_parts(parts, &())
         .await
         .map_err(|_| forbidden())?;
-    let org = params
-        .iter()
-        .find(|(key, _)| *key == "org_id")
-        .map(|(_, value)| value)
-        .ok_or_else(forbidden)?;
+    let org = org_param(&params)?;
     if params
         .iter()
         .any(|(key, value)| key == "folder_type" && !folder_type_supported(value))
@@ -486,45 +450,45 @@ async fn authorize_enabled(
     Ok(())
 }
 
-/// The token row named by the request's Basic password, re-read so revocation applies at once.
-async fn ingestion_principal(
+/// Admits a token only on its ingestion routes, as its primary-store row so revocation is
+/// immediate.
+async fn authorize_token(
     parts: &mut Parts,
-) -> Result<config::meta::user::OrgIngestionPrincipal, Response> {
-    let password = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .get(..6)
-                .filter(|scheme| scheme.eq_ignore_ascii_case("basic "))
-                .map(|_| &value[6..])
-        })
-        .and_then(|encoded| config::utils::base64::decode(encoded.trim()).ok())
-        .and_then(|decoded| Some(decoded.split_once(':')?.1.trim().to_owned()))
-        .ok_or_else(forbidden)?;
+    credential: &str,
+) -> Result<OrgIngestionPrincipal, Response> {
+    let route = parts
+        .extensions
+        .get::<MatchedPath>()
+        .map(|path| canonical_route(path.as_str()))
+        .unwrap_or("");
+    if parts.method != Method::POST || !TOKEN_INGEST_ROUTES.contains(&route) {
+        return Err(forbidden());
+    }
+    let password = config::utils::base64::basic_password(credential).ok_or_else(forbidden)?;
     let params = RawPathParams::from_request_parts(parts, &())
         .await
         .map_err(|_| forbidden())?;
-    let org = params
-        .iter()
-        .find(|(key, _)| *key == "org_id")
-        .map(|(_, value)| value.to_owned())
-        .ok_or_else(forbidden)?;
-    let row = infra::table::org_ingestion_tokens::find_enabled_token_primary(&org, &password)
+    let org = org_param(&params)?;
+    let row = infra::table::org_ingestion_tokens::find_enabled_token_primary(org, &password)
         .await
         .map_err(|_| forbidden())?
         .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"code": 401, "message": "Invalid ingestion credential"})),
-            )
-                .into_response()
+            AuthError::Unauthorized("Invalid ingestion credential".into()).into_response()
         })?;
-    Ok(config::meta::user::OrgIngestionPrincipal {
+    // The handlers authorize each destination; this refuses an org without a policy up front.
+    rbac::read_policy(org).await.map_err(|_| forbidden())?;
+    Ok(OrgIngestionPrincipal {
         org_id: row.org_id,
         token_id: row.id,
     })
+}
+
+fn org_param(params: &RawPathParams) -> Result<&str, Response> {
+    params
+        .iter()
+        .find(|(key, _)| *key == "org_id")
+        .map(|(_, value)| value)
+        .ok_or_else(forbidden)
 }
 
 fn folder_type_supported(folder_type: &str) -> bool {
@@ -569,38 +533,36 @@ mod tests {
 
     async fn token_probe(request: Request) -> Response {
         let (mut parts, _) = request.into_parts();
-        let mut result = AuthValidationResult {
-            user_email: "root@example.test".into(),
-            user_role: None,
-            is_internal_user: true,
-            token_name: Some("collector".into()),
-            delegation: None,
-        };
-        if let Err(response) = authorize(&mut parts, &mut result).await {
+        let credential = parts.headers["authorization"].to_str().unwrap().to_owned();
+        let mut email = "root@example.test".to_owned();
+        if let Err(response) = authorize(
+            &mut parts,
+            &credential,
+            &mut email,
+            false,
+            Some("collector"),
+        )
+        .await
+        {
             return response;
         }
         let principal = parts
             .extensions
-            .get::<config::meta::user::OrgIngestionPrincipal>()
+            .get::<OrgIngestionPrincipal>()
             .map(|principal| principal.token_id.clone());
-        Json(serde_json::json!({"email": result.user_email, "token": principal})).into_response()
+        Json(serde_json::json!({"email": email, "token": principal})).into_response()
     }
 
     async fn send_token(path: &str, token: &str) -> (StatusCode, serde_json::Value) {
         let app = Router::new()
             .route(
                 "/api/{org_id}/{stream_name}/_json",
-                axum::routing::post(token_probe),
+                axum::routing::any(token_probe),
             )
-            .route("/api/{org_id}/streams", get(token_probe));
-        let method = if path.ends_with("/_json") {
-            "POST"
-        } else {
-            "GET"
-        };
+            .route("/api/{org_id}/streams", axum::routing::any(token_probe));
         let basic = config::utils::base64::encode(&format!("root@example.test:{token}"));
         let request = Request::builder()
-            .method(method)
+            .method("POST")
             .uri(path)
             .header("authorization", format!("Basic {basic}"))
             .body(Body::empty())
@@ -656,11 +618,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let token = format!(
-            "{}{}",
-            infra::table::org_ingestion_tokens::ORG_INGESTION_TOKEN_PREFIX,
-            config::ider::uuid()
-        );
+        let token = infra::table::org_ingestion_tokens::generate_token();
         let id = config::ider::uuid();
         infra::table::org_ingestion_tokens::add(
             &infra::table::org_ingestion_tokens::OrgIngestionTokenRecord {
@@ -724,17 +682,31 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let (mut parts, _) = request.into_parts();
-        parts
-            .extensions
-            .insert(config::meta::user::OrgIngestionPrincipal {
-                org_id: "org".into(),
-                token_id: "credential-id".into(),
-            });
-        assert!(
-            authorize_enabled(&mut parts, "root@example.test", true, None)
-                .await
-                .is_err()
-        );
+        let credential = format!("Basic {}", config::utils::base64::encode("root:o2oi_token"));
+        assert!(authorize_token(&mut parts, &credential).await.is_err());
+    }
+
+    #[test]
+    fn token_routes_are_upstream_ingestion_writes_the_route_gate_admits() {
+        for route in TOKEN_INGEST_ROUTES {
+            let path = route
+                .trim_start_matches("/api/")
+                .replace("{org_id}", "org")
+                .replace("{stream_name}", "logs");
+            assert!(
+                common::meta::ingestion_routes::is_ingestion_write(
+                    &Method::POST,
+                    &path,
+                    Some(route)
+                ),
+                "{route}"
+            );
+            assert_ne!(
+                disposition("POST", route),
+                Disposition::Unsupported,
+                "{route}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -893,15 +865,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingestion_tokens_cannot_impersonate_basic_username() {
+    async fn a_login_without_an_org_role_is_refused() {
         let (mut parts, _) = Request::new(Body::empty()).into_parts();
         assert!(
-            authorize_enabled(&mut parts, "root@example.com", true, Some("collector"))
-                .await
-                .is_err()
-        );
-        assert!(
-            authorize_enabled(&mut parts, "root@example.com", false, None)
+            authorize_enabled(&mut parts, "root@example.com", false)
                 .await
                 .is_err()
         );
