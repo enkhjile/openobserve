@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe("approved alert destination picker", () => {
-  it("never exposes legacy configs while loading or for unresolved queries", async () => {
+  it("lists only approved names once RBAC is known, and none for unresolved queries", async () => {
     vi.useFakeTimers();
     vi.mocked(rbac.me).mockResolvedValue({ data: { enabled: true } } as never);
     vi.mocked(rbac.availableDestinations).mockResolvedValue({
@@ -46,8 +46,9 @@ describe("approved alert destination picker", () => {
         false,
       ),
     )!;
-    expect(result.destinations.value).toEqual([]);
+    expect(result.destinations.value).toEqual([{ name: "secret-config" }]);
     await flushPromises();
+    expect(result.destinations.value).toEqual([]);
     await vi.advanceTimersByTimeAsync(300);
     expect(rbac.availableDestinations).not.toHaveBeenCalled();
     sql.value = "select * from allowed";

@@ -646,6 +646,8 @@ pub async fn search_partition(
         return Ok(resp);
     }
 
+    // Like the result cache, the shared aggregation cache is bypassed while RBAC is on.
+    let use_cache = use_cache && !infra::rbac::enabled();
     let (streaming_aggs, streaming_id, cache_strategy) =
         prepare_streaming_aggregate(trace_id, req, &ctx, use_cache).await?;
     resp.streaming_output = streaming_aggs;

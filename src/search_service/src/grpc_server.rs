@@ -502,7 +502,7 @@ impl Search for Searcher {
 }
 
 fn search_error_status(e: &infra::errors::Error, context: &str) -> Status {
-    if matches!(e, infra::errors::Error::ErrorCode(code) if code.http_status() == 403) {
+    if infra::rbac::is_denied(e) {
         return Status::permission_denied("Access denied");
     }
     e.to_unavailable_status()
@@ -528,6 +528,16 @@ mod tests {
         let status = search_error_status(&timeout, "search failed");
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), format!("search failed: {timeout}"));
+    }
+
+    #[test]
+    fn only_rbac_denials_become_permission_denied() {
+        let denied = Error::ErrorCode(ErrorCodes::AuthorizationDenied("no".into()));
+        let status = search_error_status(&denied, "search failed");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        let protected = Error::ErrorCode(ErrorCodes::SearchStreamProtected("p".into()));
+        let status = search_error_status(&protected, "search failed");
+        assert_eq!(status.message(), format!("search failed: {protected}"));
     }
 
     #[cfg(not(feature = "enterprise"))]

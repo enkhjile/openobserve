@@ -16,6 +16,16 @@
 import { computed, shallowRef, watch, type Ref } from "vue";
 import rbac, { type Membership } from "@/services/rbac";
 
+/** Only RBAC answers 403 from `me`, so that means on with no grants; other failures stay unknown. */
+export async function readMembership(org: string): Promise<Membership | undefined> {
+  try {
+    return (await rbac.me(org)).data;
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    return status === 403 ? { enabled: true, can_manage: false, grants: [] } : undefined;
+  }
+}
+
 export function useDashboardRbac(
   organization: Ref<string>,
   dashboard: Ref<string>,
@@ -36,21 +46,17 @@ export function useDashboardPermissions(organization: Ref<string>, enterprise: b
       onCleanup(() => {
         current = false;
       });
-      try {
-        const { data } = await rbac.me(org);
-        if (current) membership.value = data;
-      } catch {
-        // Failed permission reads must not expose mutation controls.
-        if (current) membership.value = undefined;
-      }
+      const member = await readMembership(org);
+      if (current) membership.value = member;
     },
     { immediate: true },
   );
+  // Until RBAC is known to be on, controls stay as upstream shows them; the server still decides.
   return (dashboard: string | null) => {
-    if (enterprise || membership.value?.enabled === false) return true;
-    if (dashboard === null) return false;
     const member = membership.value;
-    return !!member?.grants.some(
+    if (enterprise || member?.enabled !== true) return true;
+    if (dashboard === null) return false;
+    return member.grants.some(
       (grant) =>
         grant.subject === member.subject &&
         (grant.role === "admin" || grant.role === "editor") &&

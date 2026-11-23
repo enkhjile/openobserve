@@ -70,17 +70,27 @@ pub async fn replace_destination_approvals(
     for request in requested {
         let (destination, fingerprint, _) =
             destination_snapshot(org, &request.destination_name).await?;
-        if let Some(expected) = request.expected_target_fingerprint {
-            ensure!(
-                expected == fingerprint,
-                "destination target changed; explicit reapproval required"
-            );
-        }
+        let id = destination
+            .id
+            .context("missing destination identity")?
+            .to_string();
+        // Keeping an approval must name the target it approved, so a changed target is not
+        // re-approved.
+        let approved = current
+            .destination_approvals
+            .iter()
+            .find(|approval| {
+                approval.destination_id == id || approval.destination_name == destination.name
+            })
+            .map(|approval| approval.target_fingerprint.as_str());
+        let expected = request.expected_target_fingerprint.as_deref();
+        ensure!(
+            approved.is_none_or(|approved| expected == Some(approved))
+                && expected.is_none_or(|expected| expected == fingerprint),
+            "destination target changed; explicit reapproval required"
+        );
         next.destination_approvals.push(DestinationApproval {
-            destination_id: destination
-                .id
-                .context("missing destination identity")?
-                .to_string(),
+            destination_id: id,
             destination_name: destination.name,
             target_fingerprint: fingerprint,
             sources: request.sources,
@@ -146,8 +156,12 @@ pub async fn available_alert_destinations(
         {
             continue;
         }
-        let (destination, fingerprint, _) =
-            destination_snapshot(org, &approval.destination_name).await?;
+        // A deleted or changed destination drops out of the list instead of failing it.
+        let Ok((destination, fingerprint, _)) =
+            destination_snapshot(org, &approval.destination_name).await
+        else {
+            continue;
+        };
         let id = destination
             .id
             .context("missing destination identity")?

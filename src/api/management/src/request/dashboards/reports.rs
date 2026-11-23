@@ -666,7 +666,7 @@ pub async fn list_reports_v2(
     .await
     {
         Ok(ids) => ids,
-        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+        Err(_) => return MetaHttpResponse::forbidden("Access denied by organization RBAC policy"),
     };
     // Reuse the v1 list handler logic — it already reads ?folder as a filter.
     // Re-map the query key from "folder" to "folder_id" if needed by the service.

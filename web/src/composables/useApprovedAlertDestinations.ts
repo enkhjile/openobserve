@@ -15,6 +15,7 @@
 
 import { computed, shallowRef, watch, type Ref } from "vue";
 import rbac, { type Membership } from "@/services/rbac";
+import { readMembership } from "@/composables/useDashboardRbac";
 
 export function useApprovedAlertDestinations(
   organization: Ref<string>,
@@ -35,12 +36,8 @@ export function useApprovedAlertDestinations(
       onCleanup(() => {
         active = false;
       });
-      try {
-        const response = await rbac.me(org);
-        if (active) membership.value = response.data;
-      } catch {
-        if (active) membership.value = undefined;
-      }
+      const member = await readMembership(org);
+      if (active) membership.value = member;
     },
     { immediate: true, flush: "sync" },
   );
@@ -65,7 +62,7 @@ export function useApprovedAlertDestinations(
     },
     { immediate: true, flush: "sync" },
   );
-  const requiresApproval = computed(() => !enterprise && membership.value?.enabled !== false);
+  const requiresApproval = computed(() => !enterprise && membership.value?.enabled === true);
   return {
     destinations: computed(() => (requiresApproval.value ? approved.value : legacy.value)),
     requiresApproval,

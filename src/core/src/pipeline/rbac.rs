@@ -93,6 +93,8 @@ pub async fn allowed_ingest(
     resources: &[Resource],
 ) -> Result<Vec<bool>> {
     match user {
+        // Only server code builds a system job; reading what it writes still needs a grant.
+        IngestUser::SystemJob(_) => Ok(vec![true; resources.len()]),
         IngestUser::User(email) => {
             infra::rbac::allowed_resources(email, org, Action::Ingest, resources).await
         }
@@ -141,6 +143,8 @@ pub async fn validate_save(pipeline: &Pipeline, subject: Option<&str>) -> Result
 
 pub async fn load(org: &str, stream: &str, user: &IngestUser) -> Result<Vec<ExecutablePipeline>> {
     let trigger = match user {
+        // A scoped pipeline runs as a user, and a system job has none to run as.
+        IngestUser::SystemJob(_) => return Ok(Vec::new()),
         IngestUser::User(email) => infra::rbac::user_subject(email).await?,
         IngestUser::OrgToken(principal) if principal.org_id == org => {
             format!("org-token:{}", principal.token_id)
@@ -288,6 +292,20 @@ mod tests {
             ],
             edges: vec![Edge::new("source".into(), "destination".into())],
         }
+    }
+
+    #[tokio::test]
+    async fn internal_jobs_ingest_without_grants_and_run_no_pipelines() {
+        let job = IngestUser::SystemJob(ingestion_common::SystemJobType::SelfReporting);
+        let streams = [
+            Resource::stream("logs", "usage"),
+            Resource::stream("logs", "triggers"),
+        ];
+        assert_eq!(
+            allowed_ingest("org", &job, &streams).await.unwrap(),
+            vec![true, true]
+        );
+        assert!(load("org", "usage", &job).await.unwrap().is_empty());
     }
 
     #[test]

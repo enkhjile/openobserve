@@ -73,7 +73,7 @@ pub(crate) async fn check_stream_permissions(
     user_id: &str,
 ) -> Option<Response> {
     if infra::rbac::enabled()
-        && let Err(error) = infra::rbac::authorize_user(
+        && let Err(_) = infra::rbac::authorize_user(
             user_id,
             org_id,
             infra::rbac::Action::Query,
@@ -81,7 +81,9 @@ pub(crate) async fn check_stream_permissions(
         )
         .await
     {
-        return Some(MetaHttpResponse::forbidden(error));
+        return Some(MetaHttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        ));
     }
     #[cfg(feature = "enterprise")]
     {

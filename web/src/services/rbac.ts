@@ -63,15 +63,15 @@ export interface Subject {
 }
 const base = (org: string) => `/api/${encodeURIComponent(org)}/rbac`;
 export default {
-  me: (org: string) => http().get<Membership>(`${base(org)}/me`),
+  me: (org: string) => http().get<Membership>(`${base(org)}/me`, { silentForbidden: true }),
   policy: (org: string) => http().get<Policy>(`${base(org)}/policy`),
   subjects: (org: string) => http().get<Subject[]>(`${base(org)}/subjects`),
   availableDestinations: (org: string, sql: string, streamType: string, alertId?: string) =>
-    http().post<{ name: string }[]>(`${base(org)}/destinations/available`, {
-      sql,
-      stream_type: streamType,
-      alert_id: alertId,
-    }),
+    http().post<{ name: string }[]>(
+      `${base(org)}/destinations/available`,
+      { sql, stream_type: streamType, alert_id: alertId },
+      { silentForbidden: true },
+    ),
   saveDestinations: (org: string, policy: Policy) =>
     http().put<Policy>(`${base(org)}/destinations`, {
       expected_version: policy.version,

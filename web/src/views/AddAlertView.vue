@@ -43,7 +43,7 @@ import { defineComponent, ref, watch, onBeforeMount, onBeforeUnmount } from "vue
 import { useStore } from "vuex";
 import { useRouter, useRoute } from "vue-router";
 import config from "@/aws-exports";
-import rbac from "@/services/rbac";
+import { readMembership } from "@/composables/useDashboardRbac";
 import AddAlert from "@/components/alerts/AddAlert.vue";
 import { toast } from "@/lib/feedback/Toast/useToast";
 import { useI18nTyped } from "@/types/i18n";
@@ -137,13 +137,9 @@ export default defineComponent({
       if (deliveryAccess?.org !== org) {
         deliveryAccess = {
           org,
-          allowed: rbac
-            .me(org)
-            .then(
-              ({ data }) =>
-                data.enabled === false || (data.enabled === true && data.can_manage === true),
-            )
-            .catch(() => false),
+          allowed: readMembership(org).then(
+            (member) => member?.enabled !== true || member.can_manage === true,
+          ),
         };
       }
       return deliveryAccess.allowed;

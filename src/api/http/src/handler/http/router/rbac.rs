@@ -50,7 +50,9 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         ("GET" | "HEAD", "/healthz")
         | ("GET", "/config/" | "/config")
         | ("GET" | "POST", "/auth/login")
-        | ("GET", "/config/logout") => Public,
+        | ("GET", "/config/logout")
+        | ("GET", "/auth/oidc/login" | "/auth/oidc/callback" | "/auth/oidc/session")
+        | ("POST", "/auth/oidc/logout") => Public,
         ("POST", "/api/{org_id}/rbac/destinations/available") => Member,
         ("GET", "/api/{org_id}/rbac/me") | ("POST", "/api/{org_id}/rbac/bootstrap") => Identity,
         ("PUT", "/api/{org_id}/rbac/destinations")
@@ -734,6 +736,18 @@ mod tests {
             "",
         ] {
             assert!(!folder_type_supported(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn oidc_sign_in_routes_stay_reachable_like_password_login() {
+        for (method, path) in [
+            ("GET", "/auth/oidc/login"),
+            ("GET", "/auth/oidc/callback"),
+            ("GET", "/auth/oidc/session"),
+            ("POST", "/auth/oidc/logout"),
+        ] {
+            assert_eq!(disposition(method, path), Disposition::Public, "{path}");
         }
     }
 

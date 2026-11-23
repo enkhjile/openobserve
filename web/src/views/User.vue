@@ -36,11 +36,13 @@ export default defineComponent({
     const acceptPermissions = (value: Permissions) => {
       if (value.organization === organization.value) permissions.value = value;
     };
+    // Hidden only once RBAC is known to be on for a non-manager; the Users APIs check it too.
     const canShowUsers = computed(() => {
       const current = permissions.value;
-      return (
+      return !(
         current?.organization === organization.value &&
-        (current?.enabled === false || (current?.enabled === true && current.canManage))
+        current.enabled === true &&
+        !current.canManage
       );
     });
     const { t } = useI18nTyped();

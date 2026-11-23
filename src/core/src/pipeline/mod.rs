@@ -333,6 +333,11 @@ async fn save_pipeline_scoped(
     #[cfg(not(feature = "enterprise"))]
     refuse_remote_node(&pipeline)?;
 
+    rbac::validate_save(&pipeline, subject).await.map_err(|_| {
+        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        )))
+    })?;
     // Runs after validate(), which rebuilds source from the first node: checking
     // pipeline.source before that compares a value which is never persisted.
     // Evaluation pipelines: any number allowed, no exclusivity check
@@ -354,11 +359,6 @@ async fn save_pipeline_scoped(
 
     // validate no JavaScript functions in pipeline
     validate_no_javascript_functions(&pipeline).await?;
-    rbac::validate_save(&pipeline, subject).await.map_err(|e| {
-        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
-            e.to_string(),
-        )))
-    })?;
     run_check(check, &pipeline).await?;
 
     let mut validated_source = validated_scheduled_source(&mut pipeline).await?;
@@ -456,6 +456,12 @@ async fn update_pipeline_scoped(
     // validate no JavaScript functions in pipeline
     validate_no_javascript_functions(&pipeline).await?;
 
+    // Authorized before the stream-in-use check, whose answer would reveal other pipelines.
+    rbac::validate_save(&pipeline, subject).await.map_err(|_| {
+        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        )))
+    })?;
     // additional checks when the source is changed
     let source_changed = existing_pipeline.source != pipeline.source;
     // check if the new source exists in another pipeline
@@ -466,11 +472,6 @@ async fn update_pipeline_scoped(
     {
         return Err(PipelineError::StreamInUse);
     }
-    rbac::validate_save(&pipeline, subject).await.map_err(|e| {
-        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
-            e.to_string(),
-        )))
-    })?;
     run_check(check, &pipeline).await?;
 
     let validated_source = validated_scheduled_source(&mut pipeline).await?;

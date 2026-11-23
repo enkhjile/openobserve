@@ -329,7 +329,7 @@ async fn ingest_inner(
         return Err(Error::IngestionError("Stream name is empty".to_string()));
     }
     let scoped_pipelines = if infra::rbac::enabled() {
-        if is_derived {
+        if is_derived && !matches!(user, IngestUser::SystemJob(_)) {
             return Err(infra::rbac::denied(
                 "Derived ingestion requires a scoped adapter",
             ));

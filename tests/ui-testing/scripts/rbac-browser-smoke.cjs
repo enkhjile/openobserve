@@ -75,8 +75,11 @@ async function run() {
         await expect(field('iam-rbac-member')).toHaveCount(0);
         await expect(field('add-basic-user')).toHaveCount(0);
       }
+      // Controls follow upstream until the permission read answers, so wait for it before asserting.
+      const permissions = page.waitForResponse(response => new URL(response.url()).pathname === '/api/default/rbac/me' && response.status() === 200, { timeout: 20000 });
       await page.goto(new URL(`/web/dashboards/view?org_identifier=default&folder=default&dashboard=${encodeURIComponent(dashboardId)}&period=30m`, base).href);
       await expect(field('dashboard-name-title')).toHaveText(title, { timeout: 20000 });
+      await permissions;
       if (role === 'Admin') await expect(field('dashboard-edit-btn')).toBeVisible();
       else await expect(field('dashboard-edit-btn')).toHaveCount(0);
       assert.deepEqual(pageErrors, [], `${role} browser execution failed: ${pageErrors.join(", ")}`);

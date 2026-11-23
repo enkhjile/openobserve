@@ -22,7 +22,7 @@ import { useDashboardRbac, useDashboardPermissions } from "./useDashboardRbac";
 vi.mock("@/services/rbac", () => ({ default: { me: vi.fn() } }));
 
 describe("dashboard mutation permissions", () => {
-  it("denies while loading, Viewer and failed refresh; allows scoped Editor and disabled mode", async () => {
+  it("follows upstream until RBAC is known; denies Viewer and no-grant callers; allows scoped Editor", async () => {
     const org = ref("first");
     const dashboard = ref("dashboard-a");
     const me = vi.mocked(rbac.me);
@@ -35,7 +35,7 @@ describe("dashboard mutation permissions", () => {
     } as any);
     const scope = effectScope();
     const permission = scope.run(() => useDashboardRbac(org, dashboard, false))!;
-    expect(permission.value).toBe(false);
+    expect(permission.value).toBe(true);
     await flushPromises();
     expect(permission.value).toBe(false);
     me.mockResolvedValueOnce({
@@ -55,6 +55,10 @@ describe("dashboard mutation permissions", () => {
     expect(me).toHaveBeenCalledTimes(2);
     me.mockRejectedValueOnce(new Error("offline"));
     org.value = "third";
+    await flushPromises();
+    expect(permission.value).toBe(true);
+    me.mockRejectedValueOnce({ response: { status: 403 } });
+    org.value = "denied";
     await flushPromises();
     expect(permission.value).toBe(false);
     me.mockResolvedValueOnce({ data: { enabled: false, grants: [] } } as any);

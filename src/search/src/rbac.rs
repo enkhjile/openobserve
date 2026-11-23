@@ -210,8 +210,7 @@ async fn authorize_statements<'a>(
         .collect();
     let mut resources = Vec::new();
     for sql in statements {
-        reject_custom_functions(sql, &forbidden)?;
-        resources.extend(checked_sources(sql)?.iter().map(|source| {
+        resources.extend(executed_sources(sql, &forbidden)?.iter().map(|source| {
             infra::rbac::Resource::stream(
                 source.schema().unwrap_or(stream_type.as_str()),
                 source.table(),
@@ -224,6 +223,13 @@ async fn authorize_statements<'a>(
     );
     infra::rbac::authorize_subject_all(subject, org, required_actions(event), &resources).await?;
     Ok(resources)
+}
+
+/// Checks the text the search will run, which can differ from the request's own SQL.
+fn executed_sources(sql: &str, forbidden: &[String]) -> Result<Vec<TableReference>> {
+    let sql = crate::sql::executed_sql(sql);
+    reject_custom_functions(&sql, forbidden)?;
+    checked_sources(&sql)
 }
 
 fn reject_custom_functions(sql: &str, forbidden: &[String]) -> Result<()> {
@@ -323,6 +329,14 @@ mod tests {
             assert!(reject_custom_functions(sql, &forbidden).is_err());
         }
         assert!(reject_custom_functions("SELECT count(*) FROM public_logs", &forbidden).is_ok());
+    }
+
+    #[test]
+    fn sources_come_from_the_sql_that_runs_not_the_request_text() {
+        let sql = "SELECT _timestamp FROM public_logs -- ::_o2_custom\r/*\nUNION ALL SELECT _timestamp FROM secret_logs\n-- */";
+        let sources = executed_sources(sql, &[]).unwrap();
+        assert!(sources.iter().any(|s| s.table() == "secret_logs"));
+        assert!(sources.iter().any(|s| s.table() == "public_logs"));
     }
 
     #[test]

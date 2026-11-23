@@ -175,6 +175,13 @@ pub async fn authorize_subject_all(
     actions: &[Action],
     resources: &[Resource],
 ) -> Result<()> {
+    if !enabled() {
+        return Ok(());
+    }
+    ensure!(
+        !actions.is_empty() && !resources.is_empty(),
+        "RBAC access denied"
+    );
     let allowed =
         allowed_subject_resource_actions(subject, organization, actions, resources).await?;
     ensure!(
@@ -384,6 +391,7 @@ async fn allowed_subject_resource_actions_on<C: ConnectionTrait>(
     actions: &[Action],
     resources: &[Resource],
 ) -> Result<Vec<bool>> {
+    ensure!(!actions.is_empty(), "RBAC decision needs an action");
     validate_subject_on(client, subject, organization).await?;
     let document = read_policy_on(client, organization).await?;
     let engine = cache::engine(&document).await?;

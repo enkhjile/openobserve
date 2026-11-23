@@ -740,7 +740,7 @@ async fn composite_detail_response(
     .await
     {
         Ok(ids) => ids,
-        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+        Err(_) => return MetaHttpResponse::forbidden("Access denied by organization RBAC policy"),
     };
     let hide_condition = readable_ids.as_ref().is_some_and(|ids| {
         definition
@@ -3211,7 +3211,7 @@ pub async fn list_alerts(
     .await
     {
         Ok(ids) => ids,
-        Err(e) => return MetaHttpResponse::forbidden(e.to_string()),
+        Err(_) => return MetaHttpResponse::forbidden("Access denied by organization RBAC policy"),
     };
     #[cfg(not(feature = "enterprise"))]
     let user_id = None;

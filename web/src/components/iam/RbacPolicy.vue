@@ -15,7 +15,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 -->
 
 <template>
-  <section v-if="enabled || error || busy" data-test="iam-rbac-panel">
+  <section v-if="enabled" data-test="iam-rbac-panel">
     <OPageHeader :title="t('ossRbac.title')" icon="person" :subtitle="t('ossRbac.subtitle')" />
     <OCard>
       <OCardSection role="body">
@@ -258,8 +258,9 @@ async function saveDestinationApprovals() {
   error.value = undefined;
   try {
     const response = await rbac.saveDestinations(organization.value, policy.value);
-    if (current !== generation) return;
-    policy.value = response.data;
+    if (current !== generation || !policy.value) return;
+    // Keep unsaved grant edits; this save only changes delivery approvals.
+    policy.value = { ...response.data, grants: policy.value.grants };
     saved.value = true;
   } catch {
     if (current === generation) error.value = t("ossRbac.deliveryFailed");
@@ -325,10 +326,16 @@ const subjectLabel = (id: string) =>
 const failure = (cause: unknown) =>
   isAxiosError(cause) && cause.response?.status === 403 ? t("ossRbac.denied") : t("ossRbac.failed");
 
+let loadedOrganization: string | undefined;
+
 async function load() {
   const org = organization.value;
   const run = ++generation;
-  emit("permissions", { organization: org ?? "", enabled: null, canManage: false });
+  // Reloading the same organization keeps the Users list mounted.
+  if (org !== loadedOrganization) {
+    emit("permissions", { organization: org ?? "", enabled: null, canManage: false });
+  }
+  loadedOrganization = org;
   membership.value = undefined;
   policy.value = undefined;
   subjects.value = [];
@@ -356,8 +363,11 @@ async function load() {
     }
   } catch (cause) {
     if (run === generation) {
+      // Only RBAC answers 403 here; any other failure leaves the page as upstream shows it.
+      const denied = isAxiosError(cause) && cause.response?.status === 403;
+      enabled.value = denied || enabled.value;
       error.value = failure(cause);
-      emit("permissions", { organization: org, enabled: null, canManage: false });
+      emit("permissions", { organization: org, enabled: denied ? true : null, canManage: false });
     }
   } finally {
     if (run === generation) busy.value = false;
@@ -388,10 +398,11 @@ async function save() {
   error.value = undefined;
   saved.value = false;
   try {
-    await rbac.save(org, policy.value);
-    if (run !== generation) return;
-    await load();
-    if (!error.value) saved.value = true;
+    const { data } = await rbac.save(org, policy.value);
+    if (run !== generation || !policy.value) return;
+    // Keep unsaved approval edits; this save only changes grants.
+    policy.value = { ...data, destination_approvals: policy.value.destination_approvals };
+    saved.value = true;
   } catch (cause) {
     if (run === generation) error.value = failure(cause);
   } finally {

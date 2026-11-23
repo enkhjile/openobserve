@@ -28,7 +28,7 @@ fn every_endpoint_keeps_its_reviewed_rbac_disposition() {
         })
         .map(str::to_owned)
         .collect();
-    let actual: BTreeSet<_> = parsed_routes()
+    let mut actual: BTreeSet<_> = parsed_routes()
         .into_iter()
         .map(|route| {
             format!(
@@ -40,6 +40,22 @@ fn every_endpoint_keeps_its_reviewed_rbac_disposition() {
             )
         })
         .collect();
+    // The OIDC router is merged from its own file, which the route parser does not read.
+    let oidc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/oidc.rs"));
+    for line in oidc
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(".route(\""))
+    {
+        let path = format!("/auth{}", line.split('"').nth(1).unwrap());
+        for method in ["get", "post", "put", "delete", "patch"] {
+            if line.contains(&format!("{method}(")) {
+                let method = method.to_uppercase();
+                let rule = super::super::rbac::disposition(&method, &path);
+                actual.insert(format!("| {method} | `{path}` | true | {rule:?} |"));
+            }
+        }
+    }
     if !cfg!(feature = "enterprise")
         && !cfg!(feature = "cloud")
         && !cfg!(feature = "cpu-profiling")

@@ -55,7 +55,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       </OButton>
       <OTooltip v-if="homeDashboard" side="bottom" :content="t('dashboard.openHomeDashboard')" />
       <!-- import dashboard button with dropdown -->
-      <ODropdown v-show="canMutateDashboard('*')" side="bottom" align="end">
+      <ODropdown v-if="canMutateDashboard('*')" side="bottom" align="end">
         <template #trigger>
           <OButton
             variant="outline"

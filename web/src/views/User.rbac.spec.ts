@@ -40,24 +40,27 @@ describe("Users RBAC administration", () => {
     [true, true, true],
   ])("enabled=%s manage=%s shows Users=%s", async (enabled, canManage, visible) => {
     const { wrapper, policy } = fixture();
-    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(true);
     policy.vm.$emit("permissions", { organization: "org-a", enabled, canManage });
     await nextTick();
     expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(visible);
     wrapper.unmount();
   });
 
-  it("hides controls across org switches and ignores late old-org grants", async () => {
+  it("re-checks after an org switch and ignores late old-org grants", async () => {
     const { wrapper, policy, store } = fixture();
     policy.vm.$emit("permissions", { organization: "org-a", enabled: true, canManage: true });
     await nextTick();
     expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(true);
+    policy.vm.$emit("permissions", { organization: "org-a", enabled: true, canManage: false });
+    await nextTick();
+    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(false);
     store.state.selectedOrganization.identifier = "org-b";
     await nextTick();
-    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(false);
-    policy.vm.$emit("permissions", { organization: "org-a", enabled: true, canManage: true });
+    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(true);
+    policy.vm.$emit("permissions", { organization: "org-a", enabled: true, canManage: false });
     await nextTick();
-    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(true);
     policy.vm.$emit("permissions", { organization: "org-b", enabled: true, canManage: false });
     await nextTick();
     expect(wrapper.find('[data-test="legacy-users"]').exists()).toBe(false);

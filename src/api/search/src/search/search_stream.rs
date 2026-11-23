@@ -771,10 +771,11 @@ pub async fn values_http2_stream(
     // Build search requests per field and use only the first one
     // Checked before the schema read, whose missing-field reply would reveal the stream's fields.
     let stream = infra::rbac::Resource::stream(stream_type.as_str(), &values_req.stream_name);
-    if let Err(error) =
-        infra::rbac::authorize_user(&user_id, &org_id, infra::rbac::Action::Query, stream).await
+    if infra::rbac::authorize_user(&user_id, &org_id, infra::rbac::Action::Query, stream)
+        .await
+        .is_err()
     {
-        return MetaHttpResponse::forbidden(error);
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
     }
     let reqs = match build_search_request_per_field(
         &values_req,
