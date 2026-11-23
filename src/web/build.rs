@@ -35,6 +35,11 @@ fn main() {
     // a rebuilt web/dist would silently ship stale embedded assets.
     println!("cargo:rerun-if-changed={}", dist.display());
 
+    let worker = stream_worker_asset(&dist)
+        .map(|name| format!("assets/{name}"))
+        .unwrap_or_default();
+    println!("cargo:rustc-env=O2_UI_STREAM_WORKER_ASSET={worker}");
+
     // A wrong or missing folder embeds zero assets and only fails at runtime
     // with a blank UI (openobserve/openobserve#13197).
     if !dist.join("index.html").is_file() {
@@ -43,4 +48,29 @@ fn main() {
             dist.display()
         );
     }
+}
+
+fn stream_worker_asset(dist: &Path) -> Option<String> {
+    let mut worker = None;
+    for entry in fs::read_dir(dist.join("assets")).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().into_string().ok()?;
+        let Some(hash) = name
+            .strip_prefix("streamWorker-")
+            .and_then(|s| s.strip_suffix(".js"))
+        else {
+            continue;
+        };
+        if hash.is_empty()
+            || !hash
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_'))
+            || !entry.file_type().ok()?.is_file()
+            || worker.is_some()
+        {
+            return None;
+        }
+        worker = Some(name);
+    }
+    worker
 }

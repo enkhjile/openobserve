@@ -27,6 +27,7 @@ use config::{
         otlp::OtlpRequestType,
         self_reporting::{ai_chat::is_protected_ai_chat_stream, usage::UsageType},
         stream::{StreamParams, StreamType},
+        user::OrgIngestionPrincipal,
     },
     metrics,
     utils::{flatten, json, schema::format_stream_name},
@@ -35,7 +36,7 @@ use infra::{
     errors::{Error, Result},
     schema::get_flatten_level,
 };
-use ingestion_common::{IngestionStatus, RecordStatus, StreamStatus};
+use ingestion_common::{IngestUser, IngestionStatus, RecordStatus, StreamStatus};
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::{
@@ -69,6 +70,14 @@ fn normalized_resource_map(
         }
     }
     Some(normalized)
+}
+
+/// Under RBAC an org token is attributed to its verified row, never the Basic username it sent.
+fn attributed_user(scoped_user: Option<&IngestUser>, user_email: &str) -> String {
+    match scoped_user {
+        Some(token @ IngestUser::OrgToken(_)) => token.to_email(),
+        _ => user_email.to_owned(),
+    }
 }
 
 /// One OTLP log record as a JSON object, keys normalized up front when that is provably exact.
@@ -149,6 +158,29 @@ pub async fn handle_request(
     user_email: &str,
     req_type: OtlpRequestType,
 ) -> Result<Response> {
+    let principal = None;
+    handle_request_as(
+        thread_id,
+        org_id,
+        request,
+        in_stream_name,
+        user_email,
+        principal,
+        req_type,
+    )
+    .await
+}
+
+/// [`handle_request`] for a caller that authenticated with an org ingestion token.
+pub async fn handle_request_as(
+    thread_id: usize,
+    org_id: &str,
+    request: ExportLogsServiceRequest,
+    in_stream_name: Option<&str>,
+    user_email: &str,
+    principal: Option<&OrgIngestionPrincipal>,
+    req_type: OtlpRequestType,
+) -> Result<Response> {
     let start = std::time::Instant::now();
     let started_at = Utc::now().timestamp_micros();
 
@@ -164,6 +196,19 @@ pub async fn handle_request(
             "stream '{stream_name}' is reserved and cannot be ingested into"
         )));
     }
+    let scoped_user = infra::rbac::enabled().then(|| {
+        principal.map_or_else(
+            || IngestUser::User(user_email.to_owned()),
+            |p| IngestUser::OrgToken(p.clone()),
+        )
+    });
+    let scoped_pipelines = match &scoped_user {
+        Some(user) => Some(
+            crate::pipeline::rbac::authorize_log_destinations(org_id, &stream_name, user).await?,
+        ),
+        None => None,
+    };
+    let reported_user = attributed_user(scoped_user.as_ref(), user_email);
     check_ingestion_allowed(org_id, StreamType::Logs, Some(&stream_name)).await?;
     // Refused before the pipelines run: a remote-stream destination writes inside them.
     #[cfg(feature = "vectorscan")]
@@ -193,8 +238,10 @@ pub async fn handle_request(
 
     let stream_param = StreamParams::new(org_id, &stream_name, StreamType::Logs);
     // Start retrieve associated pipeline and construct pipeline components
-    let executable_pipelines =
-        crate::ingestion::get_stream_executable_pipelines(&stream_param).await;
+    let executable_pipelines = match scoped_pipelines {
+        Some(pipelines) => pipelines,
+        None => crate::ingestion::get_stream_executable_pipelines(&stream_param).await,
+    };
     let mut stream_params = vec![stream_param];
     let mut pipeline_inputs = Vec::new();
     let mut original_options = Vec::new();
@@ -429,6 +476,9 @@ pub async fn handle_request(
                 .await
             {
                 Err(e) => {
+                    if infra::rbac::enabled() {
+                        return Err(infra::rbac::denied(e));
+                    }
                     log::error!(
                         "[Pipeline] for stream {org_id}/{stream_name}: Batch execution error: {e}."
                     );
@@ -689,7 +739,7 @@ pub async fn handle_request(
     let write_result = super::write_logs_by_stream(
         thread_id,
         org_id,
-        user_email,
+        &reported_user,
         (started_at, &start),
         UsageType::Logs,
         &mut ingestion_status,
@@ -746,6 +796,9 @@ fn partial_success(status: &RecordStatus) -> Option<ExportLogsPartialSuccess> {
     })
 }
 
+#[cfg(test)]
+#[path = "otlp_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use config::{

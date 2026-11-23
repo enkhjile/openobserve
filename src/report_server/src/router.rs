@@ -73,6 +73,13 @@ pub async fn send_report(
     Query(query): Query<HashMap<String, String>>,
     Json(report): Json<models::Report>,
 ) -> Response {
+    if config::get_config().common.rbac_enabled {
+        return (
+            StatusCode::FORBIDDEN,
+            "Reports require a scoped RBAC execution identity",
+        )
+            .into_response();
+    }
     let timezone = match query.get("timezone") {
         Some(v) => v.as_str(),
         None => "Europe/London",
@@ -181,6 +188,9 @@ async fn require_shared_secret(secret: &str, request: Request, next: Next) -> Re
     }
 }
 
+#[cfg(test)]
+#[path = "router_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use axum::body::Body;

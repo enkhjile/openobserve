@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS pipeline
     stream_type     VARCHAR(50),
     derived_stream  TEXT,
     nodes           TEXT,
-    edges           TEXT
+    edges           TEXT,
+    execution_subject TEXT
 );
             "#,
         )
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS pipeline
         Ok(())
     }
 
-    async fn put(&self, pipeline: &Pipeline) -> Result<()> {
+    async fn put(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
         let client = CLIENT_RW.clone();
         let mut tx = client.begin().await?;
 
@@ -172,6 +173,13 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
             return Err(e.into());
         }
 
+        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
+            .bind(subject)
+            .bind(&pipeline.id)
+            .bind(&pipeline.org)
+            .execute(&mut *tx)
+            .await?;
+
         if let Err(e) = tx.commit().await {
             log::error!("[SQLITE] commit push pipeline error: {e}");
             return Err(e.into());
@@ -182,7 +190,7 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
         Ok(())
     }
 
-    async fn update(&self, pipeline: &Pipeline) -> Result<()> {
+    async fn update(&self, pipeline: &Pipeline, subject: Option<&str>) -> Result<()> {
         let client = CLIENT_RW.clone();
         let mut tx = client.begin().await?;
 
@@ -258,6 +266,13 @@ UPDATE pipeline
             }
             return Err(e.into());
         }
+
+        sqlx::query("UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3")
+            .bind(subject)
+            .bind(&pipeline.id)
+            .bind(&pipeline.org)
+            .execute(&mut *tx)
+            .await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[SQLITE] commit push pipeline error: {e}");

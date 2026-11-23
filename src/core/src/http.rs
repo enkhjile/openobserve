@@ -173,6 +173,7 @@ pub fn destination_error_response(value: DestinationError) -> Response {
 
 pub fn template_error_response(value: TemplateError) -> Response {
     match value {
+        TemplateError::AuthorizationDenied => MetaHttpResponse::forbidden("Access denied"),
         TemplateError::InfraError(err) => {
             MetaHttpResponse::internal_error(TemplateError::InfraError(err))
         }
@@ -271,6 +272,9 @@ impl From<ReportError> for Response {
             | ReportError::FolderNotFound => MetaHttpResponse::not_found(value),
             ReportError::ParseCronError(e) => MetaHttpResponse::bad_request(e),
             ReportError::DbError(e) => MetaHttpResponse::internal_error(e),
+            ReportError::SendReportError(
+                crate::dashboards::reports::SendReportError::AuthorizationDenied,
+            ) => MetaHttpResponse::forbidden("Access denied by organization RBAC policy"),
             ReportError::SendReportError(e) => MetaHttpResponse::internal_error(e),
             ReportError::CreateDefaultFolderError => MetaHttpResponse::internal_error(value),
         }
@@ -374,5 +378,16 @@ mod tests {
         let resp = map_error_to_http_response(&err, None);
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert!(resp.headers().get(ERROR_HEADER).is_none());
+    }
+
+    #[test]
+    fn a_report_send_refused_by_rbac_is_403_not_500() {
+        use crate::dashboards::reports::SendReportError;
+        let denied = Response::from(ReportError::SendReportError(
+            SendReportError::AuthorizationDenied,
+        ));
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let other = Response::from(ReportError::SendReportError(SendReportError::NoDashboards));
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

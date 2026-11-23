@@ -33,6 +33,7 @@ use crate::authz::{Refusal, WriteCheck};
 
 pub mod batch_execution;
 pub mod db;
+pub mod rbac;
 
 /// Validates that no JavaScript functions are used in the pipeline.
 /// JavaScript functions are restricted from pipelines in ALL organizations (including _meta).
@@ -305,8 +306,16 @@ pub async fn save_pipeline(pipeline: Pipeline) -> Result<(), PipelineError> {
 /// [`save_pipeline`], running `check` after every check of its own and before any write.
 #[tracing::instrument(skip(pipeline, check))]
 pub async fn save_pipeline_checked(
+    pipeline: Pipeline,
+    check: Option<&dyn WriteCheck<Pipeline>>,
+) -> Result<(), PipelineError> {
+    save_pipeline_scoped(pipeline, check, None).await
+}
+
+async fn save_pipeline_scoped(
     mut pipeline: Pipeline,
     check: Option<&dyn WriteCheck<Pipeline>>,
+    subject: Option<&str>,
 ) -> Result<(), PipelineError> {
     // check if id is missing
     if pipeline.id.is_empty() {
@@ -324,6 +333,11 @@ pub async fn save_pipeline_checked(
     #[cfg(not(feature = "enterprise"))]
     refuse_remote_node(&pipeline)?;
 
+    rbac::validate_save(&pipeline, subject).await.map_err(|_| {
+        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        )))
+    })?;
     // Runs after validate(), which rebuilds source from the first node: checking
     // pipeline.source before that compares a value which is never persisted.
     // Evaluation pipelines: any number allowed, no exclusivity check
@@ -364,7 +378,7 @@ pub async fn save_pipeline_checked(
         .map_err(trigger_write_error)?;
     }
 
-    if let Err(e) = pipeline::set(&pipeline).await {
+    if let Err(e) = pipeline::set_scoped(&pipeline, subject).await {
         log::error!("Failed to save pipeline: {e}");
         return Err(e);
     }
@@ -401,8 +415,16 @@ pub async fn update_pipeline(pipeline: Pipeline) -> Result<(), PipelineError> {
 /// [`update_pipeline`], running `check` after every check of its own and before any write.
 #[tracing::instrument(skip(pipeline, check))]
 pub async fn update_pipeline_checked(
+    pipeline: Pipeline,
+    check: Option<&dyn WriteCheck<Pipeline>>,
+) -> Result<(), PipelineError> {
+    update_pipeline_scoped(pipeline, check, None).await
+}
+
+async fn update_pipeline_scoped(
     mut pipeline: Pipeline,
     check: Option<&dyn WriteCheck<Pipeline>>,
+    subject: Option<&str>,
 ) -> Result<(), PipelineError> {
     default_node_orgs(&mut pipeline);
 
@@ -414,7 +436,7 @@ pub async fn update_pipeline_checked(
 
     // A retry after a failed trigger write carries the version from before its first attempt.
     let client_version = std::mem::replace(&mut pipeline.version, existing_pipeline.version);
-    if existing_pipeline == pipeline {
+    if !infra::rbac::enabled() && existing_pipeline == pipeline {
         return repair_missing_trigger(&mut pipeline).await;
     }
 
@@ -434,6 +456,12 @@ pub async fn update_pipeline_checked(
     // validate no JavaScript functions in pipeline
     validate_no_javascript_functions(&pipeline).await?;
 
+    // Authorized before the stream-in-use check, whose answer would reveal other pipelines.
+    rbac::validate_save(&pipeline, subject).await.map_err(|_| {
+        PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        )))
+    })?;
     // additional checks when the source is changed
     let source_changed = existing_pipeline.source != pipeline.source;
     // check if the new source exists in another pipeline
@@ -458,7 +486,7 @@ pub async fn update_pipeline_checked(
     // update the pipeline version
     pipeline.version += 1;
 
-    pipeline::update(&pipeline, prev_source_stream).await?;
+    pipeline::update_scoped(&pipeline, prev_source_stream, subject).await?;
 
     write_trigger(Some(&existing_pipeline), &pipeline, validated_source).await
 }
@@ -478,6 +506,29 @@ pub async fn update_user_pipeline_checked(
     get_user_pipeline(org_id, &pipeline.id).await?;
     pipeline.kind = PipelineKind::User;
     update_pipeline_checked(pipeline, check).await
+}
+
+pub async fn save_user_pipeline_as_subject(
+    mut pipeline: Pipeline,
+    subject: &str,
+) -> Result<(), PipelineError> {
+    if let Ok(existing) = pipeline::get_by_id(&pipeline.id).await
+        && (existing.org != pipeline.org || !existing.is_user())
+    {
+        return Err(PipelineError::NotFound(pipeline.id));
+    }
+    pipeline.kind = PipelineKind::User;
+    save_pipeline_scoped(pipeline, None, Some(subject)).await
+}
+
+pub async fn update_user_pipeline_as_subject(
+    org: &str,
+    mut pipeline: Pipeline,
+    subject: &str,
+) -> Result<(), PipelineError> {
+    get_user_pipeline(org, &pipeline.id).await?;
+    pipeline.kind = PipelineKind::User;
+    update_pipeline_scoped(pipeline, None, Some(subject)).await
 }
 
 #[tracing::instrument]

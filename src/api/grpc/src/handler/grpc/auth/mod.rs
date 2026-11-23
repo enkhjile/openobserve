@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use common::infra::config::{ORG_INGESTION_TOKENS, ROOT_USER};
-use config::meta::cluster::get_internal_grpc_token;
+use config::meta::{cluster::get_internal_grpc_token, user::OrgIngestionPrincipal};
 use db::{org_users::get_cached_user_org, user::is_root_user};
 use http_auth_basic::Credentials;
 use infra::table::org_ingestion_tokens::{ORG_INGESTION_TOKEN_PREFIX, is_writer_token_name};
@@ -41,6 +41,39 @@ pub fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
 /// [`check_internal_auth`], so an ingestion token cannot authorize query or node APIs.
 pub fn check_otlp_auth(req: Request<()>) -> Result<Request<()>, Status> {
     check_auth_inner(req, true)
+}
+
+/// Authenticate OTLP log exports, the one OTLP service with a scoped RBAC adapter.
+pub fn check_otlp_logs_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    // An internal-token caller can assert any `user_id`, so scoped exports need their own
+    // credential.
+    if infra::rbac::enabled() && is_internal_token(auth_token(req.metadata())?) {
+        return Err(Status::permission_denied(
+            "Scoped OTLP export requires the caller's own credential",
+        ));
+    }
+    check_auth_inner(req, true)
+}
+
+/// The org ingestion token an authenticated OTLP export used, re-read from the primary store.
+pub async fn scoped_otlp_principal(
+    metadata: &MetadataMap,
+    org_id: &str,
+) -> Result<Option<OrgIngestionPrincipal>, Status> {
+    let Some(password) = basic_password(metadata) else {
+        return Err(Status::unauthenticated("No valid auth token[3]"));
+    };
+    if !password.starts_with(ORG_INGESTION_TOKEN_PREFIX) {
+        return Ok(None);
+    }
+    let row = infra::table::org_ingestion_tokens::find_enabled_token_primary(org_id, &password)
+        .await
+        .map_err(|_| Status::permission_denied("Ingestion credential verification failed"))?
+        .ok_or_else(|| Status::unauthenticated("Invalid ingestion credential"))?;
+    Ok(Some(OrgIngestionPrincipal {
+        org_id: row.org_id,
+        token_id: row.id,
+    }))
 }
 
 /// Authenticate node-to-node RPCs, which accept only the internal or super-cluster token.
@@ -213,6 +246,8 @@ fn attach_user_id(mut req: Request<()>, user_id: &str) -> Result<Request<()>, St
     Ok(req)
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 pub(crate) mod tests {
     use common::infra::config::{ORG_INGESTION_TOKENS, ORG_USERS, USERS};

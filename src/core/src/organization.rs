@@ -310,6 +310,11 @@ pub async fn update_service_account_passcode(
     org_id: Option<&str>,
     user_id: &str,
 ) -> Result<IngestionPasscode, anyhow::Error> {
+    if infra::rbac::enabled() {
+        let org_id =
+            org_id.ok_or_else(|| anyhow::anyhow!("Service account target is not permitted"))?;
+        infra::rbac::validate_service_account_target(org_id, user_id).await?;
+    }
     match update_passcode_inner(org_id, user_id, false, true).await {
         Ok(IngestionTokensContainer::Passcode(response)) => Ok(response),
         Err(e) => Err(e),
@@ -347,7 +352,7 @@ async fn update_passcode_inner(
     let token = generate_random_string(16);
     let rum_token = format!("rum{}", generate_random_string(16));
 
-    if !is_root_user(user_id) {
+    if (infra::rbac::enabled() && is_service_account) || !is_root_user(user_id) {
         let orgs = db_user
             .organizations
             .iter()
@@ -1561,6 +1566,9 @@ pub async fn get_sre_agent_credentials(org_id: &str) -> Result<(String, String),
     }
 }
 
+#[cfg(test)]
+#[path = "organization_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use infra::{db as infra_db, table as infra_table};

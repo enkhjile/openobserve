@@ -20,6 +20,7 @@ pub struct Model {
     pub tz_offset: i32,
     pub owner: Option<String>,
     pub last_edited_by: Option<String>,
+    pub execution_context: Option<String>,
     pub created_at: i64,
     pub updated_at: Option<i64>,
     pub start_at: i64,
@@ -73,6 +74,7 @@ mod tests {
     #[test]
     fn test_model_construction() {
         let m = Model {
+            execution_context: None,
             id: "report-1".to_string(),
             org: "myorg".to_string(),
             folder_id: "folder-1".to_string(),

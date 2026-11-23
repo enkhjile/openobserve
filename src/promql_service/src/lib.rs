@@ -17,6 +17,7 @@
 //!
 //! The storage-agnostic parser and evaluator live in the `promql` crate.
 
+pub mod rbac;
 pub mod search;
 mod service;
 

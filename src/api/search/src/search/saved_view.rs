@@ -18,6 +18,8 @@ use db::{
     authz::{remove_ownership, set_ownership},
     saved_view,
 };
+use openobserve_api_common::extractors::Headers;
+use openobserve_core::auth::UserEmail;
 
 use crate::common::meta::{
     authz::Authz,
@@ -102,10 +104,24 @@ pub async fn get_view(Path(path): Path<(String, String)>) -> Response {
         ("x-o2-mcp" = json!({"description": "List all saved views", "category": "search"}))
     )
 )]
-pub async fn get_views(Path(path): Path<String>) -> Response {
+pub async fn get_views(Path(path): Path<String>, Headers(user): Headers<UserEmail>) -> Response {
     let org_id = path;
     match saved_view::get_views_list_only(&org_id).await {
-        Ok(views) => MetaHttpResponse::json(views),
+        Ok(mut views) => {
+            let kind = infra::rbac::ResourceKind::SavedQuery;
+            let read = infra::rbac::Action::Read;
+            let all = views.views;
+            views.views =
+                match infra::rbac::retain_allowed(&user.user_id, &org_id, read, all, |v| {
+                    infra::rbac::Resource::new(kind, &v.view_id)
+                })
+                .await
+                {
+                    Ok(views) => views,
+                    Err(_) => return MetaHttpResponse::forbidden("RBAC access denied"),
+                };
+            MetaHttpResponse::json(views)
+        }
         Err(e) => MetaHttpResponse::bad_request(e),
     }
 }
@@ -246,6 +262,9 @@ pub async fn update_view(
 }
 
 #[cfg(test)]
+#[path = "saved_view_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use axum::{
         Router,
@@ -272,6 +291,7 @@ mod tests {
             .method(method)
             .uri(uri)
             .header("content-type", "application/json")
+            .header("user_id", "viewer@example.com")
             .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
             .unwrap();
         let resp = app().oneshot(req).await.unwrap();

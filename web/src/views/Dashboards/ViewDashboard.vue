@@ -69,7 +69,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         <template #actions>
           <!-- Add panel is the most-used action, so it leads the toolbar. -->
           <OButton
-            v-if="!isFullscreen && !isEditingLayout"
+            v-if="canMutateDashboard && !isFullscreen && !isEditingLayout"
             v-show="store.state.printMode !== true"
             variant="outline"
             :size="isMobile ? 'icon-toolbar' : 'sm-toolbar'"
@@ -227,7 +227,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
             </ODropdown>
           </OButtonGroup>
           <OButton
-            v-if="!isFullscreen && !isEditingLayout"
+            v-if="canMutateDashboard && !isFullscreen && !isEditingLayout"
             v-show="store.state.printMode !== true"
             variant="outline"
             :size="isMobile ? 'icon-toolbar' : 'sm-toolbar'"
@@ -465,6 +465,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 </ODropdownItem>
                 <ODropdownSeparator />
                 <ODropdownItem
+                  v-if="canMutateDashboard"
                   data-test="dashboard-setting-btn"
                   icon-left="settings"
                   @select="openSettingsDialog"
@@ -472,6 +473,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   {{ settingsButtonLabel }}
                 </ODropdownItem>
                 <ODropdownItem
+                  v-if="canMutateDashboard"
                   data-test="dashboard-json-edit-btn"
                   icon-left="code"
                   @select="openJsonEditor"
@@ -479,6 +481,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   {{ t("dashboard.editJson") }}
                 </ODropdownItem>
                 <ODropdownItem
+                  v-if="canSetHome"
                   data-test="dashboard-view-set-home-btn"
                   :icon-left="isHome(dashboardId) ? 'keep' : 'keep-outline'"
                   :description="isHome(dashboardId) ? null : t('dashboard.setAsHomeDesc')"
@@ -593,7 +596,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           @refreshedVariablesDataUpdated="refreshedVariablesDataUpdated"
           @variablesManagerReady="onVariablesManagerReady"
           :initialVariableValues="initialVariableValues"
-          :viewOnly="store.state.printMode || kioskMode"
+          :viewOnly="!canMutateDashboard || store.state.printMode || kioskMode"
           :kiosk="kioskMode"
           :readOnlySelectors="playlistEmbed || playlistPageActive"
           :fitToScreen="kioskMode && kioskFit"
@@ -607,7 +610,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           :dashboardName="currentDashboardData.data?.title"
           :folderName="folderNameFromFolderId"
           :selectedDateForViewPanel="selectedDate"
-          :allowAlertCreation="true"
+          :allowAlertCreation="canMutateDashboard"
           @onDeletePanel="onDeletePanel"
           @onMovePanel="onMovePanel"
           @updated:data-zoom="onDataZoom"
@@ -733,6 +736,7 @@ import {
   useRouter,
   type RouteLocationNormalized,
 } from "vue-router";
+import { useDashboardPermissions } from "@/composables/useDashboardRbac";
 import { getDashboard, movePanelToAnotherTab, getFoldersList } from "../../utils/commons.ts";
 import { generateDurationLabel, getConsumableRelativeTime } from "../../utils/date";
 import { parseCalendarToken } from "@/utils/dashboard/calendarPeriods";
@@ -897,6 +901,14 @@ export default defineComponent({
     const route = useRoute();
     const router = useRouter();
     const store = useStore();
+    const dashboardPermissions = useDashboardPermissions(
+      computed(() => store.state.selectedOrganization.identifier),
+      config.isEnterprise === "true" || config.isCloud === "true",
+    );
+    const canMutateDashboard = computed(() =>
+      dashboardPermissions(String(route.query.dashboard ?? "")),
+    );
+    const canSetHome = computed(() => dashboardPermissions(null));
     const currentDashboardData = reactive({
       data: {},
     });
@@ -964,6 +976,7 @@ export default defineComponent({
     // reactive state with the dashboard list and HomeView via the composable.
     const { isHome, setHomeDashboard, clearHomeDashboard } = useHomeDashboard(t);
     const toggleHomeDashboard = async () => {
+      if (!canSetHome.value) return;
       const id = dashboardId.value as string | undefined;
       if (!id) return;
       const org = store.state.selectedOrganization?.identifier;
@@ -1430,6 +1443,7 @@ export default defineComponent({
     // [END] cancel running queries
 
     const openSettingsDialog = () => {
+      if (!canMutateDashboard.value) return;
       showDashboardSettingsDialog.value = true;
     };
 
@@ -1485,7 +1499,7 @@ export default defineComponent({
     const isSavingLayout = ref(false);
 
     const enterLayoutEdit = () => {
-      if (store.state.printMode || kioskMode.value) return;
+      if (!canMutateDashboard.value || store.state.printMode || kioskMode.value) return;
       layoutDraft.start();
     };
 
@@ -2009,6 +2023,7 @@ export default defineComponent({
 
     //add panel
     const addPanelData = () => {
+      if (!canMutateDashboard.value) return;
       return router.push({
         path: "/dashboards/add_panel",
         query: {
@@ -2877,6 +2892,7 @@ export default defineComponent({
     const showJsonEditorDialog = ref(false);
 
     const openJsonEditor = () => {
+      if (!canMutateDashboard.value) return;
       showJsonEditorDialog.value = true;
     };
 
@@ -2965,6 +2981,8 @@ export default defineComponent({
     ]);
 
     return {
+      canMutateDashboard,
+      canSetHome,
       isMobile,
       currentDashboardData,
       dashboardRemountKey,

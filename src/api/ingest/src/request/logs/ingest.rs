@@ -45,7 +45,7 @@ use crate::{
     request::logs::otlp_utf8::sanitize_invalid_utf8,
     service::{
         ingestion::get_thread_id,
-        logs::{self, otlp::handle_request},
+        logs::{self, otlp::handle_request_as},
     },
 };
 
@@ -211,6 +211,7 @@ pub async fn bulk(
 pub async fn multi(
     Path((org_id, stream_name)): Path<(String, String)>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     body: Bytes,
 ) -> Response {
     let user_email = &user_email.user_id;
@@ -229,7 +230,9 @@ pub async fn multi(
         &org_id,
         &stream_name,
         IngestionRequest::Multi(body),
-        IngestUser::from_user_email(user_email.clone()),
+        principal
+            .map(|axum::Extension(p)| IngestUser::OrgToken(p))
+            .unwrap_or_else(|| IngestUser::from_user_email(user_email.clone())),
         None,
         false,
     )
@@ -244,7 +247,9 @@ pub async fn multi(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_multi: {e}");
             }
-            if matches!(e, infra::errors::Error::ResourceError(_)) {
+            if infra::rbac::is_denied(&e) {
+                MetaHttpResponse::forbidden("Access denied by organization RBAC policy")
+            } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(MetaHttpResponse::error(StatusCode::SERVICE_UNAVAILABLE, e)),
@@ -295,6 +300,7 @@ pub async fn multi(
 pub async fn json(
     Path((org_id, stream_name)): Path<(String, String)>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     body: Bytes,
 ) -> Response {
     let user_email = &user_email.user_id;
@@ -313,7 +319,9 @@ pub async fn json(
         &org_id,
         &stream_name,
         IngestionRequest::JSON(body),
-        IngestUser::from_user_email(user_email.clone()),
+        principal
+            .map(|axum::Extension(p)| IngestUser::OrgToken(p))
+            .unwrap_or_else(|| IngestUser::from_user_email(user_email.clone())),
         None,
         false,
     )
@@ -328,7 +336,9 @@ pub async fn json(
             if !matches!(e, infra::errors::Error::TrialPeriodExpired) {
                 log::error!("Error processing request {org_id}/{stream_name}/_json: {e}");
             }
-            if matches!(e, infra::errors::Error::ResourceError(_)) {
+            if infra::rbac::is_denied(&e) {
+                MetaHttpResponse::forbidden("Access denied by organization RBAC policy")
+            } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(MetaHttpResponse::error(StatusCode::SERVICE_UNAVAILABLE, e)),
@@ -539,6 +549,7 @@ pub async fn handle_gcp_request(
 pub async fn otlp_logs_write(
     Path(org_id): Path<String>,
     Headers(user_email): Headers<UserEmail>,
+    principal: Option<axum::Extension<config::meta::user::OrgIngestionPrincipal>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -623,12 +634,13 @@ pub async fn otlp_logs_write(
         }
     };
 
-    match handle_request(
+    match handle_request_as(
         thread_id,
         &org_id,
         request,
         in_stream_name,
         user_email,
+        principal.as_ref().map(|axum::Extension(p)| p),
         request_type,
     )
     .await
@@ -644,9 +656,15 @@ pub async fn otlp_logs_write(
             let status = match e {
                 infra::errors::Error::ResourceError(_) => StatusCode::SERVICE_UNAVAILABLE,
                 infra::errors::Error::TrialPeriodExpired => StatusCode::TOO_MANY_REQUESTS,
+                ref denied if infra::rbac::is_denied(denied) => StatusCode::FORBIDDEN,
                 _ => StatusCode::BAD_REQUEST,
             };
-            otlp_rejection_response(request_type, status, e.to_string())
+            let message = if infra::rbac::is_denied(&e) {
+                "Access denied by organization RBAC policy".to_string()
+            } else {
+                e.to_string()
+            };
+            otlp_rejection_response(request_type, status, message)
         }
     }
 }
@@ -740,6 +758,7 @@ mod tests {
             Headers(UserEmail {
                 user_id: "a@a.com".to_string(),
             }),
+            None,
             headers,
             Bytes::from_static(body),
         )

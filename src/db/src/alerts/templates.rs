@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod rbac;
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -42,6 +44,8 @@ const TEMPLATE_WATCHER_PREFIX: &str = "/templates/";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
+    #[error("Access denied")]
+    AuthorizationDenied,
     #[error("InfraError# {0}")]
     InfraError(#[from] infra::errors::Error),
     #[error("Template name cannot be empty")]
@@ -92,7 +96,19 @@ pub enum TemplateError {
     DeleteWithBinding(String),
 }
 
+pub async fn ensure_rbac_local_mutation(org: &str, name: &str) -> Result<(), TemplateError> {
+    if infra::rbac::enabled() {
+        rbac::ensure_mutation_on(infra::db::get_orm_client_rw().await, org, name).await?;
+    }
+    Ok(())
+}
+
 pub async fn get(org_id: &str, name: &str) -> Result<Template, TemplateError> {
+    if infra::rbac::enabled() {
+        return rbac::get_on(infra::db::get_orm_client_rw().await, org_id, name)
+            .await?
+            .ok_or(TemplateError::NotFound);
+    }
     if !follows_alias(name) {
         return get_shared(org_id, name).await;
     }
@@ -272,6 +288,9 @@ pub async fn tuple_owners(
 }
 
 pub async fn list(org_id: &str) -> Result<Vec<Template>, TemplateError> {
+    if infra::rbac::enabled() {
+        return rbac::list_on(infra::db::get_orm_client_rw().await, org_id).await;
+    }
     let cache = ALERTS_TEMPLATES.clone();
     if !cache.is_empty() {
         return Ok(cache
@@ -571,7 +590,7 @@ async fn disown_old_name(r: &table::templates::ReservedRename) -> Result<(), Tem
 
 // A `default` template is shared by every org, so its references are checked across all orgs.
 fn references_from(org_id: &str, cache_key: &str) -> bool {
-    org_id == DEFAULT_ORG
+    (org_id == DEFAULT_ORG && !infra::rbac::enabled())
         || cache_key
             .strip_prefix(org_id)
             .is_some_and(|rest| rest.starts_with('/'))

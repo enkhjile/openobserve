@@ -39,9 +39,11 @@ import { destinationsQuery } from "@/services/alert_destination.queries";
 import { templatesQuery } from "@/services/alert_templates.queries";
 import { templateKeys } from "@/services/alert_templates.querykeys";
 import { queryClient } from "@/composables/query/queryClient";
-import { defineComponent, ref, onBeforeMount, onBeforeUnmount } from "vue";
+import { defineComponent, ref, watch, onBeforeMount, onBeforeUnmount } from "vue";
 import { useStore } from "vuex";
 import { useRouter, useRoute } from "vue-router";
+import config from "@/aws-exports";
+import { readMembership } from "@/composables/useDashboardRbac";
 import AddAlert from "@/components/alerts/AddAlert.vue";
 import { toast } from "@/lib/feedback/Toast/useToast";
 import { useI18nTyped } from "@/types/i18n";
@@ -129,11 +131,31 @@ export default defineComponent({
       }
     };
 
+    let deliveryAccess: { org: string; allowed: Promise<boolean> } | undefined;
+    const canReadDeliveryConfig = (org: string) => {
+      if (config.isEnterprise === "true" || config.isCloud === "true") return Promise.resolve(true);
+      if (deliveryAccess?.org !== org) {
+        deliveryAccess = {
+          org,
+          allowed: readMembership(org).then(
+            (member) => member?.enabled !== true || member.can_manage === true,
+          ),
+        };
+      }
+      return deliveryAccess.allowed;
+    };
+
     const getDestinations = async () => {
+      const org = store.state.selectedOrganization.identifier;
+      if (!(await canReadDeliveryConfig(org))) {
+        if (org === store.state.selectedOrganization.identifier && isViewActive)
+          destinations.value = [];
+        return;
+      }
       try {
-        destinations.value = (await queryClient.fetchQuery(
-          destinationsQuery(store.state.selectedOrganization.identifier, "alert"),
-        )) as any;
+        const result = await queryClient.fetchQuery(destinationsQuery(org, "alert"));
+        if (org === store.state.selectedOrganization.identifier && isViewActive)
+          destinations.value = result as any;
       } catch (error) {
         toast({
           variant: "error",
@@ -153,10 +175,16 @@ export default defineComponent({
 
     // The Advanced tab lists these as the template override options.
     const getTemplates = async () => {
+      const org = store.state.selectedOrganization.identifier;
+      if (!(await canReadDeliveryConfig(org))) {
+        if (org === store.state.selectedOrganization.identifier && isViewActive)
+          templates.value = [];
+        return;
+      }
       try {
-        templates.value = await queryClient.fetchQuery(
-          templatesQuery(store.state.selectedOrganization.identifier),
-        );
+        const result = await queryClient.fetchQuery(templatesQuery(org));
+        if (org === store.state.selectedOrganization.identifier && isViewActive)
+          templates.value = result;
       } catch (error: any) {
         if (error?.response?.status === 403) return;
         toast({
@@ -214,6 +242,17 @@ export default defineComponent({
     };
 
     const handleCancel = () => openAlertList((route.query.folder as string) || "default");
+
+    watch(
+      () => store.state.selectedOrganization.identifier,
+      () => {
+        deliveryAccess = undefined;
+        destinations.value = [];
+        templates.value = [];
+        void Promise.all([getDestinations(), getTemplates()]);
+      },
+      { flush: "sync" },
+    );
 
     onBeforeMount(() => {
       // In parallel: the form needs destinations and templates either way, and edit mode

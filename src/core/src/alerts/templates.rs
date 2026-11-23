@@ -58,13 +58,13 @@ pub(crate) fn resolve_kind(
     }
 }
 
-// Only root may reach a shared `default` template through another org's path.
+// Legacy root fallback must not cross organization boundaries under RBAC.
 pub(crate) fn write_org(
     path_org: &str,
     existing_org: &str,
     is_root: bool,
 ) -> Result<String, TemplateError> {
-    if existing_org == path_org || is_root {
+    if existing_org == path_org || (is_root && !infra::rbac::enabled()) {
         Ok(existing_org.to_string())
     } else {
         Err(TemplateError::NotFound)
@@ -148,10 +148,7 @@ pub async fn save(
             // shadow or conflict with the system-managed record.
             return Err(TemplateError::ReservedName(template.name.clone()));
         }
-        // Updates are allowed for root (internal ops / self-hosted admins);
-        // all other callers get a 403. The `prebuilt_default` row mirrors code
-        // and stay read only for root too: the seeder owns them.
-        if !is_root || is_compiled_default_name(&template.name) {
+        if !is_root || infra::rbac::enabled() || is_compiled_default_name(&template.name) {
             return Err(TemplateError::PrebuiltReadOnly(template.name.clone()));
         }
     }
@@ -172,8 +169,12 @@ pub async fn save(
         }
     };
 
+    db::alerts::templates::ensure_rbac_local_mutation(&template.org_id, &template.name).await?;
     let existing_kind = existing.as_ref().map(|e| e.kind);
     template.kind = resolve_kind(requested_kind, existing_kind, create);
+    if infra::rbac::enabled() && template.kind != TemplateKind::Custom {
+        return Err(TemplateError::AuthorizationDenied);
+    }
     // Before the content parse below, so an oversized new draft is not parsed.
     template.body = limit_body(
         std::mem::take(&mut template.body),
@@ -251,11 +252,14 @@ pub async fn list(
 }
 
 pub async fn delete(org_id: &str, name: &str, is_root: bool) -> Result<(), TemplateError> {
-    if (!is_root && is_reserved_template_name(name)) || is_compiled_default_name(name) {
+    if ((!is_root || infra::rbac::enabled()) && is_reserved_template_name(name))
+        || is_compiled_default_name(name)
+    {
         return Err(TemplateError::PrebuiltReadOnly(name.to_string()));
     }
     let existing = db::alerts::templates::get(org_id, name).await?;
     let owner = write_org(org_id, &existing.org_id, is_root)?;
+    db::alerts::templates::ensure_rbac_local_mutation(&owner, name).await?;
     let used = used_by(&owner, name).await?;
     if let Some(by) = used.bindings_outside_caches(&owner, is_root) {
         return Err(TemplateError::DeleteWithBinding(by));
@@ -341,9 +345,9 @@ pub(crate) fn describe_bindings(bindings: &[Binding], caller_org: &str, is_root:
     parts.join(", ")
 }
 
-/// A `default` template is shared, so its bindings are looked up in every org.
+// Legacy default bindings span organizations; enabled RBAC usage stays within the owner.
 fn binding_scope(org_id: &str) -> Option<&str> {
-    (org_id != DEFAULT_ORG).then_some(org_id)
+    (infra::rbac::enabled() || org_id != DEFAULT_ORG).then_some(org_id)
 }
 
 /// Level 1 overrides of `kind` that name the template.

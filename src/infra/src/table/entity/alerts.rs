@@ -76,6 +76,7 @@ pub struct Model {
     pub trigger_tolerance_seconds: Option<i64>,
     pub owner: Option<String>,
     pub last_edited_by: Option<String>,
+    pub execution_subject: Option<String>,
     pub updated_at: Option<i64>,
     pub align_time: bool,
     // Legacy deduplication columns: no longer read or written, dropped in a later release.
@@ -171,6 +172,7 @@ mod tests {
             trigger_tolerance_seconds: None,
             owner: Some("admin@example.com".to_string()),
             last_edited_by: None,
+            execution_subject: None,
             updated_at: Some(1000),
             align_time: false,
             dedup_enabled: false,

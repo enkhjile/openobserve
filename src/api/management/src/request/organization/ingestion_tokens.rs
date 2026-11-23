@@ -180,6 +180,13 @@ pub async fn enable_disable_ingestion_token(
         return resp;
     }
 
+    if infra::rbac::enabled() {
+        let target = infra::table::org_ingestion_tokens::get_by_name_rw(&org_id, &name).await;
+        if !matches!(target, Ok(Some(row)) if !row.is_default && row.created_by != "system" && !is_writer_token_name(&row.name))
+        {
+            return MetaHttpResponse::forbidden("Ingestion credential is not manageable");
+        }
+    }
     if body.enabled.is_none() && body.splunk_token.is_none() {
         return MetaHttpResponse::bad_request(
             "At least one of 'enabled' or 'splunk_token' is required",

@@ -46,6 +46,36 @@ pub async fn search(
 ) -> Result<(SessionContext, Arc<dyn ExecutionPlan>, ScanStats), Error> {
     log::info!("[trace_id {trace_id}] flight->search: start");
     let (ctx, physical_plan, source) = decode_plan(trace_id, req).await?;
+    if infra::rbac::enabled() {
+        let resource = infra::rbac::Resource::stream(
+            source.stream_type.as_str(),
+            &source.stream.stream_name(),
+        );
+        let decision = if let Some(subject) = req.super_cluster_info.rbac_subject.as_deref() {
+            infra::rbac::authorize_subject(
+                subject,
+                &req.query_identifier.org_id,
+                infra::rbac::Action::Query,
+                resource,
+            )
+            .await
+        } else {
+            let user = req
+                .super_cluster_info
+                .user_id
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| infra::rbac::denied("Flight requires an execution identity"))?;
+            infra::rbac::authorize_user(
+                user,
+                &req.query_identifier.org_id,
+                infra::rbac::Action::Query,
+                resource,
+            )
+            .await
+        };
+        decision.map_err(infra::rbac::denied)?;
+    }
     let redaction = ScanRedaction::load(
         &req.query_identifier.org_id,
         source.stream_type,

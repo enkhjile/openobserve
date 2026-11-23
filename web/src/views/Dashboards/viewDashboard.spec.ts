@@ -296,6 +296,9 @@ import { getManager } from "@/lib/vue-shortcut-manager";
 import { DASHBOARD_FRESH_PANEL_TIME } from "@/composables/dashboard/dashboardFreshPanelTime";
 
 vi.mock("@/services/product_analytics", () => ({ default: { track: vi.fn() } }));
+vi.mock("@/services/rbac", () => ({
+  default: { me: vi.fn().mockResolvedValue({ data: { enabled: false } }) },
+}));
 
 describe("ViewDashboard", () => {
   let wrapper: any;

@@ -260,6 +260,7 @@ pub enum ErrorCodes {
     SearchHistogramNotAvailable(String),
     /// The stream holds internal records that only their own API reads; carries the stream.
     SearchStreamProtected(String),
+    AuthorizationDenied(String),
     /// The o2-ai replica holding a conversation is unreachable; carries the
     /// session id. Recoverable — the UI restores it into a fresh session.
     AiSessionOwnerUnavailable(String),
@@ -355,7 +356,9 @@ impl ErrorCodes {
             ErrorCodes::SearchCancelQuery(_) | ErrorCodes::RatelimitExceeded(_) => 429,
             ErrorCodes::SearchTimeout(_) => 408,
             ErrorCodes::AiSessionOwnerUnavailable(_) | ErrorCodes::AiChatSessionBusy(_) => 409,
-            ErrorCodes::LicenseFeatureNotEntitled(_) | ErrorCodes::SearchStreamProtected(_) => 403,
+            ErrorCodes::LicenseFeatureNotEntitled(_)
+            | ErrorCodes::SearchStreamProtected(_)
+            | ErrorCodes::AuthorizationDenied(_) => 403,
             ErrorCodes::ServerInternalError(_) | ErrorCodes::SearchParquetFileNotFound => 500,
             ErrorCodes::ServiceUnavailable(_) => 503,
             ErrorCodes::InvalidParams(_)
@@ -388,6 +391,7 @@ impl ErrorCodes {
             ErrorCodes::RatelimitExceeded(_) => 20012,
             ErrorCodes::SearchHistogramNotAvailable(_) => 20013,
             ErrorCodes::SearchStreamProtected(_) => 20014,
+            ErrorCodes::AuthorizationDenied(_) => 20015,
             ErrorCodes::AiSessionOwnerUnavailable(_) => 30001,
             ErrorCodes::AiChatSessionBusy(_) => 30002,
             ErrorCodes::LicenseFeatureNotEntitled(_) => 40001,
@@ -421,6 +425,7 @@ impl ErrorCodes {
             ErrorCodes::SearchHistogramNotAvailable(_) => {
                 "Search histogram not available".to_string()
             }
+            ErrorCodes::AuthorizationDenied(_) => "Access denied".to_string(),
             ErrorCodes::SearchStreamProtected(stream) => {
                 format!("Stream {stream} holds internal records and cannot be searched")
             }
@@ -461,6 +466,7 @@ impl ErrorCodes {
             ErrorCodes::RatelimitExceeded(msg) => msg.to_owned(),
             ErrorCodes::SearchHistogramNotAvailable(msg) => msg.to_owned(),
             ErrorCodes::SearchStreamProtected(stream) => stream.to_owned(),
+            ErrorCodes::AuthorizationDenied(message) => message.to_owned(),
             ErrorCodes::AiSessionOwnerUnavailable(session_id) => session_id.to_owned(),
             ErrorCodes::AiChatSessionBusy(session_id) => session_id.to_owned(),
             ErrorCodes::LicenseFeatureNotEntitled(features) => features.to_owned(),
@@ -485,6 +491,7 @@ impl ErrorCodes {
             ErrorCodes::RatelimitExceeded(msg) => msg.to_owned(),
             ErrorCodes::SearchHistogramNotAvailable(msg) => msg.to_owned(),
             ErrorCodes::SearchStreamProtected(_) => "".to_string(),
+            ErrorCodes::AuthorizationDenied(_) => "".to_string(),
             ErrorCodes::AiSessionOwnerUnavailable(session_id) => session_id.to_owned(),
             ErrorCodes::AiChatSessionBusy(session_id) => session_id.to_owned(),
             ErrorCodes::LicenseFeatureNotEntitled(features) => features.to_owned(),
@@ -542,6 +549,7 @@ impl ErrorCodes {
             20012 => Ok(ErrorCodes::RatelimitExceeded(message)),
             20013 => Ok(ErrorCodes::SearchHistogramNotAvailable(message)),
             20014 => Ok(ErrorCodes::SearchStreamProtected(message)),
+            20015 => Ok(ErrorCodes::AuthorizationDenied(message)),
             30001 => Ok(ErrorCodes::AiSessionOwnerUnavailable(message)),
             30002 => Ok(ErrorCodes::AiChatSessionBusy(message)),
             40001 => Ok(ErrorCodes::LicenseFeatureNotEntitled(message)),
@@ -560,6 +568,8 @@ pub enum JwtError {
     ValidationFailed(),
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

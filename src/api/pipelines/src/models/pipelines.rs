@@ -71,7 +71,11 @@ impl Pipeline {
             nodes: meta_pipeline.nodes,
             edges: meta_pipeline.edges,
             paused_at,
-            last_error,
+            last_error: if infra::rbac::enabled() {
+                None
+            } else {
+                last_error
+            },
         }
     }
 }
@@ -125,6 +129,9 @@ pub struct PipelineBulkEnableResponse {
     pub err: Option<String>,
 }
 
+#[cfg(test)]
+#[path = "pipelines_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use config::meta::{pipeline::components::DerivedStream, stream::StreamParams};

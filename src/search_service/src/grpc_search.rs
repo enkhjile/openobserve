@@ -38,6 +38,7 @@ pub async fn grpc_search(
     in_req: &search::Request,
     role_group: Option<RoleGroup>,
 ) -> Result<search::Response, Error> {
+    let rbac_subject = infra::rbac::caller::subject();
     let mut nodes = cluster::get_cached_online_querier_nodes(role_group)
         .await
         .unwrap_or_default();
@@ -73,6 +74,7 @@ pub async fn grpc_search(
             org_id: org_id.to_string(),
             stream_type: stream_type.to_string(),
             user_id: user_id.clone(),
+            rbac_subject: rbac_subject.clone(),
             request: req,
         });
         let node = Arc::new(node) as _;
@@ -141,6 +143,7 @@ pub async fn grpc_search_multi(
                 org_id: org_id.to_string(),
                 stream_type: stream_type.to_string(),
                 user_id: user_id.clone(),
+                rbac_subject: None,
                 request: req,
             });
             let node = Arc::new(node) as _;

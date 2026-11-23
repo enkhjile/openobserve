@@ -602,6 +602,10 @@ pub async fn create_report_v2(
     axum::Json(mut report): axum::Json<Report>,
 ) -> Response {
     let folder_id = get_folder(uri.query().unwrap_or(""));
+    let user = &user_email.user_id;
+    if let Err(denied) = reports::scoped::bind_new(&mut report, &org_id, user, &folder_id).await {
+        return MetaHttpResponse::forbidden(denied);
+    }
     if report.owner.is_empty() {
         report.owner = user_email.user_id.clone();
     }
@@ -652,8 +656,18 @@ pub async fn create_report_v2(
 pub async fn list_reports_v2(
     Path(org_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
+    let readable_ids = match infra::rbac::readable_object_ids(
+        &user_email.user_id,
+        &org_id,
+        infra::rbac::ResourceKind::Report,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(_) => return MetaHttpResponse::forbidden("Access denied by organization RBAC policy"),
+    };
     // Reuse the v1 list handler logic — it already reads ?folder as a filter.
     // Re-map the query key from "folder" to "folder_id" if needed by the service.
     let folder = query.get("folder").map(|s| s.to_owned());
@@ -697,6 +711,7 @@ pub async fn list_reports_v2(
     let data = match reports::list(&org_id, filters, _permitted).await {
         Ok(data) => ListReportsResponseBody(
             data.into_iter()
+                .filter(|d| infra::rbac::readable(&readable_ids, &d.report_id))
                 .map(|d| {
                     let scheduled_job = scheduled_jobs.remove(&d.report_id);
                     match ListReportsResponseBodyItem::try_from(d) {
@@ -807,6 +822,12 @@ pub async fn update_report_v2(
             .find(|(k, _)| k == "folder")
             .map(|(_, v)| v.into_owned())
     });
+    let destination = new_folder.as_deref();
+    let bound =
+        reports::scoped::bind_update(&mut report, &org_id, &report_id, &user_id, destination);
+    if let Err(denied) = bound.await {
+        return MetaHttpResponse::forbidden(denied);
+    }
     // The route gate resolves `?folder=`, which HERE names the DESTINATION, so a
     // move is authorized against the folder it lands in and never against the one
     // it leaves. Check the source before honouring the move.
@@ -1077,6 +1098,13 @@ pub async fn move_reports(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req): axum::Json<MoveReportsRequestBody>,
 ) -> Response {
+    let reports = config::meta::folder::FolderType::Reports;
+    if infra::rbac::authorize_folder_move(&org_id, reports, &req.report_ids, &req.dst_folder_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     let _user_id = user_email.user_id;
     #[cfg(feature = "enterprise")]
     for id in &req.report_ids {

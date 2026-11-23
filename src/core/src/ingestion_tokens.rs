@@ -42,7 +42,13 @@ pub async fn create_default_token(org_id: &str, created_by: &str) -> Result<(), 
 /// Lists the org's tokens, first making `default` when only feature writers' tokens exist.
 pub async fn list_tokens(org_id: &str) -> Result<Vec<OrgIngestionToken>, anyhow::Error> {
     let mut records = db::org_ingestion_tokens::list_by_org(org_id).await?;
-    if records
+    if infra::rbac::enabled() {
+        records.retain(|r| {
+            !r.is_default
+                && r.created_by != "system"
+                && !org_ingestion_tokens::is_writer_token_name(&r.name)
+        });
+    } else if records
         .iter()
         .all(|r| org_ingestion_tokens::is_writer_token_name(&r.name))
     {

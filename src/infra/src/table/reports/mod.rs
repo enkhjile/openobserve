@@ -182,6 +182,11 @@ pub async fn create_report<C: ConnectionTrait + TransactionTrait>(
         tz_offset: Set(report.tz_offset),
         owner: Set(Some(report.owner).filter(|s| !s.is_empty())),
         last_edited_by: Set(Some(report.last_edited_by).filter(|s| !s.is_empty())),
+        execution_context: Set(report
+            .execution_context
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?),
         created_at: Set(now),
         updated_at: Set(Some(now)),
         start_at: Set(report.start),
@@ -289,6 +294,11 @@ pub async fn update_report<C: ConnectionTrait + TransactionTrait>(
         tz_offset: Set(report.tz_offset),
         owner: Set(Some(report.owner).filter(|s| !s.is_empty())),
         last_edited_by: Set(Some(report.last_edited_by).filter(|s| !s.is_empty())),
+        execution_context: Set(report
+            .execution_context
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?),
         created_at: NotSet, // Never updated after creation.
         updated_at: Set(Some(Utc::now().timestamp_micros())),
         start_at: Set(report.start),
@@ -407,6 +417,11 @@ pub async fn update_by_id<C: ConnectionTrait + TransactionTrait>(
         tz_offset: Set(report.tz_offset),
         owner: Set(Some(report.owner).filter(|s| !s.is_empty())),
         last_edited_by: Set(Some(report.last_edited_by).filter(|s| !s.is_empty())),
+        execution_context: Set(report
+            .execution_context
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?),
         created_at: NotSet,
         updated_at: Set(Some(Utc::now().timestamp_micros())),
         start_at: Set(report.start),

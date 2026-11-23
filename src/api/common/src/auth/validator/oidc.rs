@@ -68,6 +68,7 @@ pub(super) async fn validate_session(
         user_role: Some(role),
         is_internal_user: !record.is_external,
         token_name: None,
+        ingestion_principal: None,
         delegation: None,
     })
 }

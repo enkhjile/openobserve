@@ -31,9 +31,15 @@ mod ui;
 
 pub use ui::ui_routes;
 
+const STREAM_WORKER_ASSET: &str = env!("O2_UI_STREAM_WORKER_ASSET");
+
 #[derive(RustEmbed)]
 #[folder = "../../web/dist/"]
 #[allow_missing = true]
 #[gzip = false]
 #[br = false]
 pub struct WebAssets;
+
+pub fn stream_worker_asset() -> Option<String> {
+    (!STREAM_WORKER_ASSET.is_empty()).then(|| STREAM_WORKER_ASSET.to_owned())
+}

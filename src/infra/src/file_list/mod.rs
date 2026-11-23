@@ -1052,7 +1052,12 @@ impl From<&FileRecord> for FileKey {
         Self {
             id: r.id,
             account: r.account.to_string(),
-            key: "files/".to_string() + &r.stream + "/" + &r.date + "/" + &r.file,
+            key: "files/".to_string()
+                + r.stream.as_str()
+                + "/"
+                + r.date.as_str()
+                + "/"
+                + r.file.as_str(),
             meta: r.into(),
             deleted: r.deleted,
             selection: None,

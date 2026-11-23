@@ -276,6 +276,9 @@ mod m20261219_000001_add_historical_to_alert_incidents;
 mod m20261220_000001_create_service_identity_tables;
 mod m20261221_000001_add_last_detection_at_to_alert_incidents;
 mod m20261222_000001_incident_membership_and_catalog_cleanup;
+mod m20261223_000001_add_alert_execution_subject;
+mod m20261224_000001_add_report_execution_context;
+mod m20261225_000001_add_pipeline_execution_subject;
 /// Shared body of the two `folder_id` migrations above; not a migration itself.
 mod workflow_folder_id;
 
@@ -915,6 +918,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261220_000001_create_service_identity_tables::Migration),
             Box::new(m20261221_000001_add_last_detection_at_to_alert_incidents::Migration),
             Box::new(m20261222_000001_incident_membership_and_catalog_cleanup::Migration),
+            Box::new(m20261223_000001_add_alert_execution_subject::Migration),
+            Box::new(m20261224_000001_add_report_execution_context::Migration),
+            Box::new(m20261225_000001_add_pipeline_execution_subject::Migration),
         ]
     }
 }
@@ -1052,6 +1058,9 @@ mod tests {
             157,
             "m20261222_000001_incident_membership_and_catalog_cleanup",
         ),
+        (158, "m20261223_000001_add_alert_execution_subject"),
+        (159, "m20261224_000001_add_report_execution_context"),
+        (160, "m20261225_000001_add_pipeline_execution_subject"),
     ];
 
     // Two branches that each claim the next version merge cleanly, so a reused number must fail

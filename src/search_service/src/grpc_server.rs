@@ -18,6 +18,7 @@ use config::{
     meta::{search, stream::StreamType},
     utils::json,
 };
+use infra::rbac::caller::Caller;
 use proto::cluster_rpc::{
     CancelQueryRequest, CancelQueryResponse, DeleteResultRequest, DeleteResultResponse,
     GetLicenseUsageRequest, GetLicenseUsageResponse, GetResultRequest, GetResultResponse,
@@ -58,18 +59,29 @@ impl Search for Searcher {
         let request = json::from_slice::<search::Request>(&req.request)
             .map_err(|e| Status::internal(format!("failed to parse search request: {e}")))?;
         let stream_type = StreamType::from(req.stream_type.as_str());
-        let ret = SearchService::cache::search(
-            &req.trace_id,
-            &req.org_id,
-            stream_type,
-            req.user_id.clone(),
-            &request,
-            "".to_string(),
-            false,
-            None,
-            false,
-        )
-        .await;
+        // A delegated subject skips the cache layer, whose delta tasks would not carry it.
+        let ret =
+            if let Some(subject) = req.rbac_subject.clone().filter(|_| infra::rbac::enabled()) {
+                let search =
+                    SearchService::search(&req.trace_id, &req.org_id, stream_type, None, &request);
+                infra::rbac::caller::scope(Caller::Subject(subject), search).await
+            } else {
+                let search = SearchService::cache::search(
+                    &req.trace_id,
+                    &req.org_id,
+                    stream_type,
+                    req.user_id.clone(),
+                    &request,
+                    "".to_string(),
+                    false,
+                    None,
+                    false,
+                );
+                let caller = Caller::User(req.user_id.clone().unwrap_or_default());
+                infra::rbac::caller::scope(caller, search).await
+            }
+            .map_err(infra::rbac::denied)
+            .and_then(std::convert::identity);
 
         match ret {
             Ok(mut ret) => {
@@ -485,8 +497,10 @@ impl Search for Searcher {
     }
 }
 
-/// A 503 stays decodable by the caller; other errors keep the text callers already parse.
 fn search_error_status(e: &infra::errors::Error, context: &str) -> Status {
+    if infra::rbac::is_denied(e) {
+        return Status::permission_denied("Access denied");
+    }
     e.to_unavailable_status()
         .unwrap_or_else(|| Status::internal(format!("{context}: {e}")))
 }
@@ -510,6 +524,16 @@ mod tests {
         let status = search_error_status(&timeout, "search failed");
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), format!("search failed: {timeout}"));
+    }
+
+    #[test]
+    fn only_rbac_denials_become_permission_denied() {
+        let denied = Error::ErrorCode(ErrorCodes::AuthorizationDenied("no".into()));
+        let status = search_error_status(&denied, "search failed");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        let protected = Error::ErrorCode(ErrorCodes::SearchStreamProtected("p".into()));
+        let status = search_error_status(&protected, "search failed");
+        assert_eq!(status.message(), format!("search failed: {protected}"));
     }
 
     #[cfg(not(feature = "enterprise"))]

@@ -393,6 +393,22 @@ pub async fn find_enabled_token(
         .filter(|r| may_authenticate(&r.name, &r.created_by)))
 }
 
+pub async fn find_enabled_token_primary(
+    org_id: &str,
+    token: &str,
+) -> Result<Option<OrgIngestionTokenRecord>, errors::Error> {
+    let client = get_orm_client_rw().await;
+    Ok(Entity::find()
+        .filter(Column::OrgId.eq(org_id))
+        .filter(Column::Token.eq(token))
+        .filter(Column::Enabled.eq(true))
+        .one(client)
+        .await
+        .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?
+        .map(OrgIngestionTokenRecord::from)
+        .filter(|row| !is_writer_token_name(&row.name) && row.created_by != WRITER_TOKEN_CREATOR))
+}
+
 /// Find a token by org_id and token value, regardless of its `enabled` state.
 ///
 /// The watcher needs the row even when it was just disabled, to learn which
@@ -574,6 +590,9 @@ pub async fn list_all_enabled() -> Result<Vec<(String, String, String)>, errors:
         .collect())
 }
 
+#[cfg(test)]
+#[path = "org_ingestion_tokens_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

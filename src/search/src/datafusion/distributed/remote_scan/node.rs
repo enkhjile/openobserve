@@ -92,6 +92,7 @@ impl RemoteScanNodes {
         };
 
         let super_cluster_info = SuperClusterInfo {
+            rbac_subject: self.req.rbac_subject.clone(),
             is_super_cluster: self.is_leader,
             user_id: self.req.user_id.clone(),
             work_group: self.req.work_group.clone(),

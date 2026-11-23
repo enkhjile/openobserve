@@ -64,6 +64,7 @@ impl SystemJobType {
 /// whether ingestion was user-initiated or system-initiated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestUser {
+    OrgToken(config::meta::user::OrgIngestionPrincipal),
     /// Real user email from authenticated API request
     User(String),
     /// System job identifier for automated backend processes
@@ -78,6 +79,7 @@ impl IngestUser {
     pub fn to_email(&self) -> String {
         match self {
             IngestUser::User(email) => email.clone(),
+            IngestUser::OrgToken(principal) => format!("org-token:{}", principal.token_id),
             IngestUser::SystemJob(job) => format!("{}@system.local", job.as_email_local()),
         }
     }

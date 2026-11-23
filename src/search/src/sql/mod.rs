@@ -95,6 +95,7 @@ pub struct Sql {
 
 impl Sql {
     pub async fn new_from_req(req: &Request, query: &SearchQuery) -> Result<Sql, Error> {
+        crate::rbac::authorize_request(req, &query.sql).await?;
         let search_event_type = req
             .search_event_type
             .as_ref()
@@ -126,6 +127,9 @@ impl Sql {
         search_event_type: Option<SearchEventType>,
         extract_patterns: bool,
     ) -> Result<Sql, Error> {
+        crate::rbac::authorize_current(&query.sql, org_id, stream_type, search_event_type)
+            .await
+            .map_err(infra::rbac::denied)?;
         Self::resolve(
             query,
             org_id,
@@ -149,7 +153,7 @@ impl Sql {
         let sql = query.sql.clone();
         let offset = query.from as i64;
         let mut limit = query.size as i64;
-        let sql = replace_o2_custom_patterns(&sql).unwrap_or(sql);
+        let sql = executed_sql(&sql);
 
         // 1. get table name
         let stream_names = resolve_stream_names_with_type(&sql)
@@ -417,6 +421,11 @@ pub fn protected_stream_refusal<'a>(
 }
 
 // A follower interleaves its partitions, so only a plain scan can rely on the files' time order.
+/// The SQL a search executes; RBAC must authorize this text, not the request's.
+pub(crate) fn executed_sql(sql: &str) -> String {
+    replace_o2_custom_patterns(sql).unwrap_or_else(|_| sql.to_owned())
+}
+
 fn can_use_time_order(is_complex: bool, order_by: &[(String, OrderBy)]) -> bool {
     !is_complex
         && order_by.len() == 1

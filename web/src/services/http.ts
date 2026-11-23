@@ -210,7 +210,9 @@ const http = ({ headers } = {} as any) => {
           }
           case 403:
             if (
-              (config.isEnterprise == "true" || config.isCloud == "true") &&
+              (config.isEnterprise == "true" ||
+                config.isCloud == "true" ||
+                error.response?.data?.reason === "rbac_denied") &&
               !error.config?.skipAccessToast &&
               !error.config?.silentForbidden
             ) {

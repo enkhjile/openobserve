@@ -550,6 +550,8 @@ pub struct MetricsQueryRequest {
     /// time from which groups read the WAL, probed in this cluster; 0 = unknown, read the whole ingest window
     #[prost(int64, tag = "15")]
     pub wal_start_time: i64,
+    #[prost(string, optional, tag = "16")]
+    pub rbac_subject: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1115,6 +1117,8 @@ pub struct SearchRequest {
     pub user_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bytes = "vec", tag = "5")]
     pub request: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag = "7")]
+    pub rbac_subject: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3646,6 +3650,8 @@ pub struct SuperClusterInfo {
     /// use for super cluster
     #[prost(bool, optional, tag = "5")]
     pub local_mode: ::core::option::Option<bool>,
+    #[prost(string, optional, tag = "6")]
+    pub rbac_subject: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IdxOptimizeMode {

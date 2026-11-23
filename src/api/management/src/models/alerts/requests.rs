@@ -671,6 +671,9 @@ pub fn combine_detection_function(
 }
 
 #[cfg(test)]
+#[path = "requests_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
 

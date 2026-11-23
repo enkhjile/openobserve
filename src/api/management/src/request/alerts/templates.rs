@@ -560,6 +560,9 @@ pub async fn preview_template(
 }
 
 #[cfg(test)]
+#[path = "templates_rbac_tests.rs"]
+mod rbac_tests;
+#[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
     use db::alerts::templates::TemplateError;

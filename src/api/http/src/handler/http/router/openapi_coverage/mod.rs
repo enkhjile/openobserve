@@ -15,6 +15,7 @@
 
 //! CI guard: every route in `router/mod.rs` is published or excluded, and published ops are valid.
 
+mod rbac_tests;
 mod response_bodies;
 
 use std::{
@@ -836,7 +837,12 @@ fn mount_spans(body: &str, cfgs: &[(Range<usize>, String)]) -> Vec<MountSpan> {
             ".nest(" => args.split_once(',').expect("nest takes two arguments"),
             _ => ("", args),
         };
-        let prefix = prefix.trim().trim_matches('"').to_string();
+        let prefix = prefix.trim();
+        assert!(
+            method != ".nest(" || (prefix.starts_with('"') && prefix.ends_with('"')),
+            "non-literal nest prefix: {prefix}"
+        );
+        let prefix = prefix.trim_matches('"').to_string();
         let target = target.trim();
         if !target.chars().all(|c| c.is_alphanumeric() || c == '_') {
             spans.push((open..open + args.len(), prefix, true));
@@ -973,6 +979,13 @@ fn parse_router(source: &str) -> Vec<ParsedRoute> {
         .iter()
         .flat_map(|(index, prefix, active)| routes_of(&functions[*index], prefix, *active))
         .collect();
+    // The versioned forwarding mount executes the same authenticated operations.
+    // Fold its aliases into public operations for OpenAPI coverage and authorization inventory.
+    for route in &mut routes {
+        if let Some(path) = route.path.strip_prefix("/internal/rbac/v1/api/") {
+            route.path = format!("/api/{path}");
+        }
+    }
     routes.sort();
     routes.dedup();
     routes

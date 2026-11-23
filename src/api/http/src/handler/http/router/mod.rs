@@ -22,6 +22,10 @@ mod one_ack_tests;
 pub mod openapi;
 #[cfg(test)]
 mod openapi_coverage;
+mod rbac;
+mod rbac_destinations;
+#[cfg(test)]
+mod rbac_forwarding_tests;
 #[cfg(test)]
 mod search_gate_tests;
 
@@ -343,7 +347,7 @@ pub(crate) fn matched_route(request: &Request) -> Option<String> {
     request
         .extensions()
         .get::<MatchedPath>()
-        .map(|route| route.as_str().to_owned())
+        .map(|route| rbac::canonical_route(route.as_str()).to_owned())
 }
 
 /// Authentication middleware for API routes.
@@ -386,6 +390,21 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         return denied;
     }
 
+    if let Some(principal) = result.ingestion_principal.clone() {
+        parts.extensions.insert(principal);
+    }
+
+    if let Err(response) = rbac::authorize(
+        &mut parts,
+        &result.user_email,
+        result.user_role.is_some(),
+        result.token_name.as_deref(),
+    )
+    .await
+    {
+        return response;
+    }
+
     // Insert user_id into request headers for downstream handlers
     parts.headers.insert(
         header::HeaderName::from_static("user_id"),
@@ -405,7 +424,10 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         parts.extensions.insert(caller);
     }
 
-    let mut response = next.run(Request::from_parts(parts, body)).await;
+    let response = next.run(Request::from_parts(parts, body));
+    let mut response = infra::rbac::caller::scope_user(&result.user_email, response)
+        .await
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response());
     if let Some(token_name) = result.token_name {
         response.extensions_mut().insert(
             openobserve_core::ingestion::rejections::RejectionTokenName(token_name),
@@ -1332,6 +1354,13 @@ fn service_route_table() -> Router {
     // Full UI configuration — authenticated counterpart of the unauthenticated
     // `/config` bootstrap in config_routes()
     router = router.route("/{org_id}/config", get(status::zo_config));
+    router = router
+        .route("/{org_id}/rbac/me", get(rbac::me))
+        .route("/{org_id}/rbac/destinations", put(rbac_destinations::put))
+        .route("/{org_id}/rbac/destinations/available", post(rbac_destinations::available))
+        .route("/{org_id}/rbac/subjects", get(rbac::subjects))
+        .route("/{org_id}/rbac/policy", get(rbac::get_policy).put(rbac::put_policy))
+        .route("/{org_id}/rbac/bootstrap", post(rbac::bootstrap));
     // Users
     // Reading one member returns their lockout counters, which only an enterprise build has.
 
@@ -1362,7 +1391,7 @@ fn service_route_table() -> Router {
         .route("/invites/{token}", delete(users::decline_invitation))
 
         // Organizations
-        .route("/organizations", get(organization::org::organizations).post(organization::org::create_org))
+        .route("/organizations", get(rbac::organizations).post(organization::org::create_org))
         .route("/{org_id}/organizations/assume_service_account", post(organization::assume_service_account::assume_service_account))
         .route("/{org_id}/org_cleanup_tasks/{target_org_id}", get(organization::org::list_org_cleanup_tasks))
         .route("/{org_id}/org_cleanup_tasks/{target_org_id}/retry", post(organization::org::retry_org_cleanup))
@@ -2539,6 +2568,18 @@ pub fn service_routes() -> Router {
     with_service_layers(service_route_table())
 }
 
+pub(crate) fn rbac_proxy_service_routes() -> Router {
+    with_service_layers(service_route_table().layer(middleware::from_fn(
+        |mut request: Request, _next: Next| async move {
+            if let Some(original) = request.extensions().get::<axum::extract::OriginalUri>() {
+                let uri = original.0.clone();
+                *request.uri_mut() = uri;
+            }
+            crate::router::http::dispatch(request).await
+        },
+    )))
+}
+
 /// Downtimes routes; the literal segments stay before the {downtime_id} catch-all.
 #[rustfmt::skip]
 pub fn downtime_routes() -> Router {
@@ -3152,13 +3193,12 @@ pub fn create_app_router(ui_routes: fn(&str) -> Router) -> Router {
                 "/",
                 get(move || core::future::ready(axum::response::Redirect::permanent(&web_path))),
             )
-            .nest_service("/web", ui);
+            .route_service("/web", ui.clone().into_service::<axum::body::Body>())
+            .nest("/web/", ui);
     }
 
     // Set request body size limit (equivalent to actix-web's PayloadConfig)
-    app = app
-        .layer(cors_layer())
-        .layer(DefaultBodyLimit::max(cfg.limit.req_payload_limit));
+    app = app.layer(DefaultBodyLimit::max(cfg.limit.req_payload_limit));
 
     // Apply base_uri if configured
     let mut outer = if cfg.common.base_uri.is_empty() || cfg.common.base_uri == "/" {
@@ -3188,17 +3228,27 @@ pub fn create_app_router(ui_routes: fn(&str) -> Router) -> Router {
         ));
     }
     outer
+        .layer(middleware::from_fn(rbac::route_gate))
+        .layer(cors_layer())
 }
 
 /// Every route a non-router node serves itself, without the UI.
 fn local_routes() -> Router {
-    Router::new()
+    let router = Router::new()
         .merge(basic_routes())
         .merge(splunk_collector_routes())
         .nest("/config", config_routes())
         .nest("/api", service_routes())
         .merge(other_service_routes())
-        .merge(proxy_routes(true))
+        .merge(proxy_routes(true));
+    if infra::rbac::enabled() {
+        router.nest(
+            "/internal/rbac/v1/api",
+            service_routes().layer(middleware::from_fn(rbac::require_enabled_forwarding)),
+        )
+    } else {
+        router
+    }
 }
 
 /// Root-only node management routes, before the authentication layers `basic_routes` adds.
