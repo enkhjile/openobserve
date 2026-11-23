@@ -206,7 +206,13 @@ async fn resolve_candidates(path: &str, base_uri: &str) -> Result<(String, Vec<N
     }
 
     let nodes = order_nodes(nodes);
-    Ok((format!("{}{}", base_uri, api_path), nodes))
+    // RBAC's forwarding mount already sees the base removed; upstream's path keeps it.
+    let proxied = if infra::rbac::enabled() {
+        api_path
+    } else {
+        path
+    };
+    Ok((format!("{base_uri}{proxied}"), nodes))
 }
 
 /// Orders the candidate nodes so the preferred node (per dispatch strategy) is

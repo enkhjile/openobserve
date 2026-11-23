@@ -36,26 +36,74 @@ def item(text, start, end):
     return text[text.index(start):text.index(end, text.index(start))]
 
 
-# Routers merged into mod.rs from other files: source and mount prefix, or None for router-node
-# proxies, which forward to the data-node routes already listed here.
+# Routers merged into mod.rs from other files: source, mount prefix and the mount it must sit in,
+# or None for router-node proxies, which forward to the data-node routes already listed here.
 EXTERNAL_ROUTERS = {
-    "crate::oidc::routes": ("src/api/http/src/oidc.rs", "/auth"),
+    "crate::oidc::routes": ("src/api/http/src/oidc.rs", "/auth", 'router.nest("/auth", auth_routes)'),
     "crate::router::http::create_router_routes": None,
     "crate::router::http::create_splunk_collector_proxy_routes": None,
+    # The static web UI, which the route gate admits through its own static-asset rule.
+    "ui_routes": None,
 }
+# Calls inside router mounts that build no routes of their own.
+ROUTER_HELPERS = {
+    "Router::new", "SwaggerUi::new", "middleware::from_fn", "openapi::ApiDoc::openapi",
+    "DefaultBodyLimit::max", "RequestDecompressionLayer::new", "std::ptr::eq", "org_from_path", "routed_path",
+}
+METHODS = ("get", "post", "put", "delete", "patch", "head", "options", "trace", "any")
+
+
+def call_arguments(text, open_paren):
+    depth = 0
+    for index in range(open_paren, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        if depth == 0:
+            return text[open_paren + 1:index]
+    raise SystemExit("Unbalanced parentheses while reading router mounts")
+
+
+def mounted_calls(source):
+    """Every function a router mount calls, following variables back to their `let`."""
+    local = set(re.findall(r"\bfn (\w+)", source))
+    local |= set(re.findall(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:move\s*)?\|", source))
+    pending, seen, calls = [], set(), set()
+    for mount in re.finditer(r"\.(?:merge|nest|nest_service|route_service|fallback_service)\(", source):
+        pending.append(call_arguments(source, mount.end() - 1))
+    while pending:
+        expression = pending.pop()
+        for call in re.finditer(r"(?<![.\w])([A-Za-z_][\w:]*)\s*\(", expression):
+            name = call.group(1)
+            if name.startswith("crate::") or name.split("::")[-1] not in local:
+                calls.add(name)
+        for variable in re.findall(r"(?<![.\w:])([a-z_]\w*)\s*(?=[),]|$)", expression):
+            if variable in seen:
+                continue
+            seen.add(variable)
+            for binding in re.finditer(rf"\blet\s+(?:mut\s+)?{variable}\b[^=;]*=([^;]*);", source):
+                pending.append(binding.group(1))
+    return {name for name in calls if name not in ROUTER_HELPERS and name not in METHODS}
 
 
 def external_routes():
     """Routes the upstream parser cannot see because their router lives in another file."""
-    merged = set(re.findall(r"\.(?:merge|nest)\([^;]*?(crate::[\w:]+)\(\)", (ROUTER / "mod.rs").read_text()))
+    source = (ROUTER / "mod.rs").read_text().split("\n#[cfg(test)]\nmod tests {")[0]
+    source = re.sub(r"//[^\n]*", "", source)
+    merged = mounted_calls(source)
     unknown = merged - EXTERNAL_ROUTERS.keys()
     if unknown:
-        raise SystemExit(f"Map these merged routers in EXTERNAL_ROUTERS: {sorted(unknown)}")
+        raise SystemExit(f"Classify these router calls in EXTERNAL_ROUTERS: {sorted(unknown)}")
     routes = []
-    for path, prefix in filter(None, (EXTERNAL_ROUTERS[name] for name in sorted(merged))):
-        for found in re.finditer(r'\.route\(\s*"([^"]+)"\s*,\s*([^\n]+)', (ROOT / path).read_text()):
-            for method in re.findall(r"\b(get|post|put|delete|patch|head)\(", found.group(2)):
-                routes.append(f"{method.upper()} {prefix}{found.group(1)}")
+    for path, prefix, mount in filter(None, (EXTERNAL_ROUTERS[name] for name in sorted(merged))):
+        if mount not in source:
+            raise SystemExit(f"{path} is no longer mounted as `{mount}`; update its prefix")
+        text = (ROOT / path).read_text()
+        for found in re.finditer(r"\.route\(", text):
+            arguments = call_arguments(text, found.end() - 1)
+            route = re.match(r'\s*"([^"]+)"\s*,', arguments)
+            methods = re.findall(rf"\b({'|'.join(METHODS)})\(", arguments)
+            if not route or not methods:
+                raise SystemExit(f"Cannot read the route `{arguments.strip()[:60]}` in {path}")
+            routes += [f"{method.upper()} {prefix}{route.group(1)}" for method in methods]
     return routes
 
 

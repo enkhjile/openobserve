@@ -545,6 +545,19 @@ describe("Dashboards.vue", () => {
       expect(wrapper.vm.canMutateDashboard("*")).toBe(false);
     });
 
+    it("offers bulk move to a scoped Editor once every selected dashboard is writable", async () => {
+      vi.mocked(useDashboardPermissions).mockReturnValueOnce((id: string | null) => id === "dash1");
+      wrapper = shallowMount(Dashboards, {
+        global: buildGlobalConfig(store, router, i18n),
+      });
+      await flushPromises();
+      expect(wrapper.vm.canMutateSelected).toBe(false);
+      wrapper.vm.selectedIds = ["dash1"];
+      expect(wrapper.vm.canMutateSelected).toBe(true);
+      wrapper.vm.selectedIds = ["dash1", "dash2"];
+      expect(wrapper.vm.canMutateSelected).toBe(false);
+    });
+
     it("hands the bulk actions to the table's selection footer", async () => {
       wrapper = shallowMount(Dashboards, {
         global: buildGlobalConfig(store, router, i18n),

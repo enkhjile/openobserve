@@ -61,7 +61,13 @@ impl LogsService for LogsServer {
             OtlpRequestType::Grpc,
         )
         .await
-        .map_err(|e| error_status(&e))?;
+        .map_err(|e| {
+            if infra::rbac::is_denied(&e) {
+                Status::permission_denied("Access denied by organization RBAC policy")
+            } else {
+                error_status(&e)
+            }
+        })?;
         let reply = export_reply(resp).await?;
         observe_ok("/otlp/v1/logs", start);
         Ok(Response::new(reply))

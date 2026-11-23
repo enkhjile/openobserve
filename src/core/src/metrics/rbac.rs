@@ -40,6 +40,13 @@ pub(super) async fn authorize_batch(
     crate::pipeline::rbac::authorize_ingest(org_id, user, &resources)
         .await
         .map_err(infra::rbac::denied)?;
+    // As for logs, a system job's metrics are written without running pipelines.
+    if matches!(user, IngestUser::SystemJob(_)) {
+        return Ok(resources
+            .into_iter()
+            .map(|resource| resource.name)
+            .collect());
+    }
     let mut names = Vec::with_capacity(resources.len());
     for resource in resources {
         let stream = StreamParams::new(org_id, &resource.name, StreamType::Metrics);

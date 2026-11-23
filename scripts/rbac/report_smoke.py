@@ -239,7 +239,7 @@ def run(binary, chrome):
                         {"expected_version": policy["version"], "grants": grants})
         expect(author, "report save denied after author export revocation", "PUT", reports + "/" + report_id, draft, status=403)
         status, _ = author.request("PUT", reports + "/" + report_id + "/trigger")
-        require(status in (403, 500), "revoked report trigger succeeded")
+        require(status == 403, f"revoked report trigger returned HTTP {status}, not 403")
         require(deliveries.empty(), "revoked report delivered mail")
         print("PASS revoked author export blocks existing report delivery", flush=True)
         baseline = row("SELECT claim_epoch FROM scheduled_jobs WHERE module_key = ?", (report_id,))[0]

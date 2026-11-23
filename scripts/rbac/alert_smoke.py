@@ -258,6 +258,9 @@ def run(binary):
         policy = expect(root, "restore alert fixture grants", "PUT", org + "/rbac/policy",
                         {"expected_version": policy["version"], "grants": grants})
         expect(root, "remove pre-RBAC composite fixture", "DELETE", alerts + "/" + composite_id)
+        # Earlier runs queued deliveries, some while RBAC was off; only a fresh one proves this one.
+        while not deliveries.empty():
+            deliveries.get_nowait()
         await_delivery("scheduled SQL delivers to approved loopback sink")
         grants[-1]["resources"] = [alert_resource]
         policy = expect(root, "revoke editor source query rights", "PUT", org + "/rbac/policy",

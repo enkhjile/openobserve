@@ -248,7 +248,7 @@ pub async fn multi(
                 log::error!("Error processing request {org_id}/{stream_name}/_multi: {e}");
             }
             if infra::rbac::is_denied(&e) {
-                MetaHttpResponse::forbidden(e.to_string())
+                MetaHttpResponse::forbidden("Access denied by organization RBAC policy")
             } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -337,7 +337,7 @@ pub async fn json(
                 log::error!("Error processing request {org_id}/{stream_name}/_json: {e}");
             }
             if infra::rbac::is_denied(&e) {
-                MetaHttpResponse::forbidden(e.to_string())
+                MetaHttpResponse::forbidden("Access denied by organization RBAC policy")
             } else if matches!(e, infra::errors::Error::ResourceError(_)) {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -659,7 +659,12 @@ pub async fn otlp_logs_write(
                 ref denied if infra::rbac::is_denied(denied) => StatusCode::FORBIDDEN,
                 _ => StatusCode::BAD_REQUEST,
             };
-            otlp_rejection_response(request_type, status, e.to_string())
+            let message = if infra::rbac::is_denied(&e) {
+                "Access denied by organization RBAC policy".to_string()
+            } else {
+                e.to_string()
+            };
+            otlp_rejection_response(request_type, status, message)
         }
     }
 }

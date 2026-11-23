@@ -315,7 +315,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     variant="ghost"
                     size="icon-xs-sq"
                     class="max-md:hidden"
-                    v-show="canMutateDashboard(null)"
                     data-test="dashboard-move-to-another-folder"
                     @click.stop="showMoveDashboardPanel(row)"
                   >
@@ -371,7 +370,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     <ODropdownItem
                       icon-left="drive-file-move"
                       class="md:hidden"
-                      v-show="canMutateDashboard(null)"
+                      v-show="canMutateDashboard(row.id)"
                       data-test="dashboard-move-to-another-folder-menu"
                       @select="showMoveDashboardPanel(row)"
                     >
@@ -465,7 +464,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 <OButton
                   variant="outline"
                   size="sm"
-                  v-if="canMutateDashboard(null)"
+                  v-if="canMutateSelected"
                   data-test="dashboard-list-move-across-folders-btn"
                   @click="moveMultipleDashboards"
                   icon-left="drive-file-move"
@@ -485,11 +484,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   variant="outline-destructive"
                   size="sm"
                   icon-left="delete"
-                  v-if="
-                    canMutateDashboard(null) ||
-                    (selectedDashboardIds.length > 0 &&
-                      selectedDashboardIds.every(canMutateDashboard))
-                  "
+                  v-if="canMutateSelected"
                   data-test="dashboard-list-delete-dashboards-btn"
                   :loading="bulkDeleteLoading"
                   @click="openBulkDeleteDialog"
@@ -1063,6 +1058,12 @@ export default defineComponent({
       return baseColumns;
     });
     const selectedDashboardIds = computed(() => selectedIds.value);
+    const canMutateSelected = computed(
+      () =>
+        canMutateDashboard(null) ||
+        (selectedDashboardIds.value.length > 0 &&
+          selectedDashboardIds.value.every(canMutateDashboard)),
+    );
 
     onMounted(async () => {
       // Awaited so the landing decision settles after FolderList's async init emission.
@@ -2052,6 +2053,7 @@ export default defineComponent({
     ]);
     return {
       canMutateDashboard,
+      canMutateSelected,
       selectedDashboardIds,
       t,
       oTableRef,

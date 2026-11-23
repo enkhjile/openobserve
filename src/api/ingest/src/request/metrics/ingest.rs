@@ -100,9 +100,9 @@ pub async fn json(
         Err(e) => {
             log::error!("Error processing request {org_id}/metrics/_json: {e}");
             if e.downcast_ref::<infra::errors::Error>()
-                .is_some_and(|e| e.http_status() == 403)
+                .is_some_and(infra::rbac::is_denied)
             {
-                MetaHttpResponse::forbidden(e)
+                MetaHttpResponse::forbidden("Access denied by organization RBAC policy")
             } else {
                 MetaHttpResponse::bad_request(e)
             }
