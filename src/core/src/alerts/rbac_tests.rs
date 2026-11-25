@@ -15,6 +15,7 @@
 
 use super::*;
 
+// Composite alerts rely on this: they have no recorded identity, so enabling one cannot deliver.
 #[tokio::test]
 async fn rbac_rejects_alert_execution_without_scoped_identity() {
     use super::alert::{AlertError, AlertExt};

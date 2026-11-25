@@ -138,7 +138,8 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         ("DELETE", "/api/v2/{org_id}/reports/{report_id}") => {
             Permission(Action::Delete, Report, "report_id")
         }
-        ("PUT", "/api/v2/{org_id}/reports/{report_id}/trigger") => {
+        ("PUT", "/api/v2/{org_id}/reports/{report_id}/trigger")
+        | ("PATCH", "/api/v2/{org_id}/reports/{report_id}/enable") => {
             Permission(Action::Write, Report, "report_id")
         }
         ("GET", "/api/v2/{org_id}/alerts") => Member,
@@ -146,7 +147,9 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         ("GET", "/api/v2/{org_id}/alerts/{alert_id}") => {
             Permission(Action::Read, Alert, "alert_id")
         }
-        ("PUT", "/api/v2/{org_id}/alerts/{alert_id}") => {
+        ("PUT", "/api/v2/{org_id}/alerts/{alert_id}")
+        | ("PATCH", "/api/v2/{org_id}/alerts/{alert_id}/enable")
+        | ("PATCH", "/api/v2/{org_id}/alerts/{alert_id}/trigger") => {
             Permission(Action::Write, Alert, "alert_id")
         }
         ("DELETE", "/api/v2/{org_id}/alerts/{alert_id}") => {
@@ -174,6 +177,9 @@ pub(super) fn disposition(method: &str, path: &str) -> Disposition {
         }
         ("DELETE", "/api/{org_id}/pipelines/{pipeline_id}") => {
             Permission(Action::Delete, ResourceKind::Pipeline, "pipeline_id")
+        }
+        ("PUT", "/api/{org_id}/pipelines/{pipeline_id}/enable") => {
+            Permission(Action::Write, ResourceKind::Pipeline, "pipeline_id")
         }
         (
             "GET",

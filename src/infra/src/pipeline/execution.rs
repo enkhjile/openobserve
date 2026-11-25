@@ -18,6 +18,10 @@ use sqlx::{FromRow, Row};
 
 use crate::errors::Result;
 
+tokio::task_local! {
+    static KEEPING: ();
+}
+
 const RECORD_SUBJECT: &str =
     "UPDATE pipeline SET execution_subject = $1 WHERE id = $2 AND org = $3";
 
@@ -52,7 +56,19 @@ pub async fn put(pipeline: &Pipeline) -> Result<()> {
 
 /// The identity a pipeline written now runs as: the saving request's caller, else none.
 pub async fn recorded_subject() -> Option<String> {
+    if keeping() {
+        return None;
+    }
     crate::rbac::caller::current_subject().await.ok()
+}
+
+/// Runs `fut` so its pipeline writes keep the recorded identity, a column any write replaces.
+pub async fn keeping_subject<F: Future>(fut: F) -> F::Output {
+    KEEPING.scope((), fut).await
+}
+
+fn keeping() -> bool {
+    KEEPING.try_with(|_| ()).is_ok()
 }
 
 /// Written in the transaction that writes the definition, so the two never disagree.
@@ -61,6 +77,9 @@ pub(super) async fn record_sqlite(
     pipeline: &Pipeline,
     subject: Option<String>,
 ) -> Result<()> {
+    if keeping() {
+        return Ok(());
+    }
     sqlx::query(RECORD_SUBJECT)
         .bind(subject)
         .bind(&pipeline.id)
@@ -75,6 +94,9 @@ pub(super) async fn record_postgres(
     pipeline: &Pipeline,
     subject: Option<String>,
 ) -> Result<()> {
+    if keeping() {
+        return Ok(());
+    }
     sqlx::query(RECORD_SUBJECT)
         .bind(subject)
         .bind(&pipeline.id)

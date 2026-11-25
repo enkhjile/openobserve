@@ -76,6 +76,17 @@ def exercise_pipelines(args, root, editor, ingester, viewer, org_path, policy, g
     positive = uuid.uuid4().hex
     ingest(positive)
     output(positive, 1)
+    toggle = f"{org_path}/pipelines/{pipeline_id}/enable"
+    expect(viewer, "Viewer cannot disable a pipeline", "PUT", toggle + "?value=false", status=403)
+    # The trigger may toggle the pipeline but cannot read its source; running as it would fail.
+    toggler = {"subject": trigger, "role": "admin", "resources": [{**managing["resources"][0], "name": pipeline_id}]}
+    policy_with([managing, source_read, output_write, trigger_all, toggler], "grant the trigger Write on the pipeline")
+    expect(ingester, "pipeline Writer disables the pipeline", "PUT", toggle + "?value=false")
+    expect(ingester, "pipeline Writer re-enables the pipeline", "PUT", toggle + "?value=true")
+    kept = uuid.uuid4().hex
+    ingest(kept)
+    output(kept, 1)
+    print("PASS a pipeline toggled by another Writer still runs as its saver", flush=True)
     policy_with([managing, output_write, trigger_all], "revoke executor source Query immediately")
     revoked = uuid.uuid4().hex
     ingest(revoked, status=403)

@@ -270,10 +270,19 @@ def run(binary):
         policy = expect(root, "restore editor source query rights", "PUT", org + "/rbac/policy",
                         {"expected_version": policy["version"], "grants": grants})
         await_delivery("scheduled execution recovers after current grant restoration")
+        alert_path = alerts + "/" + alert_id
+        saver = stored_subject(alert_id)
+        expect(root, "another Writer disables the alert", "PATCH", alert_path + "/enable?value=false")
+        require(expect(editor, "read disabled alert", "GET", alert_path).get("enabled") is False,
+                "alert disable did not apply")
+        expect(root, "another Writer re-enables the alert", "PATCH", alert_path + "/enable?value=true")
+        expect(root, "another Writer triggers the alert by hand", "PATCH", alert_path + "/trigger")
+        require(stored_subject(alert_id) == saver, "a toggle or trigger replaced the alert's run-as identity")
+        print("PASS a toggled alert keeps its saver's identity", flush=True)
         policy = expect(root, "revoke destination approval", "PUT", org + "/rbac/destinations",
                         {"expected_version": policy["version"], "approvals": []})
         no_delivery("scheduled delivery stops after destination approval revocation")
-        expect(editor, "delete scoped alert", "DELETE", alerts + "/" + alert_id)
+        expect(editor, "delete scoped alert", "DELETE", alert_path)
         print("PASS scheduled SQL alert isolation and revocation", flush=True)
     finally:
         stop()

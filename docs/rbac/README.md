@@ -70,11 +70,11 @@ A user may hold several grants; permissions add up within their resources. Strea
 - **Identity:** a search runs as the authenticated caller; a `user_id` header from the client never changes it. The identity follows work into background tasks and to other querier nodes, and is checked again there.
 - **Revocation:** policy is read at each decision, so a revoked grant denies the next request. A request already running is not cancelled.
 
-Not supported yet: 475 of 589 active HTTP operations, listed in [endpoints.md](endpoints.md), return 403 while RBAC is on, even for Admins. This includes public dashboards, generic proxying, and protocols such as `_bulk`, HEC and Loki. Node-to-node RPCs are listed in [rpc.md](rpc.md). Check both against what your installation uses before enabling RBAC.
+Not supported yet: 471 of 589 active HTTP operations, listed in [endpoints.md](endpoints.md), return 403 while RBAC is on, even for Admins. This includes public dashboards, generic proxying, and protocols such as `_bulk`, HEC and Loki. Node-to-node RPCs are listed in [rpc.md](rpc.md). Check both against what your installation uses before enabling RBAC.
 
 ## Scheduled work
 
-Alerts, reports and pipelines run as the user who last saved them. Anything saved before RBAC was enabled has no recorded identity and does not run until an authorized editor saves it again.
+Alerts, reports and pipelines run as the user who last saved them. Enabling, disabling or triggering one needs Write on it and leaves that identity unchanged. Anything saved before RBAC was enabled has no recorded identity and does not run until an authorized editor saves it again.
 
 - **Alerts:** only scheduled SQL alerts with named source streams are supported. The creator must keep Query on every source, and an Admin must approve each source stream for each destination (`PUT /api/$ORG/rbac/destinations`). Approval binds the destination's exact configuration, so changing the destination or its template needs a new approval. Approvals and source access are checked again right before each notification.
 - **Reports:** set `ZO_REPORT_SERVER_URL=` (empty) to use the built-in browser renderer; the separate report server is refused under RBAC. Configure `ZO_CHROME_ENABLED=true`, `ZO_CHROME_PATH`, and a dedicated non-root renderer account in `ZO_REPORT_USER_NAME`/`ZO_REPORT_USER_PASSWORD` that belongs to one organization and holds only Viewer on the report's dashboard and Exporter on its streams. Reports support v8 dashboards with ordinary SQL panels, PDF attachments, and approved email destinations only.
