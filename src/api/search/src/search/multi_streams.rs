@@ -1307,6 +1307,8 @@ pub async fn search_multi_stream(
     let search_event_context = search_type
         .as_ref()
         .and_then(|event_type| get_search_event_context_from_request(event_type, &query));
+    // Per-query stream tasks expect a search type, like the single-stream handler.
+    let search_type = search_type.or(Some(search::SearchEventType::Other));
 
     let fallback_order_by_col = get_fallback_order_by_col_from_request(&query);
 
@@ -1595,19 +1597,15 @@ pub async fn search_multi_stream(
                                 let error_detail = code.get_error_detail();
                                 let http_response = map_error_to_http_response(&err, None);
 
-                                StreamResponses::Error {
-                                    code: http_response.status().into(),
+                                StreamResponses::error(
+                                    http_response.status().into(),
                                     message,
-                                    error_detail: Some(error_detail),
-                                }
+                                    Some(error_detail),
+                                )
                             }
                         }
                     }
-                    _ => StreamResponses::Error {
-                        code: 500,
-                        message: err.to_string(),
-                        error_detail: None,
-                    },
+                    _ => StreamResponses::error(500, err.to_string(), None),
                 };
                 err_res.to_chunks()
             }

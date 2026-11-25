@@ -77,6 +77,7 @@ pub mod grpc_search;
 pub mod grpc_server;
 pub mod partition;
 pub mod query_range;
+pub mod raw_streams;
 #[cfg(feature = "enterprise")]
 pub mod search_jobs;
 pub mod searcher;
@@ -173,9 +174,34 @@ pub async fn search(
     request.set_use_cache(in_req.use_cache);
     request.set_use_index(in_req.use_index);
     request.set_analyze_profile(in_req.query.analyze_profile);
+    let raw_streams = match &in_req.raw_streams {
+        Some(raw_streams) => raw_streams.clone(),
+        None => {
+            crate::raw_streams::resolve_and_audit(
+                &trace_id,
+                org_id,
+                stream_type,
+                user_id.as_deref(),
+                &in_req.query.sql,
+            )
+            .await
+        }
+    };
+    request.set_raw_streams(raw_streams);
+    partition::aggregate::check_streaming_owner(
+        request.streaming_id.as_deref(),
+        user_id.as_deref(),
+    )?;
     // Before the query is planned again in spawned tasks (cluster::http).
     request.mark_protected_reader();
     let meta = Sql::new_from_req(&request, &query).await?;
+    partition::aggregate::check_streaming_redaction(
+        org_id,
+        stream_type,
+        request.streaming_id.as_deref(),
+        &meta.stream_names,
+        &request.raw_streams,
+    )?;
 
     // callers may share one trace_id across concurrent requests, e.g. Grafana via traceparent
     let registration = SEARCH_SERVER.register_leader(
@@ -328,6 +354,7 @@ pub async fn search_multi(
     org_id: &str,
     stream_type: StreamType,
     user_id: Option<String>,
+    raw_streams: Option<search::RawStreams>,
     multi_req: &search::MultiStreamRequest,
 ) -> Result<search::Response, Error> {
     let start = std::time::Instant::now();
@@ -401,6 +428,7 @@ pub async fn search_multi(
             }
         }
 
+        req.raw_streams = raw_streams.clone();
         let res = search(&trace_id, org_id, stream_type, user_id.clone(), &req).await;
 
         match res {
@@ -612,6 +640,10 @@ pub async fn search_partition(
     let role_group = req.search_type.map(RoleGroup::from);
 
     let ctx = PartitionSqlContext::new(req, org_id, stream_type).await?;
+    let raw_streams = match &req.raw_streams {
+        Some(raw_streams) => raw_streams.clone(),
+        None => crate::raw_streams::resolve(org_id, stream_type, &req.sql, user_id).await,
+    };
 
     let stream_files = collect_stream_files(trace_id, user_id, &ctx).await?;
 
@@ -649,7 +681,10 @@ pub async fn search_partition(
     // Like the result cache, the shared aggregation cache is bypassed while RBAC is on.
     let use_cache = use_cache && !infra::rbac::enabled();
     let (streaming_aggs, streaming_id, cache_strategy) =
-        prepare_streaming_aggregate(trace_id, req, &ctx, use_cache).await?;
+        prepare_streaming_aggregate(trace_id, req, &ctx, &raw_streams, use_cache).await?;
+    if let Some(id) = streaming_id.as_deref() {
+        streaming_aggs_exec::registry::set_owner(id, user_id.map(str::to_string));
+    }
     resp.streaming_output = streaming_aggs;
     resp.streaming_aggs = streaming_aggs;
     resp.streaming_id = streaming_id;
@@ -1030,6 +1065,7 @@ pub async fn search_partition_multi(
                 sampling_ratio: None,
                 search_type: None,
                 timezone: None,
+                raw_streams: None,
             },
             false,
             false, // disable aggs cache

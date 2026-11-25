@@ -230,6 +230,7 @@ async fn get_wal_batches(
             rbac_subject: rbac_subject.map(str::to_owned),
             ..Default::default()
         },
+        raw_streams: Vec::new(),
     };
 
     physical_plan = Arc::new(RemoteScanExec::new(physical_plan, remote_scan_node)?);
