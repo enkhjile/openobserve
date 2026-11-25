@@ -47,4 +47,4 @@ git tag -a v2026.11.23 -m "Release 2026.11.23" origin/main
 git push origin v2026.11.23
 ```
 
-The image is published as `ghcr.io/<owner>/openobserve:<tag>` and `:latest`. Upstream's versions keep advancing on `main`, so the tag is this fork's own version; a date works well. After the first release, check the package's visibility in its settings. Back up the metadata database before deploying a new image.
+The image is published as `ghcr.io/<owner>/openobserve:<tag>` and `:latest`. Upstream's versions keep advancing on `main`, so the tag is this fork's own version, named `vYYYY.MM.DD` after the release date. A second release on the same day adds a counter: `v2026.11.23.1`, then `v2026.11.23.2`. After the first release, check the package's visibility in its settings. Back up the metadata database before deploying a new image.
