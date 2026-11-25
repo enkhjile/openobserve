@@ -1243,6 +1243,7 @@ mod tests {
             last_run_at: Set(None),
             last_run_status: Set(None),
             last_run_error: Set(None),
+            execution_context: Set(None),
         }
         .insert(db)
         .await

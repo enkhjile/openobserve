@@ -90,6 +90,40 @@ fn downtimes_enabled() -> bool {
     false
 }
 
+/// Keeps the folders the RBAC caller may see; with RBAC off, all of them.
+async fn rbac_visible(
+    org_id: &str,
+    folder_type: config::meta::folder::FolderType,
+    folders: Vec<Folder>,
+) -> Result<Vec<Folder>, Response> {
+    match infra::rbac::visible_folders(org_id, folder_type).await {
+        Ok(visible) => Ok(folders
+            .into_iter()
+            .filter(|folder| infra::rbac::readable(&visible, &folder.folder_id))
+            .collect()),
+        Err(_) => Err(MetaHttpResponse::forbidden(
+            "Access denied by organization RBAC policy",
+        )),
+    }
+}
+
+/// Under RBAC a missing folder is refused like a hidden one, so names cannot be probed.
+async fn rbac_visible_folder(
+    org_id: &str,
+    folder_type: config::meta::folder::FolderType,
+    folder: Result<Folder, FolderError>,
+) -> Result<Folder, Response> {
+    if !infra::rbac::enabled() {
+        return folder.map_err(folder_error_response);
+    }
+    let denied = || MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    let folder = folder.map_err(|_| denied())?;
+    rbac_visible(org_id, folder_type, vec![folder])
+        .await?
+        .pop()
+        .ok_or_else(denied)
+}
+
 /// CreateFolder
 #[utoipa::path(
     post,
@@ -235,6 +269,10 @@ pub async fn list_folders(
     }
     match folders::list_folders(&org_id, user_id, folder_type).await {
         Ok(folders) => {
+            let folders = match rbac_visible(&org_id, folder_type, folders).await {
+                Ok(folders) => folders,
+                Err(denied) => return denied,
+            };
             #[cfg(feature = "enterprise")]
             let folders = if folder_type == config::meta::folder::FolderType::Downtimes {
                 openobserve_core::downtimes::listable_folders(&org_id, &user_email.user_id, folders)
@@ -278,12 +316,14 @@ pub async fn list_folders(
 pub async fn get_folder(
     Path((org_id, folder_type, folder_id)): Path<(String, FolderType, String)>,
 ) -> Response {
-    match folders::get_folder(&org_id, &folder_id, folder_type.into()).await {
+    let folder_type = folder_type.into();
+    let folder = folders::get_folder(&org_id, &folder_id, folder_type).await;
+    match rbac_visible_folder(&org_id, folder_type, folder).await {
         Ok(folder) => {
             let body: CreateFolderResponseBody = folder.into();
             MetaHttpResponse::json(body)
         }
-        Err(err) => folder_error_response(err),
+        Err(response) => response,
     }
 }
 
@@ -319,7 +359,8 @@ pub async fn get_folder_by_name(
     #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
 ) -> Response {
     let folder_type = folder_type.into();
-    match folders::get_folder_by_name(&org_id, &folder_name, folder_type).await {
+    let folder = folders::get_folder_by_name(&org_id, &folder_name, folder_type).await;
+    match rbac_visible_folder(&org_id, folder_type, folder).await {
         Ok(folder) => {
             #[cfg(feature = "enterprise")]
             let folder = if folder_type == config::meta::folder::FolderType::Downtimes {
@@ -339,7 +380,7 @@ pub async fn get_folder_by_name(
             let body: CreateFolderResponseBody = folder.into();
             MetaHttpResponse::json(body)
         }
-        Err(err) => folder_error_response(err),
+        Err(response) => response,
     }
 }
 
@@ -634,6 +675,9 @@ pub mod deprecated {
     }
 }
 
+#[cfg(test)]
+#[path = "folders_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

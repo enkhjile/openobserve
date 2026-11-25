@@ -28,7 +28,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   >
     <template #actions>
       <!-- new dashboard button -->
-      <OButton variant="primary" size="sm" data-test="dashboard-new" @click="addDashboard">
+      <OButton
+        v-show="canMutateDashboard('*')"
+        variant="primary"
+        size="sm"
+        data-test="dashboard-new"
+        @click="addDashboard"
+      >
         {{ t(`dashboard.add`) }}
       </OButton>
     </template>
@@ -49,7 +55,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       </OButton>
       <OTooltip v-if="homeDashboard" side="bottom" :content="t('dashboard.openHomeDashboard')" />
       <!-- import dashboard button with dropdown -->
-      <ODropdown side="bottom" align="end">
+      <ODropdown v-if="canMutateDashboard('*')" side="bottom" align="end">
         <template #trigger>
           <OButton
             variant="outline"
@@ -303,7 +309,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
               <template #cell-actions="{ row }">
                 <span class="row-actions flex items-center justify-end gap-0.5">
                   <OButton
-                    v-if="row.actions == 'true'"
+                    v-if="row.actions == 'true' && canMutateDashboard(row.id)"
                     icon-left="drive-file-move"
                     :aria-label="t('dashboard.move_to_another_folder')"
                     variant="ghost"
@@ -315,12 +321,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     <OTooltip side="bottom" :content="t('dashboard.move_to_another_folder')" />
                   </OButton>
                   <OButton
-                    v-if="row.actions == 'true'"
+                    v-if="row.actions == 'true' && canMutateDashboard(row.id)"
                     icon-left="content-copy"
                     :aria-label="t('dashboard.duplicate')"
                     variant="ghost"
                     size="icon-xs-sq"
                     class="max-md:hidden"
+                    v-show="canMutateDashboard('*')"
                     data-test="dashboard-duplicate"
                     data-row-action="duplicate"
                     @click.stop="duplicateDashboard(row.id, row.folder_id)"
@@ -328,7 +335,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     <OTooltip side="bottom" :content="t('dashboard.duplicate')" />
                   </OButton>
                   <OButton
-                    v-if="row.actions == 'true'"
+                    v-if="row.actions == 'true' && canMutateDashboard(row.id)"
                     icon-left="delete"
                     :aria-label="t('dashboard.delete')"
                     variant="ghost-destructive"
@@ -344,7 +351,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   <!-- Overflow menu (rightmost) — houses the low-frequency "set as
                      home" action so it doesn't clutter every row with an
                      always-on icon. Move/Duplicate/Delete stay inline. -->
-                  <ODropdown v-if="row.actions == 'true'" side="bottom" align="end">
+                  <ODropdown
+                    v-if="row.actions == 'true' && canMutateDashboard(row.id)"
+                    side="bottom"
+                    align="end"
+                  >
                     <template #trigger>
                       <OButton
                         icon-left="more-vert"
@@ -360,6 +371,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     <ODropdownItem
                       icon-left="drive-file-move"
                       class="md:hidden"
+                      v-show="canMutateDashboard(row.id)"
                       data-test="dashboard-move-to-another-folder-menu"
                       @select="showMoveDashboardPanel(row)"
                     >
@@ -368,6 +380,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     <ODropdownItem
                       icon-left="content-copy"
                       class="md:hidden"
+                      v-show="canMutateDashboard('*')"
                       data-test="dashboard-duplicate-menu"
                       @select="duplicateDashboard(row.id, row.folder_id)"
                     >
@@ -384,6 +397,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                     </ODropdownItem>
                     <ODropdownItem
                       :icon-left="isHome(row.id) ? 'keep' : 'keep-outline'"
+                      v-show="canMutateDashboard(null)"
                       data-test="dashboard-list-set-home-btn"
                       @select="toggleHome(row)"
                     >
@@ -451,6 +465,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 <OButton
                   variant="outline"
                   size="sm"
+                  v-if="canMutateSelected"
                   data-test="dashboard-list-move-across-folders-btn"
                   @click="moveMultipleDashboards"
                   icon-left="drive-file-move"
@@ -470,6 +485,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   variant="outline-destructive"
                   size="sm"
                   icon-left="delete"
+                  v-if="canMutateSelected"
                   data-test="dashboard-list-delete-dashboards-btn"
                   :loading="bulkDeleteLoading"
                   @click="openBulkDeleteDialog"
@@ -614,6 +630,8 @@ import {
   toRaw,
 } from "vue";
 import { useStore } from "vuex";
+import config from "@/aws-exports";
+import { useDashboardPermissions } from "@/composables/useDashboardRbac";
 import { isCancelledError } from "@tanstack/vue-query";
 import { useI18nTyped, raw, type I18nText } from "@/types/i18n";
 import { formatDate } from "@/utils/date";
@@ -749,6 +767,10 @@ export default defineComponent({
   },
   setup() {
     const store = useStore();
+    const canMutateDashboard = useDashboardPermissions(
+      computed(() => store.state.selectedOrganization.identifier),
+      config.isEnterprise === "true" || config.isCloud === "true",
+    );
     const { t } = useI18nTyped();
     const dashboard = ref({});
     const showAddDashboardDialog = ref(false);
@@ -1041,6 +1063,12 @@ export default defineComponent({
       return baseColumns;
     });
     const selectedDashboardIds = computed(() => selectedIds.value);
+    const canMutateSelected = computed(
+      () =>
+        canMutateDashboard(null) ||
+        (selectedDashboardIds.value.length > 0 &&
+          selectedDashboardIds.value.every(canMutateDashboard)),
+    );
 
     onMounted(async () => {
       // Awaited so the landing decision settles after FolderList's async init emission.
@@ -2108,6 +2136,9 @@ export default defineComponent({
       },
     ]);
     return {
+      canMutateDashboard,
+      canMutateSelected,
+      selectedDashboardIds,
       t,
       oTableRef,
       selectedDelete,

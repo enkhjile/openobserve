@@ -25,6 +25,7 @@ use sqlx::FromRow;
 
 use crate::errors::{DbError, Result};
 
+pub mod execution;
 pub mod postgres;
 pub mod sqlite;
 

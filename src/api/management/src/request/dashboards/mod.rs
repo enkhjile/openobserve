@@ -207,14 +207,41 @@ pub async fn list_dashboards(
     Query(query): Query<ListDashboardsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let params = query.into(&org_id);
+    let mut params = query.into(&org_id);
+    let rbac_enabled = infra::rbac::enabled();
+    let pagination = rbac_enabled
+        .then(|| params.page_size_and_idx.take())
+        .flatten();
     let Some(user_id) = get_user_id(&headers) else {
         return MetaHttpResponse::unauthorized("User ID not found in request headers");
     };
-    let dashboards = match dashboards::list_dashboards(&user_id, params).await {
+    let mut dashboards = match dashboards::list_dashboards(&user_id, params).await {
         Ok(dashboards) => dashboards,
         Err(err) => return err.into(),
     };
+    if rbac_enabled {
+        let (kind, read) = (
+            infra::rbac::ResourceKind::Dashboard,
+            infra::rbac::Action::Read,
+        );
+        dashboards = match infra::rbac::retain_allowed(&user_id, &org_id, read, dashboards, |d| {
+            infra::rbac::Resource::new(kind, d.1.dashboard_id().unwrap_or_default())
+        })
+        .await
+        {
+            Ok(dashboards) => dashboards,
+            Err(_) => {
+                return MetaHttpResponse::forbidden("Organization RBAC policy is unavailable");
+            }
+        };
+        if let Some((size, index)) = pagination {
+            dashboards = dashboards
+                .into_iter()
+                .skip(usize::try_from(size.saturating_mul(index)).unwrap_or(usize::MAX))
+                .take(usize::try_from(size).unwrap_or(usize::MAX))
+                .collect();
+        }
+    }
     let resp_body: ListDashboardsResponseBody = dashboards.into();
     MetaHttpResponse::json(resp_body)
 }
@@ -420,6 +447,14 @@ pub async fn move_dashboard(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req_body): axum::Json<MoveDashboardRequestBody>,
 ) -> Response {
+    let ids = [dashboard_id.clone()];
+    let dashboards = config::meta::folder::FolderType::Dashboards;
+    if infra::rbac::authorize_folder_move(&org_id, dashboards, &ids, &req_body.to)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     if !ensure_dashboard_in_org(&org_id, &dashboard_id).await {
         return MetaHttpResponse::not_found("Dashboard not found");
     }
@@ -471,6 +506,16 @@ pub async fn move_dashboards(
     Headers(user_email): Headers<UserEmail>,
     axum::Json(req_body): axum::Json<MoveDashboardsRequestBody>,
 ) -> Response {
+    let (ids, dashboards) = (
+        &req_body.dashboard_ids,
+        config::meta::folder::FolderType::Dashboards,
+    );
+    if infra::rbac::authorize_folder_move(&org_id, dashboards, ids, &req_body.dst_folder_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     if !dashboards_db::all_dashboards_in_org(&org_id, &req_body.dashboard_ids).await {
         return MetaHttpResponse::not_found("Dashboard not found");
     }

@@ -112,6 +112,25 @@ fn parse_metric_value(value: &json::Value) -> Result<json::Value, anyhow::Error>
     super::metric_value(raw).ok_or_else(|| anyhow!("invalid value, not a number"))
 }
 
+pub(super) fn metric_destination(
+    stream_name: Option<&str>,
+    record: &json::Map<String, json::Value>,
+) -> Result<String> {
+    let stream_name = match stream_name {
+        Some(name) => format_stream_name(name.to_string()),
+        None => match record
+            .get(NAME_LABEL)
+            .ok_or_else(|| anyhow!("missing __name__"))?
+        {
+            json::Value::String(s) => format_stream_name(s.to_string()),
+            _ => {
+                return Err(anyhow::anyhow!("invalid __name__, need to be string"));
+            }
+        },
+    };
+    Ok(stream_name)
+}
+
 /// Queues a validated record for its pipelines or its write, or says why its stream takes none.
 async fn buffer_record(
     org_id: &str,
@@ -125,18 +144,7 @@ async fn buffer_record(
     let json::Value::Object(mut record) = flatten::flatten(record)? else {
         unreachable!("flatten only returns an object")
     };
-    let stream_name = match stream_name {
-        Some(name) => format_stream_name(name.to_string()),
-        None => match record
-            .get(NAME_LABEL)
-            .ok_or_else(|| anyhow!("missing __name__"))?
-        {
-            json::Value::String(s) => format_stream_name(s.to_string()),
-            _ => {
-                return Err(anyhow::anyhow!("invalid __name__, need to be string"));
-            }
-        },
-    };
+    let stream_name = metric_destination(stream_name, &record)?;
     // keep the `__name__` column equal to the stream the record is written to;
     // otherwise `{__name__="..."}` selectors can never match the rows (same
     // policy as the OTLP writer)
@@ -467,6 +475,9 @@ pub async fn ingest(
 
     let window = ingest::IngestWindow::now();
     let reader: Vec<json::Value> = json::from_slice(&body)?;
+    for name in super::rbac::authorize_batch(org_id, stream_name, &reader, &user).await? {
+        lookups.pipelines.insert(name, Vec::new());
+    }
     for record in reader {
         let skipped = buffer_record(
             org_id,

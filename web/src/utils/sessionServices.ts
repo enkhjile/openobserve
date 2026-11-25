@@ -69,6 +69,14 @@ export const clearLocalStorageKeepingDrafts = (): void => {
   keys.forEach((key) => localStorage.removeItem(key));
 };
 
+export const tryClearBrowserStorage = (clear: () => void): void => {
+  try {
+    clear();
+  } catch {
+    // Storage may be blocked after the server session ends; it must not prevent remaining cleanup or navigation.
+  }
+};
+
 /** Ends a session the server rejected and reloads: the user's drafts stay, so the work survives the next login. */
 export const expireSession = (
   store: ExpiringStore,
@@ -85,8 +93,8 @@ export const expireSession = (
   store.dispatch("logout");
   useLocalCurrentUser("", true);
   useLocalUserInfo("", true);
-  if (clearLocalStorage) clearLocalStorageKeepingDrafts();
-  sessionStorage.clear();
+  if (clearLocalStorage) tryClearBrowserStorage(clearLocalStorageKeepingDrafts);
+  tryClearBrowserStorage(() => sessionStorage.clear());
   // The session is gone, so an editor's "leave site?" prompt could only keep the user on a dead page.
   silenceUnloadPrompts();
   if (toLogin) window.location.assign(`${getPath()}login`);

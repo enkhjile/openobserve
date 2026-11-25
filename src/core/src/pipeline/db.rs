@@ -98,7 +98,7 @@ struct BrokenPipeline {
 ///
 /// Pipeline validation should be handled by the caller.
 pub async fn set(pipeline: &Pipeline) -> Result<(), PipelineError> {
-    infra_pipeline::put(pipeline).await?;
+    infra_pipeline::execution::put(pipeline).await?;
     update_cache(PipelineTableEvent::Add(pipeline)).await;
 
     Ok(())
@@ -116,7 +116,7 @@ pub async fn update(
         update_cache(PipelineTableEvent::Remove(&pipeline.id)).await;
     }
 
-    infra_pipeline::put(pipeline).await?;
+    infra_pipeline::execution::put(pipeline).await?;
     update_cache(PipelineTableEvent::Add(pipeline)).await;
 
     Ok(())

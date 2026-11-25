@@ -172,6 +172,7 @@ impl TryFrom<alerts::Model> for MetaAlert {
         alert.tz_offset = value.tz_offset;
         alert.owner = value.owner;
         alert.last_edited_by = value.last_edited_by;
+        alert.execution_subject = value.execution_subject;
         alert.updated_at = updated_at_utc;
         alert.query_condition = MetaQueryCondition {
             query_type: query_type.into(),
@@ -1213,6 +1214,7 @@ fn update_mutable_fields(
     alert_am.trigger_tolerance_seconds = Set(trigger_tolerance_seconds);
     alert_am.owner = Set(owner);
     alert_am.last_edited_by = Set(last_edited_by);
+    alert_am.execution_subject = Set(alert.execution_subject);
     alert_am.updated_at = Set(Some(updated_at));
     alert_am.align_time = Set(align_time);
     alert_am.creates_incident = Set(alert.creates_incident);
@@ -1238,6 +1240,8 @@ enum Alerts {
     Name,
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -1292,6 +1296,7 @@ pub(super) mod tests {
             trigger_tolerance_seconds: None,
             owner: None,
             last_edited_by: None,
+            execution_subject: None,
             updated_at: None,
             align_time: false,
             dedup_enabled: false,

@@ -512,7 +512,9 @@ where
     #[cfg(not(feature = "enterprise"))]
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let cookies = extract_cookies_from_headers(&parts.headers);
-        let auth_str = if let Some(cookie) = cookies.get("auth_tokens") {
+        let auth_str = if crate::extensions::oidc::has_session_cookie(&parts.headers) {
+            "OidcSession".to_string()
+        } else if let Some(cookie) = cookies.get("auth_tokens") {
             let val = config::utils::base64::decode_raw(cookie).unwrap_or_default();
             let auth_tokens: AuthTokens =
                 json::from_str(std::str::from_utf8(&val).unwrap_or_default()).unwrap_or_default();

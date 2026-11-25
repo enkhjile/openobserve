@@ -397,6 +397,8 @@ mod tests {
             updated_at: None,
             owner: "test_owner".to_string(),
             last_edited_by: "test_editor".to_string(),
+            execution_context: None,
+            delivery_destinations: vec![],
         }
     }
 

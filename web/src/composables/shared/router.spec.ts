@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
-import { createMemoryHistory, createRouter, type RouteRecordRaw } from "vue-router";
+import { createMemoryHistory, createRouter } from "vue-router";
 import useRoutes from "./router";
 import Login from "@/views/Login.vue";
 import store from "@/stores";
@@ -299,169 +299,12 @@ describe("useRoutes (router.ts)", () => {
   // 3. parentRoutes — /logout
   // =========================================================================
   describe("parentRoutes — /logout", () => {
-    it("should include /logout route", () => {
+    it("renders the public confirmation page independently of the saved profile", () => {
       const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-      expect(logoutRoute).toBeDefined();
-    });
-
-    it("should have beforeEnter guard for /logout", () => {
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-      expect(typeof logoutRoute.beforeEnter).toBe("function");
-    });
-
-    it("should call invalidateLoginData in /logout beforeEnter", async () => {
-      const { invalidateLoginData } = await import("@/utils/zincutils");
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-
-      const originalLocation = window.location;
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: { href: "" },
-      });
-
-      logoutRoute.beforeEnter({}, {}, vi.fn());
-      expect(invalidateLoginData).toHaveBeenCalledTimes(1);
-
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: originalLocation,
-      });
-    });
-
-    it("W-S12 forgets a kept Slack link request in /logout beforeEnter", async () => {
-      const { rememberLinkRequest, recallLinkRequest } = await import("@/utils/slackLink");
-      rememberLinkRequest("req-1.sig", null);
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-
-      const originalLocation = window.location;
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: { href: "" },
-      });
-
-      logoutRoute.beforeEnter({}, {}, vi.fn());
-      expect(recallLinkRequest()).toBeNull();
-
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: originalLocation,
-      });
-    });
-
-    it("should call useLocalCurrentUser in /logout beforeEnter", async () => {
-      const { useLocalCurrentUser } = await import("@/utils/zincutils");
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-
-      const originalLocation = window.location;
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: { href: "" },
-      });
-
-      logoutRoute.beforeEnter({}, {}, vi.fn());
-      expect(useLocalCurrentUser).toHaveBeenCalledWith("", true);
-
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: originalLocation,
-      });
-    });
-
-    it("should call useLocalUserInfo in /logout beforeEnter", async () => {
-      const { useLocalUserInfo } = await import("@/utils/zincutils");
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-
-      const originalLocation = window.location;
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: { href: "" },
-      });
-
-      logoutRoute.beforeEnter({}, {}, vi.fn());
-      expect(useLocalUserInfo).toHaveBeenCalledWith("", true);
-
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: originalLocation,
-      });
-    });
-
-    it("ends the session but keeps the drafts, since only the menu's sign-out confirms discarding them", async () => {
-      const { readEditorDraft, writeEditorDraft } = await import("@/utils/drafts/editorDraftStore");
-      const { resumeDraftSession } = await import("@/utils/drafts/draftSession");
-      const draftScope = {
-        kind: "function" as const,
-        org: "o",
-        entityId: "f",
-        userEmail: "me@x.io",
-      };
-      store.commit("setUserInfo", { email: "me@x.io" });
-      writeEditorDraft(draftScope, { data: {} });
-      const dispatch = vi.spyOn(store, "dispatch");
-      const aborted = vi.fn();
-      const prompt = vi.fn();
-      window.addEventListener("o2:abort-ai-streams", aborted);
-      window.addEventListener("beforeunload", prompt);
-      const originalLocation = window.location;
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: { href: "" },
-      });
-
-      const { parentRoutes } = useRoutes();
-      const logout = (parentRoutes as RouteRecordRaw[]).find((r) => r.path === "/logout");
-      const enter = logout?.beforeEnter;
-      if (typeof enter !== "function") throw new Error("/logout has no beforeEnter guard");
-      enter.call(undefined, {} as never, {} as never, vi.fn());
-      window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
-
-      expect(dispatch).toHaveBeenCalledWith("logout");
-      expect(dispatch).not.toHaveBeenCalledWith("logout", expect.anything());
-      expect(readEditorDraft(draftScope)).not.toBeNull();
-      expect(aborted).toHaveBeenCalledTimes(1);
-      expect(prompt).not.toHaveBeenCalled();
-      expect(window.location.href).toBe("/login");
-
-      window.removeEventListener("o2:abort-ai-streams", aborted);
-      window.removeEventListener("beforeunload", prompt);
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: originalLocation,
-      });
-      dispatch.mockRestore();
-      resumeDraftSession();
-      localStorage.clear();
-    });
-
-    it("should redirect window.location.href to /login in /logout beforeEnter", () => {
-      const { parentRoutes } = useRoutes();
-      const logoutRoute = parentRoutes.find((r: any) => r.path === "/logout");
-
-      const mockLocation = { href: "" };
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        writable: true,
-        value: mockLocation,
-      });
-
-      logoutRoute.beforeEnter({}, {}, vi.fn());
-      expect(mockLocation.href).toBe("/login");
+      const logout = parentRoutes.find((route) => route.path === "/logout");
+      expect(logout?.meta?.public).toBe(true);
+      expect(logout?.component).toBeDefined();
+      expect(logout?.beforeEnter).toBeUndefined();
     });
   });
 
@@ -2541,12 +2384,13 @@ describe("useRoutes (router.ts)", () => {
   // 23. Edge cases
   // =========================================================================
   describe("Edge Cases", () => {
-    it("should have exactly these 10 parentRoutes, the anonymous public pages included", () => {
+    it("should have exactly these 11 parentRoutes, the anonymous public pages included", () => {
       const { parentRoutes } = useRoutes();
       expect(parentRoutes.map((r: any) => r.path)).toEqual([
         "/login",
         "/signup",
         "/logout",
+        "/oidc/cb",
         "/cb",
         "/ai/public/:token",
         "/slack/oauth/callback",

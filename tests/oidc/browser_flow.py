@@ -1,0 +1,574 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["PyJWT[crypto]>=2.10,<3", "requests>=2.32,<3", "grpcio>=1.60,<2"]
+# ///
+"""Run with uv run tests/oidc/browser_flow.py target/debug/openobserve.
+
+Set OIDC_TEST_POSTGRES_DSN to an empty database to use PostgreSQL metadata instead of SQLite.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import socket
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Event, Thread
+from urllib.parse import parse_qs, urlencode, urlsplit
+
+import grpc
+import jwt
+import requests
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+
+class Issuer(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass  # Authorization codes must stay out of HTTP logs.
+
+    def json(self, payload, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode())
+
+    def do_GET(self):
+        server = self.server
+        path = urlsplit(self.path)
+        if path.path.endswith("/.well-known/openid-configuration"):
+            self.json(
+                {
+                    "issuer": server.issuer,
+                    "authorization_endpoint": server.issuer + "/authorize",
+                    "token_endpoint": server.issuer + "/token",
+                    "jwks_uri": server.issuer + "/keys",
+                    "response_types_supported": ["code"],
+                    "subject_types_supported": ["public"],
+                    "id_token_signing_alg_values_supported": ["RS256"],
+                }
+            )
+        elif path.path == "/keys":
+            jwk = jwt.algorithms.RSAAlgorithm.to_jwk(
+                server.key.public_key(), as_dict=True
+            )
+            self.json({"keys": [dict(jwk, kid="fixture", alg="RS256", use="sig")]})
+        elif path.path == "/authorize":
+            q = {k: v[0] for k, v in parse_qs(path.query).items()}
+            assert q["client_id"] == "test-client" and q["response_type"] == "code"
+            assert (
+                q["redirect_uri"] == server.callback
+                and q["code_challenge_method"] == "S256"
+            )
+            assert "openid" in q["scope"].split() and q["nonce"] and q["state"]
+            code = secrets.token_urlsafe()
+            server.codes[code] = q
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                server.callback + "?" + urlencode({"code": code, "state": q["state"]}),
+            )
+            self.end_headers()
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        server = self.server
+        q = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+        request = server.codes.pop(q["code"][0], None)
+        if not request or self.path != "/token":
+            return self.json({"error": "invalid_grant"}, 400)
+        assert q["redirect_uri"] == [server.callback] and q["grant_type"] == [
+            "authorization_code"
+        ]
+        auth = "Basic " + base64.b64encode(b"test-client:test-secret").decode()
+        assert self.headers["Authorization"] == auth
+        digest = hashlib.sha256(q["code_verifier"][0].encode()).digest()
+        assert (
+            base64.urlsafe_b64encode(digest).decode().rstrip("=")
+            == request["code_challenge"]
+        )
+        pause = getattr(server, "token_pause", None)
+        if pause is not None:
+            pause[0].set()
+            assert pause[1].wait(10), "mock token exchange was not released"
+        now = int(time.time())
+        claims = {
+            "iss": server.issuer,
+            "sub": server.subject,
+            "aud": "test-client",
+            "nonce": request["nonce"],
+            "iat": now,
+            "exp": now + 300,
+            "email": server.email,
+            "email_verified": True,
+        }
+        token = jwt.encode(
+            claims, server.key, algorithm="RS256", headers={"kid": "fixture"}
+        )
+        self.json(
+            {
+                "access_token": secrets.token_urlsafe(),
+                "token_type": "Bearer",
+                "id_token": token,
+            }
+        )
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@contextmanager
+def app(binary, directory, port, settings):
+    base = f"http://127.0.0.1:{port}"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZO_")}
+    env.update(
+        ZO_LOCAL_MODE="true",
+        ZO_LOCAL_MODE_STORAGE="disk",
+        ZO_TELEMETRY="false",
+        ZO_HTTP_ADDR="127.0.0.1",
+        ZO_GRPC_ADDR="127.0.0.1",
+        ZO_HTTP_PORT=str(port),
+        ZO_GRPC_PORT=str(GRPC_PORT),
+        ZO_DATA_DIR=str(Path(directory) / "data") + "/",
+        ZO_ROOT_USER_EMAIL=ROOT,
+        ZO_ROOT_USER_PASSWORD=PASSWORD,
+        ZO_WEB_URL=base,
+        **META_STORE,
+        **settings,
+    )
+    with open(Path(directory) / "server.log", "ab") as log:
+        process = subprocess.Popen(
+            [binary], cwd=directory, env=env, stdout=log, stderr=log
+        )
+        try:
+            for _ in range(300):
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"OpenObserve exited during startup ({process.returncode})"
+                    )
+                try:
+                    health = base + settings.get("ZO_BASE_URI", "") + "/healthz"
+                    if requests.get(health, timeout=1).ok:
+                        break
+                except requests.ConnectionError:
+                    pass
+                time.sleep(0.2)
+            else:
+                raise RuntimeError("OpenObserve startup timed out")
+            yield base
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def begin_flow(browser, base):
+    login = browser.get(base + "/auth/oidc/login", allow_redirects=False, timeout=20)
+    assert login.is_redirect, login.status_code
+    consent = requests.get(login.headers["Location"], allow_redirects=False, timeout=5)
+    assert consent.is_redirect
+    return consent.headers["Location"]
+
+
+def finish_flow(browser, callback, success):
+    response = browser.get(callback, allow_redirects=False, timeout=20)
+    assert response.is_redirect
+    assert response.headers["Location"].endswith(
+        "/web/oidc/cb" if success else "/web/login?oidc_error=1"
+    )
+
+
+def grpc_code(user, secret):
+    """Status of an empty OTLP log export, which the gRPC auth interceptor checks first."""
+    token = base64.b64encode(f"{user}:{secret}".encode()).decode()
+    with grpc.insecure_channel(f"127.0.0.1:{GRPC_PORT}") as channel:
+        grpc.channel_ready_future(channel).result(timeout=20)
+        export = channel.unary_unary(
+            "/opentelemetry.proto.collector.logs.v1.LogsService/Export"
+        )
+        metadata = [("authorization", f"Basic {token}"), ("organization", "default")]
+        try:
+            export(b"", metadata=metadata, timeout=10)
+        except grpc.RpcError as error:
+            return error.code()
+    return grpc.StatusCode.OK
+
+
+def flow(browser, base, success):
+    callback = begin_flow(browser, base)
+    finish_flow(browser, callback, success)
+    return callback
+
+
+POSTGRES_DSN = os.environ.get("OIDC_TEST_POSTGRES_DSN", "")
+META_STORE = (
+    {"ZO_META_STORE": "postgres", "ZO_META_POSTGRES_DSN": POSTGRES_DSN}
+    if POSTGRES_DSN
+    else {}
+)
+GRPC_PORT = free_port()
+ROOT = "root@example.test"
+HUMAN = "member@example.test"
+PASSWORD = "T3st!" + secrets.token_urlsafe(24)
+
+
+def test_flow(binary, directory, issuer):
+    port = free_port()
+    with app(binary, directory, port, {}) as base:
+        assert requests.get(base + "/auth/oidc/login", timeout=5).status_code == 404
+        native = requests.post(
+            base + "/auth/login", json={"name": ROOT, "password": PASSWORD}, timeout=5
+        )
+        assert native.ok and native.json()["status"]
+        user = requests.post(
+            base + "/api/default/users",
+            auth=(ROOT, PASSWORD),
+            json={"email": HUMAN, "password": PASSWORD, "role": "admin"},
+            timeout=5,
+        )
+        assert user.ok, user.status_code
+        machine = requests.post(
+            base + "/api/default/service_accounts",
+            auth=(ROOT, PASSWORD),
+            json={"email": "machine@example.test"},
+            timeout=5,
+        )
+        assert machine.ok, machine.status_code
+        machine_creds = machine.json()
+        passcode = requests.get(
+            base + "/api/default/passcode", auth=(ROOT, PASSWORD), timeout=5
+        ).json()["data"]
+        assert grpc_code(HUMAN, PASSWORD) != grpc.StatusCode.UNAUTHENTICATED
+
+    issuer.callback = base + "/auth/oidc/callback"
+    settings = {
+        "ZO_OIDC_ENABLED": "true",
+        "ZO_OIDC_ISSUER": issuer.issuer,
+        "ZO_OIDC_CLIENT_ID": "test-client",
+        "ZO_OIDC_CLIENT_SECRET": "test-secret",
+        "ZO_OIDC_REDIRECT_URI": issuer.callback,
+        "ZO_OIDC_ALLOW_INSECURE_HTTP": "true",
+        "ZO_OIDC_COOKIE_SECURE": "false",
+        "ZO_OIDC_ONLY": "true",
+    }
+    config_file = Path(directory) / ".env"
+    links = [{"issuer": issuer.issuer, "subject": "approved", "email": HUMAN.upper()}]
+    config_file.write_text(f"ZO_OIDC_ACCOUNT_LINKS='{json.dumps(links)}'\n")
+    # Static client errors must be reported before a server can advertise readiness.
+    invalid_env = {k: v for k, v in os.environ.items() if not k.startswith("ZO_")}
+    invalid_env.update(META_STORE)
+    invalid_env.update(
+        settings,
+        ZO_ROOT_USER_EMAIL=ROOT,
+        ZO_ROOT_USER_PASSWORD=PASSWORD,
+        ZO_LOCAL_MODE="true",
+        ZO_HTTP_PORT=str(port),
+        ZO_GRPC_PORT=str(GRPC_PORT),
+        ZO_TELEMETRY="false",
+        ZO_DATA_DIR=str(Path(directory) / "data") + "/",
+    )
+    for setting, value, expected in [
+        ("ZO_OIDC_CLIENT_ID", "", b"OIDC provider configuration"),
+        ("ZO_OIDC_COOKIE_SECURE", "invalid", b"ZO_OIDC_COOKIE_SECURE"),
+    ]:
+        invalid = subprocess.run(
+            [binary],
+            cwd=directory,
+            env=invalid_env | {setting: value},
+            check=False,
+            capture_output=True,
+            timeout=20,
+        )
+        assert invalid.returncode != 0 and expected in invalid.stderr + invalid.stdout
+    with app(binary, directory, port, settings):
+        issuer.subject, issuer.email = "unapproved", HUMAN
+        with requests.Session() as browser:
+            flow(browser, base, False)
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+            )
+            issuer.subject = "approved"
+            callback = flow(browser, base, True)
+            profile = browser.get(base + "/auth/oidc/session", timeout=5).json()
+            assert profile["email"] == HUMAN and profile["exp"] > time.time()
+            assert browser.get(base + "/api/other/config", timeout=5).status_code == 403
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 200
+            )
+            # A refused cross-origin write must not read as an ended session.
+            assert (
+                browser.post(
+                    base + "/api/default/oidc_csrf/_json",
+                    json=[{"message": "refused"}],
+                    headers={"Origin": issuer.issuer},
+                    timeout=5,
+                ).status_code
+                == 403
+            )
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 200
+            )
+            assert browser.post(
+                base + "/api/default/oidc_csrf/_json",
+                json=[{"message": "accepted"}],
+                headers={"Origin": base},
+                timeout=10,
+            ).ok
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 200
+            )
+            replay = browser.get(callback, allow_redirects=False, timeout=5)
+            assert replay.headers["Location"].endswith("oidc_error=1")
+            old = browser.cookies.copy()
+            flow(browser, base, True)
+            assert (
+                requests.get(
+                    base + "/auth/oidc/session", cookies=old, timeout=5
+                ).status_code
+                == 401
+            )
+            previous = browser.cookies.copy()
+            assert (
+                browser.post(
+                    base + "/auth/oidc/logout",
+                    headers={"Origin": issuer.issuer},
+                    timeout=5,
+                ).status_code
+                == 403
+            )
+            assert (
+                browser.post(
+                    base + "/auth/oidc/logout", headers={"Origin": base}, timeout=5
+                ).status_code
+                == 204
+            )
+            assert (
+                requests.get(
+                    base + "/auth/oidc/session", cookies=previous, timeout=5
+                ).status_code
+                == 401
+            )
+        for email in [ROOT, HUMAN]:
+            assert requests.post(
+                base + "/auth/login",
+                json={"name": email, "password": PASSWORD},
+                timeout=5,
+            ).status_code in (401, 403)
+            assert requests.get(
+                base + "/api/default/config", auth=(email, PASSWORD), timeout=5
+            ).status_code in (401, 403)
+            assert grpc_code(email, PASSWORD) == grpc.StatusCode.UNAUTHENTICATED
+        token_code = grpc_code(passcode["user"], passcode["passcode"])
+        assert token_code != grpc.StatusCode.UNAUTHENTICATED
+        ingest = requests.post(
+            base + "/api/default/oidc_smoke/_json",
+            json=[{"message": "ok"}],
+            auth=(passcode["user"], passcode["passcode"]),
+            timeout=10,
+        )
+        assert ingest.ok, ingest.status_code
+        otlp = requests.post(
+            base + "/api/default/v1/logs",
+            auth=(passcode["user"], passcode["passcode"]),
+            json={
+                "resourceLogs": [
+                    {"scopeLogs": [{"logRecords": [{"body": {"stringValue": "ok"}}]}]}
+                ]
+            },
+            timeout=10,
+        )
+        assert otlp.ok, otlp.status_code
+        machine = requests.get(
+            base + "/api/default/config",
+            auth=(machine_creds["user"], machine_creds["token"]),
+            timeout=5,
+        )
+        assert machine.ok, machine.status_code
+
+    with (
+        app(binary, directory, port, settings | {"ZO_OIDC_ONLY": "false"}),
+        requests.Session() as browser,
+    ):
+        for reverse in (False, True):
+            tabs = [begin_flow(browser, base), begin_flow(browser, base)]
+            for callback in tabs[:: -1 if reverse else 1]:
+                finish_flow(browser, callback, True)
+        inflight = begin_flow(browser, base)
+        logout_cookies = browser.cookies.copy()
+        entered, release = Event(), Event()
+        issuer.token_pause = (entered, release)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                callback_result = pool.submit(
+                    browser.get, inflight, allow_redirects=False, timeout=20
+                )
+                try:
+                    assert entered.wait(5), (
+                        "callback never reached paused token exchange"
+                    )
+                    logout = requests.post(
+                        base + "/auth/oidc/logout",
+                        cookies=logout_cookies,
+                        headers={"Origin": base},
+                        timeout=5,
+                    )
+                    assert logout.status_code == 204
+                finally:
+                    release.set()
+                callback_response = callback_result.result()
+                assert callback_response.status_code == 303
+                assert "oidc_error=1" in callback_response.headers["Location"]
+            # This cookie jar still has the original session cookie.
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+            )
+        finally:
+            issuer.token_pause = None
+        flow(browser, base, True)
+        tabs = [begin_flow(browser, base) for _ in range(8)]
+        refused = browser.get(
+            base + "/auth/oidc/login", allow_redirects=False, timeout=5
+        )
+        assert refused.status_code == 429
+        assert refused.headers["Content-Type"].startswith("text/plain")
+        assert "Finish one" in refused.text and "expire" in refused.text
+        cancelled = urlsplit(tabs.pop())
+        state = parse_qs(cancelled.query)["state"][0]
+        finish_flow(
+            browser,
+            issuer.callback
+            + "?"
+            + urlencode({"state": state, "error": "access_denied"}),
+            False,
+        )
+        for callback in tabs:
+            finish_flow(browser, callback, True)
+        assert browser.get(base + "/api/clusters", timeout=5).ok
+        old = browser.cookies.copy()
+        pending = begin_flow(browser, base)
+        login = base + "/auth/login"
+        assert not browser.post(
+            login, json={"name": ROOT, "password": "invalid"}, timeout=5
+        ).ok
+        assert (
+            browser.get(base + "/api/default/passcode", timeout=5).json()["data"][
+                "user"
+            ]
+            == HUMAN
+        )
+        assert browser.post(
+            login, json={"name": ROOT, "password": PASSWORD}, timeout=5
+        ).ok
+        assert (
+            browser.get(base + "/api/default/passcode", timeout=5).json()["data"][
+                "user"
+            ]
+            == ROOT
+        )
+        assert (
+            requests.get(
+                base + "/auth/oidc/session", cookies=old, timeout=5
+            ).status_code
+            == 401
+        )
+        finish_flow(browser, pending, False)
+
+        # A deleted mapping stays in effect until the next process reads the edited file.
+        config_file.write_text("ZO_ROUTE_TIMEOUT=602\n")
+        reload_response = requests.get(
+            base + "/config/reload", auth=(ROOT, PASSWORD), timeout=10
+        )
+        reload_response.raise_for_status()
+        with requests.Session() as linked:
+            flow(linked, base, True)
+            before_restart = linked.cookies.copy()
+            profile = linked.get(base + "/auth/oidc/session", timeout=5)
+            assert profile.ok and profile.json()["email"] == HUMAN
+
+    settings.update(
+        ZO_OIDC_PROVISIONING_ENABLED="true",
+        ZO_OIDC_EMERGENCY_USER=ROOT,
+        ZO_COOKIE_SECURE_ONLY="true",
+        ZO_OIDC_SESSION_MAX_AGE="2",
+    )
+    with app(binary, directory, port, settings):
+        assert (
+            requests.get(
+                base + "/auth/oidc/session", cookies=before_restart, timeout=5
+            ).status_code
+            == 401
+        )
+        emergency = requests.post(
+            base + "/auth/login", json={"name": ROOT, "password": PASSWORD}, timeout=5
+        )
+        emergency.raise_for_status()
+        assert any(c.name == "auth_tokens" and c.secure for c in emergency.cookies)
+        assert requests.get(
+            base + "/api/default/config", auth=(ROOT, PASSWORD), timeout=5
+        ).ok
+        assert grpc_code(ROOT, PASSWORD) != grpc.StatusCode.UNAUTHENTICATED
+        with requests.Session() as browser:
+            flow(browser, base, False)  # An explicitly linked account lost approval.
+            issuer.subject = "different-subject"
+            flow(
+                browser, base, False
+            )  # Verified email collision with an existing user.
+            issuer.email = "new@example.test"
+            issuer.subject = "new-subject"
+            flow(browser, base, True)
+            assert (
+                browser.get(base + "/api/default/config", timeout=5).status_code == 403
+            )
+            expiry = browser.get(base + "/auth/oidc/session", timeout=5).json()["exp"]
+            time.sleep(max(0, expiry - time.time()) + 0.2)
+            assert (
+                browser.get(base + "/auth/oidc/session", timeout=5).status_code == 401
+            )
+
+    prefixed = base + "/observe"
+    issuer.callback = prefixed + "/auth/oidc/callback"
+    prefix_settings = settings | {
+        "ZO_BASE_URI": "/observe",
+        "ZO_OIDC_REDIRECT_URI": issuer.callback,
+        "ZO_OIDC_SESSION_MAX_AGE": "3600",
+    }
+    with app(binary, directory, port, prefix_settings), requests.Session() as browser:
+        callback = begin_flow(browser, prefixed)
+        assert callback.startswith(issuer.callback + "?")
+        landed = browser.get(callback, allow_redirects=False, timeout=20)
+        assert landed.headers["Location"] == "/observe/web/oidc/cb"
+        assert browser.get(base + landed.headers["Location"], timeout=5).ok
+        profile = browser.get(prefixed + "/auth/oidc/session", timeout=5)
+        assert profile.ok and profile.json()["email"] == "new@example.test"
+
+
+if __name__ == "__main__":
+    binary = Path(sys.argv[1]).resolve(strict=True)
+    with (
+        TemporaryDirectory() as directory,
+        ThreadingHTTPServer(("127.0.0.1", 0), Issuer) as issuer,
+    ):
+        issuer.issuer = f"http://127.0.0.1:{issuer.server_port}"
+        issuer.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        issuer.codes = {}
+        Thread(target=issuer.serve_forever, daemon=True).start()
+        try:
+            test_flow(binary, directory, issuer)
+        finally:
+            issuer.shutdown()
+    store = "PostgreSQL" if POSTGRES_DSN else "SQLite"
+    print(f"OIDC browser flow and {store} policy checks passed")

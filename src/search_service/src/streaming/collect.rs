@@ -105,7 +105,7 @@ async fn search_stream_collect(
 ) -> Result<Response, infra::errors::Error> {
     let (tx, mut rx) = mpsc::channel(EVENT_CHANNEL_SIZE);
 
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.to_string(),
         org_id.to_string(),
         user_id.to_string(),

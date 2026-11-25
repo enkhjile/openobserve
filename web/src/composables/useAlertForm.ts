@@ -33,6 +33,8 @@ import {
   type LegacyAlertConditions,
 } from "@/utils/alerts/alertConditionsLoad";
 
+import config from "@/aws-exports";
+import { useApprovedAlertDestinations } from "@/composables/useApprovedAlertDestinations";
 import alertsService from "@/services/alerts";
 import searchService from "@/services/search";
 import anomalyDetectionService from "@/services/anomaly_detection";
@@ -650,6 +652,21 @@ export function useAlertForm(props: AlertFormProps, emit: AlertFormEmit) {
 
   // READ-VIEW of the single form. Reactive; replaced immutably on every change.
   const formData: any = form.useStore((s: any) => s.values);
+  const { destinations: deliveryDestinations, requiresApproval: deliveryApprovalRequired } =
+    useApprovedAlertDestinations(
+      computed(() => store.state.selectedOrganization.identifier),
+      computed(() => {
+        const data = formData.value;
+        const scheduled = data.is_real_time === "false" || data.is_real_time === false;
+        return scheduled && data.query_condition?.type === "sql"
+          ? (data.query_condition.sql ?? "")
+          : "";
+      }),
+      computed(() => formData.value.stream_type ?? "logs"),
+      computed(() => formData.value.id || undefined),
+      computed(() => props.destinations),
+      config.isEnterprise === "true" || config.isCloud === "true",
+    );
 
   /** Write a single (possibly nested, dot/bracket-path) field into the ONE form. */
   const setF = (path: string, value: any): void => form.setFieldValue(path as any, value);
@@ -1057,7 +1074,7 @@ export function useAlertForm(props: AlertFormProps, emit: AlertFormEmit) {
   });
 
   const getFormattedDestinations = computed(() => {
-    return props.destinations.map((destination: any) => {
+    return deliveryDestinations.value.map((destination: any) => {
       return destination.name;
     });
   });
@@ -3373,6 +3390,8 @@ export function useAlertForm(props: AlertFormProps, emit: AlertFormEmit) {
   // ── Return ──────────────────────────────────────────────────────────────
 
   return {
+    deliveryDestinations,
+    deliveryApprovalRequired,
     // Dependencies
     t,
     store,

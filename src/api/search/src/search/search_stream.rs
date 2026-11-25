@@ -544,7 +544,7 @@ pub async fn search_http2_stream(
     let audit_ctx = None;
     let search_type = req.search_type;
     // Spawn the search task in a separate task
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.clone(),
         org_id.clone(),
         user_id,
@@ -769,6 +769,14 @@ pub async fn values_http2_stream(
         }
     };
     // Build search requests per field and use only the first one
+    // Checked before the schema read, whose missing-field reply would reveal the stream's fields.
+    let stream = infra::rbac::Resource::stream(stream_type.as_str(), &values_req.stream_name);
+    if infra::rbac::authorize_user(&user_id, &org_id, infra::rbac::Action::Query, stream)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Access denied by organization RBAC policy");
+    }
     let reqs = match build_search_request_per_field(
         &values_req,
         &org_id,
@@ -946,7 +954,7 @@ pub async fn values_http2_stream(
     // Pattern extraction is not supported for values endpoint
     let extract_patterns = false;
     // Spawn the search task to process the request
-    tokio::spawn(process_search_stream_request(
+    infra::rbac::caller::spawn(process_search_stream_request(
         trace_id.clone(),
         org_id.clone(),
         user_id,
@@ -1049,6 +1057,9 @@ async fn with_suggestion_source(
     Err((err, suggest_from))
 }
 
+#[cfg(test)]
+#[path = "search_stream_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use axum::{

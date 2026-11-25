@@ -125,6 +125,13 @@ impl StreamRecordNeeds {
             } else {
                 crate::ingestion::get_stream_executable_pipelines(&stream_param).await
             };
+        Self::with_pipelines(stream_param, executable_pipelines).await
+    }
+
+    async fn with_pipelines(
+        stream_param: StreamParams,
+        executable_pipelines: Vec<ExecutablePipeline>,
+    ) -> Self {
         let mut stream_params = vec![stream_param];
         for exec_pl in &executable_pipelines {
             stream_params.extend(exec_pl.get_all_destination_streams());
@@ -322,6 +329,16 @@ async fn ingest_inner(
     if stream_name.is_empty() {
         return Err(Error::IngestionError("Stream name is empty".to_string()));
     }
+    let scoped_pipelines = if infra::rbac::enabled() {
+        if is_derived && !matches!(user, IngestUser::SystemJob(_)) {
+            return Err(infra::rbac::denied(
+                "Derived ingestion requires a scoped adapter",
+            ));
+        }
+        Some(crate::pipeline::rbac::authorize_log_destinations(org_id, &stream_name, &user).await?)
+    } else {
+        None
+    };
     // Internal writers pass the same test as the rollup write guard below.
     #[cfg(feature = "vectorscan")]
     let platform_write = {
@@ -379,11 +396,22 @@ async fn ingest_inner(
         derived_streams.insert(stream_name.to_string());
     }
 
-    let (needs, bulk_columnar) = request_needs(
-        StreamParams::new(org_id, &stream_name, stream_type),
-        bulk_plan,
-    )
-    .await;
+    let (needs, bulk_columnar) = if let Some(pipelines) = scoped_pipelines {
+        (
+            StreamRecordNeeds::with_pipelines(
+                StreamParams::new(org_id, &stream_name, stream_type),
+                pipelines,
+            )
+            .await,
+            None,
+        )
+    } else {
+        request_needs(
+            StreamParams::new(org_id, &stream_name, stream_type),
+            bulk_plan,
+        )
+        .await
+    };
     // JsonColumnar::plan already refuses the fast path under vectorscan, before this is consulted.
     let needs_json_records = extend_json.is_some() || needs.json_records(&stream_name);
     let StreamRecordNeeds {
@@ -600,6 +628,9 @@ async fn ingest_inner(
             }
             match pl_result {
                 Err(e) => {
+                    if infra::rbac::enabled() {
+                        return Err(infra::rbac::denied(e));
+                    }
                     log::error!(
                         "[Pipeline] for stream {org_id}/{stream_name}: Batch execution error: {e}.",
                     );

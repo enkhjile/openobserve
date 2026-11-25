@@ -113,7 +113,7 @@ impl CandidateMerge {
 pub fn stream_response(ctx: TraceSearchContext, plan: TraceListPlan, span: Span) -> Response {
     let trace_id = ctx.trace_id.clone();
     let (tx, rx) = mpsc::channel::<Result<StreamResponses, infra::errors::Error>>(100);
-    tokio::spawn(run(ctx, plan, tx).instrument(span));
+    infra::rbac::caller::spawn(run(ctx, plan, tx).instrument(span));
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(move |result| {
         let chunks_iter = match result {
             Ok(v) => v.to_chunks(),

@@ -83,3 +83,12 @@ GET /services/collector/health | HEC agent protocol handshake
 GET /status/{slug} | browser-only HTML status page
 POST /webhook/azure | third-party callback from Azure Marketplace
 POST /webhook/stripe | third-party callback from Stripe
+
+# Browser-only extension policy management, versioned separately from the public data API.
+GET /api/{org_id}/rbac/me | browser-only OSS RBAC current grants
+GET /api/{org_id}/rbac/subjects | browser-only OSS RBAC member picker
+GET /api/{org_id}/rbac/policy | browser-only OSS RBAC policy editor
+PUT /api/{org_id}/rbac/policy | browser-only OSS RBAC policy editor
+POST /api/{org_id}/rbac/bootstrap | browser-only OSS RBAC initialization
+POST /api/{org_id}/rbac/destinations/available | browser-only OSS RBAC scoped destination picker
+PUT /api/{org_id}/rbac/destinations | browser-only OSS RBAC destination approval editor

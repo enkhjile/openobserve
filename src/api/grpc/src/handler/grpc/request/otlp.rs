@@ -23,7 +23,7 @@ use openobserve_core::ingestion::check_memory_circuit_breaker;
 use prost::Message;
 use tonic::{Code, Request, Status, metadata::MetadataMap};
 
-use crate::handler::grpc::auth::check_otlp_auth;
+use crate::handler::grpc::auth::{check_otlp_auth, check_otlp_logs_auth};
 
 /// Converts an OTLP handler's HTTP reply to the gRPC reply, keeping its partial success and
 /// never acknowledging a rejected export.
@@ -41,6 +41,11 @@ pub(crate) async fn export_reply<T: Message + Default>(resp: Response) -> Result
 /// Authenticates an OTLP export, then refuses it on a tripped memory breaker before it is decoded.
 pub(crate) fn check_otlp_ingest(req: Request<()>) -> Result<Request<()>, Status> {
     refuse_when_tripped(check_otlp_auth(req)?, check_memory_circuit_breaker)
+}
+
+/// [`check_otlp_ingest`] for the logs service, which RBAC scopes per destination stream.
+pub(crate) fn check_otlp_logs_ingest(req: Request<()>) -> Result<Request<()>, Status> {
+    refuse_when_tripped(check_otlp_logs_auth(req)?, check_memory_circuit_breaker)
 }
 
 pub(crate) fn error_status(e: &infra::errors::Error) -> Status {

@@ -1,0 +1,22 @@
+[package]
+name = "openobserve-oidc"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0"
+publish = false
+
+[dependencies]
+openidconnect = "4.1"
+chrono.workspace = true
+serde.workspace = true
+sha2.workspace = true
+subtle = "2.6"
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+rsa = "0.9"
+serde_json.workspace = true
+axum.workspace = true
+base64.workspace = true
+jsonwebtoken.workspace = true

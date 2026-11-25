@@ -58,6 +58,7 @@ pub(crate) async fn create_context(
     time_range: (i64, i64),
     matchers: Matchers,
     label_selector: HashSet<String>,
+    rbac_subject: Option<&str>,
 ) -> Result<(Option<ScanContext>, Vec<String>)> {
     // fetch all schema versions, get latest schema
     let schema = Arc::new(
@@ -82,6 +83,7 @@ pub(crate) async fn create_context(
         time_range,
         matchers,
         label_selector,
+        rbac_subject,
     )
     .await?;
     let warnings = if partial_err.is_empty() {
@@ -144,6 +146,7 @@ async fn get_wal_batches(
     time_range: (i64, i64),
     matchers: Matchers,
     label_selector: HashSet<String>,
+    rbac_subject: Option<&str>,
 ) -> Result<(ScanStats, Vec<RecordBatch>, Arc<Schema>, String)> {
     let cfg = get_config();
     let Some(nodes) = get_cached_online_ingester_nodes()
@@ -223,7 +226,10 @@ async fn get_wal_batches(
             clear_cache: false,    // not needed for wal
         },
         index_info: IndexInfo::default(), // not needed for wal
-        super_cluster_info: cluster_rpc::SuperClusterInfo::default(), // current not needed for wal
+        super_cluster_info: cluster_rpc::SuperClusterInfo {
+            rbac_subject: rbac_subject.map(str::to_owned),
+            ..Default::default()
+        },
         raw_streams: Vec::new(),
     };
 

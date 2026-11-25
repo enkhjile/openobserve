@@ -323,6 +323,16 @@ pub async fn update_user(
     if !is_valid_email(email) {
         return Ok(MetaHttpResponse::bad_request("Invalid email"));
     }
+    // A password belongs to the global identity, so an organization grant cannot reset it.
+    let self_update = update_mode.is_self_update();
+    let new_password = user.new_password.is_some();
+    if infra::rbac::enabled()
+        && infra::rbac::password_change_denied(initiator_id, email, self_update, new_password)
+    {
+        return Ok(MetaHttpResponse::forbidden(
+            "RBAC permits only a verified self password change",
+        ));
+    }
     let is_email_root = is_root_user(email);
 
     #[cfg(not(feature = "enterprise"))]
@@ -1003,7 +1013,7 @@ pub async fn list_users(
     list_all: bool,
 ) -> Result<Response, Error> {
     let mut user_list: Vec<UserResponse> = vec![];
-    let is_list_all = list_all & org_id.eq(META_ORG_ID);
+    let is_list_all = !infra::rbac::enabled() && list_all && org_id == META_ORG_ID;
     let mut user_orgs: HashMap<String, Vec<OrgRoleMapping>> = HashMap::new();
     log::debug!("Listing users for org: {org_id}");
 
@@ -1119,7 +1129,7 @@ pub async fn list_users(
 
     #[cfg(not(feature = "cloud"))]
     {
-        if !org_id.eq(DEFAULT_ORG) && role.is_none() {
+        if !infra::rbac::enabled() && !org_id.eq(DEFAULT_ORG) && role.is_none() {
             let root = ROOT_USER.get("root").unwrap();
             let root_user = root.value();
             user_list.push(UserResponse {
@@ -1727,6 +1737,9 @@ pub async fn cloud_service_account_refusal(
     }))
 }
 
+#[cfg(test)]
+#[path = "users_rbac_tests.rs"]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use common::infra::config::USERS;

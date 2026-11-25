@@ -429,7 +429,7 @@ async fn fetch_extraction_sample(
             );
             let s_org_id = org_id_owned.clone();
             let s_user_id = user_id_owned.clone();
-            handles.push(tokio::spawn(async move {
+            handles.push(infra::rbac::caller::spawn(async move {
                 do_search(
                     &s_trace_id,
                     &s_org_id,

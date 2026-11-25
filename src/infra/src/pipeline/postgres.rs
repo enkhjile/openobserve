@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS pipeline
     stream_type     VARCHAR(50),
     derived_stream  TEXT,
     nodes           TEXT,
-    edges           TEXT
+    edges           TEXT,
+    execution_subject TEXT
 );
             "#,
         )
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS pipeline
     }
 
     async fn put(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
@@ -179,6 +181,8 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
             return Err(e.into());
         }
 
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
+
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");
             return Err(e.into());
@@ -187,6 +191,7 @@ INSERT INTO pipeline (id, version, enabled, name, description, org, source_type,
     }
 
     async fn update(&self, pipeline: &Pipeline) -> Result<()> {
+        let subject = super::execution::recorded_subject().await;
         let pool = CLIENT_RW.clone();
         let mut tx = pool.begin().await?;
 
@@ -264,6 +269,8 @@ UPDATE pipeline
             }
             return Err(e.into());
         }
+
+        super::execution::record_postgres(&mut tx, pipeline, subject).await?;
 
         if let Err(e) = tx.commit().await {
             log::error!("[POSTGRES] commit push pipeline error: {e}");

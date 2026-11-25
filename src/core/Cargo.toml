@@ -57,6 +57,9 @@ profiling = [
 ]
 
 [dependencies]
+openobserve-oidc = { path = "../extensions/oidc" }
+tempfile.workspace = true
+web.workspace = true
 sketches-ddsketch = { version = "=0.4.0", features = ["use_serde"], optional = true }
 db.workspace = true
 audit = { workspace = true, optional = true }

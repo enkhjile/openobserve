@@ -238,6 +238,13 @@ pub async fn update(
 
     let email_id = email_id.trim().to_string();
 
+    if infra::rbac::validate_service_account_target(&org_id, &email_id)
+        .await
+        .is_err()
+    {
+        return MetaHttpResponse::forbidden("Service account target is not permitted");
+    }
+
     let user_record = match db::org_users::get_optional(&org_id, &email_id).await {
         Ok(record) => record,
         Err(e) => return MetaHttpResponse::internal_error(e),
@@ -269,10 +276,6 @@ pub async fn update(
     };
 
     if rotate_token {
-        // Non-enterprise: no RBAC middleware, so enforce Admin/Root role explicitly here.
-        // Enterprise without OpenFGA: same — middleware is a no-op, so enforce here.
-        // Enterprise with OpenFGA enabled: RBAC middleware already verified the caller has
-        // permission before the handler was invoked, so no additional check is needed.
         #[cfg(not(feature = "enterprise"))]
         let needs_role_check = true;
         #[cfg(feature = "enterprise")]

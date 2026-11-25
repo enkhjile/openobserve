@@ -117,6 +117,7 @@ message SuperClusterInfo {
     optional string            work_group = 3;
     optional string     search_event_type = 4; // use for super cluster
     optional bool              local_mode = 5; // use for super cluster
+    optional string          rbac_subject = 6;
 }
 
 message IdxOptimizeMode {

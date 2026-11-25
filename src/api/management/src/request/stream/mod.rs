@@ -627,6 +627,17 @@ pub async fn list(
     )
     .await;
 
+    let read = infra::rbac::Action::Read;
+    let user = &_user_email.user_id;
+    indices = match infra::rbac::retain_allowed(user, &org_id, read, indices, |s| {
+        infra::rbac::Resource::stream(&s.stream_type.to_string(), &s.name)
+    })
+    .await
+    {
+        Ok(indices) => indices,
+        Err(_) => return MetaHttpResponse::forbidden("Organization RBAC policy is unavailable"),
+    };
+
     // The AI chat-events stream is internal: readable only through the Chat
     // API, so it is not offered in the streams UI/API either.
     indices

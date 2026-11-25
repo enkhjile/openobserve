@@ -145,7 +145,7 @@ impl TraceSearchContext {
         ids: &[String],
         range: (i64, i64),
     ) -> HashMap<String, TraceTimeRange> {
-        if !get_config().common.trace_list_time_index_enabled {
+        if infra::rbac::enabled() || !get_config().common.trace_list_time_index_enabled {
             return HashMap::new();
         }
         let around = TraceTimeRange {

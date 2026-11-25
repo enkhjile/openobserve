@@ -93,6 +93,8 @@ pub struct Alert {
     pub updated_at: Option<DateTime<FixedOffset>>,
     #[serde(default)]
     pub last_edited_by: Option<String>,
+    #[serde(default)]
+    pub execution_subject: Option<String>,
     /// When true, this alert creates/joins incidents instead of sending direct notifications.
     /// Notification is sent only when a new incident is created or a new alert type joins
     /// an existing incident. Repeated firings are suppressed.
@@ -228,6 +230,7 @@ impl MemorySize for Alert {
             + self.description.mem_size()
             + self.owner.mem_size()
             + self.last_edited_by.mem_size()
+            + self.execution_subject.mem_size()
             + self.workflows.mem_size()
             + self.tags.mem_size()
             + std::mem::size_of::<Option<AlertPriority>>()
@@ -268,6 +271,7 @@ impl Default for Alert {
             owner: None,
             updated_at: None,
             last_edited_by: None,
+            execution_subject: None,
             last_satisfied_at: None,
             creates_incident: false,
             workflows: vec![],

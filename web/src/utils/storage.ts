@@ -121,7 +121,7 @@ export const useLocalInterestingFields = (val = "", isDelete = false) => {
 
 export const useLocalUserInfo = (val = "", isDelete = false) => {
   const userInfo: any = useLocalStorage("userInfo", val, isDelete);
-  return userInfo.value;
+  return userInfo?.value;
 };
 
 export const useLocalTimezone = (val = "", isDelete = false) => {

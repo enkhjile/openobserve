@@ -19,6 +19,7 @@ pub mod file_cache;
 pub mod index;
 pub mod inspector;
 pub mod merge;
+pub mod rbac;
 pub mod sql;
 pub mod tantivy;
 pub mod types;

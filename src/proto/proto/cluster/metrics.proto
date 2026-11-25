@@ -39,6 +39,7 @@ message MetricsQueryRequest {
     optional SearchEventContext search_event_context = 14;
     // time from which groups read the WAL, probed in this cluster; 0 = unknown, read the whole ingest window
     int64           wal_start_time = 15;
+    optional string rbac_subject = 16;
 }
 
 message MetricsQueryStmt {

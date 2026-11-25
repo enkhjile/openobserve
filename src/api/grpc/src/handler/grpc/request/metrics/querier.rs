@@ -46,6 +46,17 @@ impl Metrics for MetricsQuerier {
         &self,
         req: Request<MetricsQueryRequest>,
     ) -> Result<Response<MetricsQueryResponse>, Status> {
+        if infra::rbac::enabled()
+            && req
+                .get_ref()
+                .rbac_subject
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(Status::permission_denied(
+                "Metrics execution identity required",
+            ));
+        }
         let start = std::time::Instant::now();
         let parent_cx =
             global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(req.metadata())));
@@ -68,6 +79,9 @@ impl Metrics for MetricsQuerier {
             metrics::GRPC_INCOMING_REQUESTS
                 .with_label_values(&["/metrics/query", "500", org_id, stream_type, "", ""])
                 .inc();
+            if matches!(&err, errors::Error::ErrorCode(code) if code.http_status() == 403) {
+                return Status::permission_denied(err.to_string());
+            }
             let message = if let errors::Error::ErrorCode(code) = err {
                 code.to_json()
             } else {

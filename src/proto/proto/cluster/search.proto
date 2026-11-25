@@ -51,6 +51,7 @@ message SearchRequest {
     optional string     user_id = 4;
     bytes               request = 5;
     repeated string raw_streams = 6;
+    optional string rbac_subject = 7;
 }
 
 message SearchResponse {

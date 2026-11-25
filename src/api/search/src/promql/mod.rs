@@ -1594,12 +1594,17 @@ async fn search(
         )
             .into_response(),
         Err(err) => {
+            let status = if infra::rbac::is_denied(&err) {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
             let err = match err {
                 errors::Error::ErrorCode(code) => code.get_error_detail(),
                 _ => err.to_string(),
             };
             (
-                StatusCode::BAD_REQUEST,
+                status,
                 axum::Json(config::meta::promql::ApiFuncResponse::<()>::err_bad_data(
                     err,
                     Some(trace_id.to_string()),
@@ -1920,6 +1925,8 @@ impl promql_parser::util::ExprVisitor for MaxLookbackWindowVisitor {
     }
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

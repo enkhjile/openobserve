@@ -33,6 +33,7 @@ use crate::authz::{Refusal, WriteCheck};
 
 pub mod batch_execution;
 pub mod db;
+pub mod rbac;
 
 /// Validates that no JavaScript functions are used in the pipeline.
 /// JavaScript functions are restricted from pipelines in ALL organizations (including _meta).
@@ -82,6 +83,12 @@ fn default_node_orgs(pipeline: &mut Pipeline) {
             _ => {}
         }
     }
+}
+
+fn rbac_refusal() -> PipelineError {
+    PipelineError::Refused(Refusal::new(common::meta::http::HttpResponse::forbidden(
+        "Access denied by organization RBAC policy",
+    )))
 }
 
 /// A node's org is where runs read and write, so it must be the request's org.
@@ -324,6 +331,9 @@ pub async fn save_pipeline_checked(
     #[cfg(not(feature = "enterprise"))]
     refuse_remote_node(&pipeline)?;
 
+    rbac::validate_save(&pipeline)
+        .await
+        .map_err(|_| rbac_refusal())?;
     // Runs after validate(), which rebuilds source from the first node: checking
     // pipeline.source before that compares a value which is never persisted.
     // Evaluation pipelines: any number allowed, no exclusivity check
@@ -414,7 +424,7 @@ pub async fn update_pipeline_checked(
 
     // A retry after a failed trigger write carries the version from before its first attempt.
     let client_version = std::mem::replace(&mut pipeline.version, existing_pipeline.version);
-    if existing_pipeline == pipeline {
+    if !infra::rbac::enabled() && existing_pipeline == pipeline {
         return repair_missing_trigger(&mut pipeline).await;
     }
 
@@ -434,6 +444,10 @@ pub async fn update_pipeline_checked(
     // validate no JavaScript functions in pipeline
     validate_no_javascript_functions(&pipeline).await?;
 
+    // Authorized before the stream-in-use check, whose answer would reveal other pipelines.
+    rbac::validate_save(&pipeline)
+        .await
+        .map_err(|_| rbac_refusal())?;
     // additional checks when the source is changed
     let source_changed = existing_pipeline.source != pipeline.source;
     // check if the new source exists in another pipeline
@@ -475,6 +489,9 @@ pub async fn update_user_pipeline_checked(
     mut pipeline: Pipeline,
     check: Option<&dyn WriteCheck<Pipeline>>,
 ) -> Result<(), PipelineError> {
+    rbac::authorize_update(org_id, &pipeline.id)
+        .await
+        .map_err(|_| rbac_refusal())?;
     get_user_pipeline(org_id, &pipeline.id).await?;
     pipeline.kind = PipelineKind::User;
     update_pipeline_checked(pipeline, check).await
@@ -602,7 +619,7 @@ pub async fn enable_pipeline(
         }
     }
 
-    pipeline::update(&pipeline, None).await?;
+    infra::pipeline::execution::keeping_subject(pipeline::update(&pipeline, None)).await?;
     Ok(())
 }
 
@@ -1026,5 +1043,45 @@ mod tests {
             "{enabled:?}"
         );
         assert!(still_disabled);
+    }
+
+    #[test]
+    fn rbac_enable_keeps_the_identity_the_pipeline_was_saved_with() {
+        crate::ssrf_test_support::isolated(
+            concat!(
+                module_path!(),
+                "::rbac_enable_keeps_the_identity_the_pipeline_was_saved_with"
+            ),
+            &[("ZO_RBAC_ENABLED", "true")],
+            || async {
+                use infra::rbac::caller::{Caller, scope};
+                if !meta_store().await {
+                    return;
+                }
+                let pipeline = test_pipeline("rbac_keep_pl", PipelineKind::User);
+                let as_subject = |name: &str| Caller::Subject(name.to_string());
+                let recorded = || async {
+                    let row = infra::pipeline::execution::by_id("test_org", "rbac_keep_pl").await;
+                    row.unwrap().unwrap().subject
+                };
+                let save = super::db::set(&pipeline);
+                scope(as_subject("saver"), save).await.unwrap().unwrap();
+                let toggle = super::enable_pipeline("test_org", &pipeline.id, false, false);
+                scope(as_subject("toggler"), toggle).await.unwrap().unwrap();
+                // A background caller, such as a scheduler pause, has no caller at all.
+                super::enable_pipeline("test_org", &pipeline.id, true, false)
+                    .await
+                    .unwrap();
+                assert_eq!(recorded().await.as_deref(), Some("saver"));
+                let save = super::db::set(&pipeline);
+                scope(as_subject("toggler"), save).await.unwrap().unwrap();
+                assert_eq!(
+                    recorded().await.as_deref(),
+                    Some("toggler"),
+                    "a save replaces it"
+                );
+                super::delete_pipeline(&pipeline.id).await.unwrap();
+            },
+        );
     }
 }

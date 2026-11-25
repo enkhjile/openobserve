@@ -180,8 +180,7 @@ pub async fn save_pipeline(
 )]
 pub async fn list_pipelines(
     Path(org_id): Path<String>,
-    #[cfg(feature = "enterprise")] Headers(user_email): Headers<UserEmail>,
-    #[cfg(not(feature = "enterprise"))] Headers(_user_email): Headers<UserEmail>,
+    Headers(user_email): Headers<UserEmail>,
 ) -> Response {
     let mut _permitted = None;
     // Get List of allowed objects
@@ -209,11 +208,24 @@ pub async fn list_pipelines(
         // Get List of allowed objects ends
     }
 
-    let pipelines = match pipeline::list_user_pipelines(&org_id, _permitted).await {
+    let mut pipelines = match pipeline::list_user_pipelines(&org_id, _permitted).await {
         Ok(pipelines) => pipelines,
         Err(e) => return e.into(),
     };
 
+    let (kind, read) = (
+        infra::rbac::ResourceKind::Pipeline,
+        infra::rbac::Action::Read,
+    );
+    let user = &user_email.user_id;
+    pipelines = match infra::rbac::retain_allowed(user, &org_id, read, pipelines, |p| {
+        infra::rbac::Resource::new(kind, &p.id)
+    })
+    .await
+    {
+        Ok(pipelines) => pipelines,
+        Err(_) => return MetaHttpResponse::forbidden("Pipeline listing denied"),
+    };
     let pipeline_triggers = match pipeline::list_pipeline_triggers(&org_id).await {
         Ok(pipelines) => pipelines,
         Err(e) => return e.into(),

@@ -27,6 +27,12 @@ use utoipa::ToSchema;
 pub const SRE_AGENT_EMAIL_PREFIX: &str = "o2-sre-agent.org-";
 pub const SRE_AGENT_EMAIL_SUFFIX: &str = "@openobserve.internal";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrgIngestionPrincipal {
+    pub org_id: String,
+    pub token_id: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DBUser {
     pub email: String,

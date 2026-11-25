@@ -150,6 +150,7 @@ pub async fn search(
     #[cfg(feature = "enterprise")]
     let req_clusters = in_req.clusters.clone();
 
+    ::search::rbac::reject_query_fn(in_req.query.query_fn.is_some())?;
     let query: SearchQuery = in_req.query.clone().try_into()?;
     let req_query = query.clone();
     let mut request = config::datafusion::request::Request::new(
@@ -163,6 +164,7 @@ pub async fn search(
         in_req.query.histogram_interval,
         in_req.clear_cache,
     );
+    request.rbac_subject = infra::rbac::caller::subject();
     if in_req.query.streaming_output && !in_req.query.track_total_hits {
         request.set_streaming_output(true, in_req.query.streaming_id.clone());
     }
@@ -390,6 +392,17 @@ pub async fn search_multi(
             return Err(Error::Message(format!("decode sql error: {e:?}")));
         }
     }
+    ::search::rbac::authorize_batch(
+        queries.iter().map(|req| req.query.sql.as_str()),
+        org_id,
+        stream_type,
+        user_id.as_deref(),
+        multi_req.search_type,
+        multi_req.query_fn.is_some() || multi_req.sql.iter().any(|query| query.query_fn.is_some()),
+    )
+    .await
+    .map_err(|_| infra::rbac::denied("Batch search access denied"))?;
+
     let queries_len = queries.len();
     let mut stream_names = vec![];
     let mut sqls = vec![];
@@ -665,6 +678,8 @@ pub async fn search_partition(
         return Ok(resp);
     }
 
+    // Like the result cache, the shared aggregation cache is bypassed while RBAC is on.
+    let use_cache = use_cache && !infra::rbac::enabled();
     let (streaming_aggs, streaming_id, cache_strategy) =
         prepare_streaming_aggregate(trace_id, req, &ctx, &raw_streams, use_cache).await?;
     if let Some(id) = streaming_id.as_deref() {

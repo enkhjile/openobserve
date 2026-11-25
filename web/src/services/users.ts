@@ -85,8 +85,8 @@ const users = {
   getRoles: (org_identifier: string) => {
     return http().get(`/api/${org_identifier}/users/roles`);
   },
-  logout: () => {
-    return http().get(`/config/logout`);
+  logout: (client = http()) => {
+    return client.get(`/config/logout`);
   },
   getUserGroups: (orgId: string, userEmail: string) => {
     return http().get(`api/${orgId}/users/${userEmail}/groups`);

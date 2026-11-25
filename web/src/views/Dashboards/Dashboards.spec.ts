@@ -7,6 +7,10 @@ import { createStore } from "vuex";
 import { createRouter, createWebHistory } from "vue-router";
 import { createI18n } from "vue-i18n";
 
+vi.mock("@/composables/useDashboardRbac", () => ({
+  useDashboardPermissions: vi.fn(() => () => true),
+}));
+
 // Mock external dependencies
 vi.mock("@/services/dashboards", async (importOriginal) => {
   const { overlayServiceMock } = await import("@/test/unit/helpers/mockService");
@@ -23,6 +27,7 @@ vi.mock("@/services/product_analytics", () => ({ default: { track: vi.fn() } }))
 const listReports = vi.hoisted(() => vi.fn());
 vi.mock("@/services/reports", () => ({ default: { listByFolderId: listReports } }));
 import analytics from "@/services/product_analytics";
+import { useDashboardPermissions } from "@/composables/useDashboardRbac";
 import dashboardService from "@/services/dashboards";
 import { deleteDashboardById } from "@/utils/commons";
 import { resetListViewState, useListViewState } from "@/composables/useListViewState";
@@ -532,6 +537,34 @@ describe("Dashboards.vue", () => {
   });
 
   describe("Table footer", () => {
+    it("hides bulk mutation actions for an RBAC Viewer", async () => {
+      vi.mocked(useDashboardPermissions).mockReturnValueOnce(() => false);
+      wrapper = shallowMount(Dashboards, {
+        global: buildGlobalConfig(store, router, i18n),
+      });
+      await flushPromises();
+      const actions = wrapper
+        .findComponent({ name: "OTable" })
+        .findAllComponents({ name: "OButton" })
+        .map((button: any) => button.vm.$attrs["data-test"]);
+      expect(actions).not.toContain("dashboard-list-delete-dashboards-btn");
+      expect(actions).not.toContain("dashboard-list-move-across-folders-btn");
+      expect(wrapper.vm.canMutateDashboard("*")).toBe(false);
+    });
+
+    it("offers bulk move to a scoped Editor once every selected dashboard is writable", async () => {
+      vi.mocked(useDashboardPermissions).mockReturnValueOnce((id: string | null) => id === "dash1");
+      wrapper = shallowMount(Dashboards, {
+        global: buildGlobalConfig(store, router, i18n),
+      });
+      await flushPromises();
+      expect(wrapper.vm.canMutateSelected).toBe(false);
+      wrapper.vm.selectedIds = ["dash1"];
+      expect(wrapper.vm.canMutateSelected).toBe(true);
+      wrapper.vm.selectedIds = ["dash1", "dash2"];
+      expect(wrapper.vm.canMutateSelected).toBe(false);
+    });
+
     it("hands the bulk actions to the table's selection footer", async () => {
       wrapper = shallowMount(Dashboards, {
         global: buildGlobalConfig(store, router, i18n),

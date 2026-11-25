@@ -3007,6 +3007,9 @@ impl AlertExt for Alert {
         (start_time, end_time): (Option<i64>, i64),
         trace_id: Option<String>,
     ) -> Result<TriggerEvalResults, anyhow::Error> {
+        if infra::rbac::enabled() {
+            super::rbac::authorize_execution(self).await?;
+        }
         if self.is_real_time {
             self.query_condition.evaluate_realtime(row).await
         } else if self.query_condition.query_type == config::meta::alerts::QueryType::Slo {
@@ -3032,6 +3035,7 @@ impl AlertExt for Alert {
                     Some(SearchEventType::Alerts),
                     Some(search_event_ctx),
                     trace_id,
+                    self.execution_subject.as_deref(),
                 )
                 .await
         }
@@ -3050,6 +3054,15 @@ impl AlertExt for Alert {
         skip_destinations: &[String],
         episode_id: Option<String>,
     ) -> Result<NotificationOutcome, AlertError> {
+        let scoped_sources = if infra::rbac::enabled() {
+            Some(
+                super::rbac::authorize_execution(self)
+                    .await
+                    .map_err(|_| AlertError::PermissionDenied)?,
+            )
+        } else {
+            None
+        };
         // A deleted alert-level template must not fail a send that has nothing to dispatch.
         if self.destinations.is_empty()
             && (!cfg!(feature = "enterprise") || self.workflows.is_empty())
@@ -3117,7 +3130,29 @@ impl AlertExt for Alert {
                 no_of_skipped += 1;
                 continue;
             }
-            match destinations::get_with_template(&self.org_id, dest_name).await {
+            let resolved = if let Some(sources) = &scoped_sources {
+                let approved = infra::rbac::authorized_alert_destination_with_template(
+                    self.execution_subject
+                        .as_deref()
+                        .ok_or(AlertError::PermissionDenied)?,
+                    &self.org_id,
+                    sources,
+                    dest_name,
+                )
+                .await
+                .map_err(|_| AlertError::PermissionDenied)?;
+                if !approved
+                    .1
+                    .as_ref()
+                    .is_some_and(|template| template.kind == TemplateKind::Custom)
+                {
+                    return Err(AlertError::PermissionDenied);
+                }
+                Ok(approved)
+            } else {
+                destinations::get_with_template(&self.org_id, dest_name).await
+            };
+            match resolved {
                 Ok((dest, dest_template)) => match dest.module {
                     Module::Alert {
                         destination_type, ..
@@ -3263,7 +3298,9 @@ impl AlertExt for Alert {
                 }
             }
 
-            match send_to_destination(self, dest_id, destination_type, template, ctx).await {
+            match send_to_destination(self, dest_name, dest_id, destination_type, template, ctx)
+                .await
+            {
                 Ok(resp) => {
                     outcome.succeeded.push(dest_name.clone());
                     success_message = format!("{success_message} destination {dest_name} {resp};");
@@ -3520,6 +3557,9 @@ pub async fn send_recovery_notification(
     alert: &Alert,
     event: &config::meta::alerts::recovery::RecoveryEvent,
 ) -> Result<(), AlertError> {
+    if infra::rbac::enabled() {
+        return Err(AlertError::PermissionDenied);
+    }
     let rows: Vec<Map<String, Value>> = Vec::new();
     let mut ctx = build_send_context(
         alert,
@@ -3620,6 +3660,7 @@ pub async fn send_recovery_notification(
         // 202 to one it drops. Body at debug only: it can carry recipient data.
         match send_to_destination(
             alert,
+            dest_name,
             &dest_id,
             &destination_type,
             effective.template(),
@@ -3693,11 +3734,37 @@ async fn build_chart_asset(
 /// destination's metadata before rendering (§5.1).
 async fn send_to_destination(
     alert: &Alert,
+    destination_name: &str,
     destination_id: &str,
     dest_type: &DestinationType,
     template: &Template,
     ctx: &mut NotificationContext,
 ) -> Result<String, anyhow::Error> {
+    if infra::rbac::enabled() {
+        let sources = super::rbac::authorize_execution(alert).await?;
+        let (current, current_template) = infra::rbac::authorized_alert_destination_with_template(
+            alert
+                .execution_subject
+                .as_deref()
+                .ok_or(AlertError::PermissionDenied)?,
+            &alert.org_id,
+            &sources,
+            destination_name,
+        )
+        .await?;
+        let Module::Alert {
+            destination_type, ..
+        } = current.module
+        else {
+            return Err(AlertError::PermissionDenied.into());
+        };
+        anyhow::ensure!(
+            current.id.map(|id| id.to_string()).as_deref() == Some(destination_id)
+                && serde_json::to_value(&destination_type)? == serde_json::to_value(dest_type)?
+                && serde_json::to_value(current_template)? == serde_json::to_value(Some(template))?,
+            "Destination approval changed before dispatch"
+        );
+    }
     if matches!(dest_type, DestinationType::SlackApp(_)) {
         ctx.metadata.clear();
         let alert_id = alert.id.map(|id| id.to_string());

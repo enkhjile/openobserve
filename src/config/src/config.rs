@@ -41,6 +41,7 @@ use crate::{
         meta_store::MetaStore,
         stream::{DataRetentionDefaults, QueryPartitionStrategy, StreamType},
     },
+    oidc::StartupOidc,
     utils::{str::redact_dsn, sysinfo},
 };
 
@@ -158,7 +159,8 @@ pub type RwBTreeMap<K, V> = tokio::sync::RwLock<BTreeMap<K, V>>;
 // 157: add alert_incident_alerts.labels and severity, create alert_pair_verdicts, and delete
 //      service_streams rows named by the metric-name label that list no trace stream.
 // 159: delete org_ai_toolsets rows of the removed cli kind.
-pub const DB_SCHEMA_VERSION: u64 = 159;
+// 160-162: add the RBAC run-as identity to alerts, reports and pipelines.
+pub const DB_SCHEMA_VERSION: u64 = 162;
 pub const DB_SCHEMA_KEY: &str = "/db_schema_version/";
 
 // global version variables
@@ -1115,6 +1117,7 @@ impl<'de> Deserialize<'de> for FileFormatConfig {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Config {
+    pub oidc: StartupOidc,
     pub auth: Auth,
     pub http_streaming: HttpStreaming,
     pub report_server: ReportServer,
@@ -2142,6 +2145,10 @@ pub struct Search {
 
 #[derive(Serialize, EnvConfig, Default)]
 pub struct Common {
+    #[env_config(name = "ZO_RBAC_ENABLED", default = false)]
+    pub rbac_enabled: bool,
+    #[env_config(name = "ZO_RBAC_POLICY_CACHE_ENTRIES", default = 64)]
+    pub rbac_policy_cache_entries: usize,
     #[env_config(name = "ZO_LOCAL_MODE", default = true)]
     pub local_mode: bool,
     // ZO_LOCAL_MODE_STORAGE is ignored when ZO_LOCAL_MODE is set to false

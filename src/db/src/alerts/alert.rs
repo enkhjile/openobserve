@@ -815,6 +815,7 @@ mod tests {
             trigger_tolerance_seconds: None,
             owner: None,
             last_edited_by: None,
+            execution_subject: None,
             updated_at: None,
             align_time: false,
             dedup_enabled: false,

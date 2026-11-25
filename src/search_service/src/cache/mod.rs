@@ -80,6 +80,10 @@ pub enum CacheMode {
 
 impl CacheMode {
     pub fn from_request(req: &search::Request) -> Self {
+        // Cached results are not scoped to a caller.
+        if infra::rbac::enabled() {
+            return Self::Bypass;
+        }
         if req.use_cache {
             Self::ReadWrite
         } else if req.clear_cache {
@@ -103,6 +107,7 @@ pub async fn search(
     dashboard_info: Option<DashboardInfo>,
     is_multi_stream_search: bool,
 ) -> Result<search::Response, Error> {
+    ::search::rbac::reject_query_fn(in_req.query.query_fn.is_some())?;
     let start = std::time::Instant::now();
     let started_at = Utc::now().timestamp_micros();
     let cfg = get_config();
@@ -548,6 +553,7 @@ pub async fn prepare_cache_response(
     let query: SearchQuery = req.query.clone().try_into()?;
     let mut sql = match crate::Sql::new(&query, org_id, stream_type, req.search_type).await {
         Ok(v) => v,
+        Err(e) if infra::rbac::enabled() => return Err(e),
         Err(e) => {
             log::error!("Error parsing sql: {e}");
             return Ok((MultiCachedQueryResponse::default(), true));
@@ -1319,6 +1325,8 @@ fn deep_copy_response(res: &config::meta::search::Response) -> config::meta::sea
     serde_json::from_str(&serialized).expect("Failed to deserialize response")
 }
 
+#[cfg(test)]
+mod rbac_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

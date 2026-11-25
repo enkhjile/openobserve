@@ -28,6 +28,7 @@ pub struct Request {
     pub stream_type: StreamType,
     pub timeout: i64,
     pub user_id: Option<String>,
+    pub rbac_subject: Option<String>,
     pub work_group: Option<String>,
     pub time_range: Option<(i64, i64)>,
     pub search_event_type: Option<String>, // node rule
@@ -53,6 +54,7 @@ impl Default for Request {
             stream_type: StreamType::default(),
             timeout: 0,
             user_id: None,
+            rbac_subject: None,
             work_group: None,
             time_range: None,
             search_event_type: None,
@@ -89,6 +91,7 @@ impl Request {
             stream_type,
             timeout,
             user_id,
+            rbac_subject: None,
             work_group: None,
             time_range,
             search_event_type,
@@ -148,6 +151,7 @@ impl From<FlightSearchRequest> for Request {
             stream_type: StreamType::from(req.query_identifier.stream_type.as_str()),
             timeout: req.search_info.timeout,
             user_id: req.super_cluster_info.user_id,
+            rbac_subject: req.super_cluster_info.rbac_subject,
             work_group: req.super_cluster_info.work_group,
             time_range: Some((req.search_info.start_time, req.search_info.end_time)),
             search_event_type: req.super_cluster_info.search_event_type,
@@ -241,6 +245,7 @@ mod tests {
             },
             super_cluster_info: SuperClusterInfo {
                 user_id: Some("alice".to_string()),
+                rbac_subject: Some("stable-uuid".to_string()),
                 work_group: Some("wg1".to_string()),
                 local_mode: Some(true),
                 ..Default::default()
@@ -261,6 +266,7 @@ mod tests {
         assert!(!req.overwrite_cache);
         assert_eq!(req.histogram_interval, 60);
         assert_eq!(req.user_id, Some("alice".to_string()));
+        assert_eq!(req.rbac_subject.as_deref(), Some("stable-uuid"));
         assert_eq!(req.work_group, Some("wg1".to_string()));
         assert_eq!(req.local_mode, Some(true));
         assert!(!req.streaming_output);
@@ -319,6 +325,10 @@ mod tests {
         let recovered = FlightSearchRequest::from(proto);
         assert_eq!(recovered.query_identifier.trace_id, "trace-1");
         assert_eq!(recovered.search_info.start_time, 1_000);
+        assert_eq!(
+            recovered.super_cluster_info.rbac_subject.as_deref(),
+            Some("stable-uuid")
+        );
         assert_eq!(
             recovered.super_cluster_info.user_id,
             Some("alice".to_string())

@@ -87,6 +87,22 @@ pub async fn search(
     timeout: i64,
     is_super_cluster: bool,
 ) -> Result<SearchResponse> {
+    let rbac_subject = if infra::rbac::enabled() {
+        if req.query_exemplars
+            || req.search_type == Some(config::meta::search::SearchEventType::Download)
+        {
+            return Err(crate::rbac::denied(
+                "Metrics operation requires a scoped adapter",
+            ));
+        }
+        let subject = infra::rbac::user_subject(user_email)
+            .await
+            .map_err(crate::rbac::denied)?;
+        crate::rbac::authorize(Some(&subject), org_id, &req.query).await?;
+        Some(subject)
+    } else {
+        None
+    };
     let trace_id = search_service::leader_trace_id(trace_id);
     let trace_id = trace_id.as_str();
     // callers such as Grafana share one trace_id across concurrent requests
@@ -113,6 +129,7 @@ pub async fn search(
 
     let mut req: cluster_rpc::MetricsQueryRequest = req.to_owned().into();
     req.org_id = org_id.to_string();
+    req.rbac_subject = rbac_subject;
     req.timeout = timeout as i64;
     req.is_super_cluster = is_super_cluster;
     // whatever splits the range below sees only its own part of it
@@ -302,7 +319,10 @@ async fn search_in_cluster(
     // cache enabled if result cache is enabled and use_cache is true and start != end
     // the cache keys on the output range, but a pinned value follows the data at `T` (#14688)
     // the cache key ignores the query type, so exemplar results never share it with samples
-    let cacheable = cfg.common.result_cache_enabled && window.pinned.is_none() && !query_exemplars;
+    let cacheable = !infra::rbac::enabled()
+        && cfg.common.result_cache_enabled
+        && window.pinned.is_none()
+        && !query_exemplars;
     let use_cache = cacheable && req.use_cache && start != end;
     // adjust start and end time
     let (start, end) = adjust_start_end(start, end, step);

@@ -108,7 +108,7 @@ impl NatsDb {
             None => Err(Error::from(DbError::KeyNotExists(key.to_string()))),
             Some(v) => {
                 let bucket_prefix = "/".to_string() + bucket_name.trim_start_matches(&self.prefix);
-                let key = bucket_prefix.to_string() + key;
+                let key = bucket_prefix.to_string() + key.as_str();
                 Ok((key, v))
             }
         }
@@ -194,7 +194,7 @@ impl NatsDb {
                             if !item_key.starts_with(new_key) {
                                 continue;
                             }
-                            let new_key = bucket_prefix.to_string() + &item_key;
+                            let new_key = bucket_prefix.to_string() + item_key.as_str();
                             let ret = match entry.operation {
                                 jetstream::kv::Operation::Put => {
                                     tx.try_send(Event::Put(EventData {
@@ -494,7 +494,7 @@ impl super::Db for NatsDb {
             .await?;
         let result = values
             .into_iter()
-            .filter_map(|(k, v)| v.map(|v| (bucket_prefix.to_string() + &k, v)))
+            .filter_map(|(k, v)| v.map(|v| (bucket_prefix.to_string() + k.as_str(), v)))
             .collect();
         Ok(result)
     }
@@ -508,7 +508,7 @@ impl super::Db for NatsDb {
             .map_err(|e| Error::Message(format!("[NATS:list_keys] bucket.keys error: {e}")))?;
         let keys = keys
             .into_iter()
-            .map(|k| bucket_prefix.to_string() + &k)
+            .map(|k| bucket_prefix.to_string() + k.as_str())
             .collect();
         Ok(keys)
     }

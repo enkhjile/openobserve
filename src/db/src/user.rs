@@ -168,7 +168,29 @@ pub async fn get_db_user(name: &str) -> Result<DBUser, anyhow::Error> {
     };
 
     let orgs = org_users::list_orgs_by_user(name).await?;
-    Ok(DBUser {
+    Ok(db_user_with_organizations(user, orgs))
+}
+
+/// Read the immutable account and its current memberships from the writer for session validation.
+pub async fn get_db_user_by_id(id: &str) -> anyhow::Result<Option<DBUser>> {
+    use sea_orm::EntityTrait;
+
+    let client = db::get_orm_client_rw().await;
+    let Some(user) = infra::table::entity::users::Entity::find_by_id(id.to_owned())
+        .one(client)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let orgs = infra::table::org_users::list_orgs_by_user_id(id).await?;
+    Ok(Some(db_user_with_organizations(user.into(), orgs)))
+}
+
+fn db_user_with_organizations(
+    user: users::UserRecord,
+    orgs: Vec<infra::table::org_users::UserOrgExpandedRecord>,
+) -> DBUser {
+    DBUser {
         email: user.email,
         password: user.password,
         salt: user.salt,
@@ -186,7 +208,7 @@ pub async fn get_db_user(name: &str) -> Result<DBUser, anyhow::Error> {
             })
             .collect(),
         password_ext: user.password_ext,
-    })
+    }
 }
 
 /// Insert a users row and publish the event every node caches it from; a raw table write skips it.

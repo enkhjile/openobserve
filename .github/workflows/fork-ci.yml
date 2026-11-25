@@ -28,6 +28,7 @@ jobs:
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
       web: ${{ steps.diff.outputs.web }}
+      web_test: ${{ steps.diff.outputs.web_test }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,7 +40,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
         run: |
-          all() { printf 'rust=true\nweb=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
+          all() { printf 'rust=true\nweb=true\nweb_test=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           case "$EVENT" in
             # A PR run checks out the merge commit, whose first parent is the base branch.
             pull_request) base=HEAD^1 ;;
@@ -54,8 +55,10 @@ jobs:
           included() { grep -E '^web/' <<<"$files" | sed 's/$/")/' | grep -rqFf - src; }
           if has "$rust" || has "$self" || included; then r=true; else r=false; fi
           if has '^web/' || has "$self"; then w=true; else w=false; fi
-          printf 'rust=%s\nweb=%s\n' "$r" "$w" >> "$GITHUB_OUTPUT"
-          echo "rust=$r web=$w from $(grep -c . <<<"$files") changed files" >> "$GITHUB_STEP_SUMMARY"
+          # Web contract specs read Rust sources under src/ from disk.
+          if [ "$w" = true ] || has '^src/'; then wt=true; else wt=false; fi
+          printf 'rust=%s\nweb=%s\nweb_test=%s\n' "$r" "$w" "$wt" >> "$GITHUB_OUTPUT"
+          echo "rust=$r web=$w web_test=$wt from $(grep -c . <<<"$files") changed files" >> "$GITHUB_STEP_SUMMARY"
 
   rust-lint:
     needs: changes
@@ -101,8 +104,10 @@ jobs:
     steps:
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+      # build.rs takes the version from `git describe --tags`, and a version test fails without tags.
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/github-auth
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
@@ -116,10 +121,20 @@ jobs:
       - name: Install protoc and libclang
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev libclang-dev
       - run: mkdir -p web/dist && touch web/dist/index.html
+      # downloadO2.sh looks up releases anonymously, a rate limit hosted runners share,
+      # so this curl adds the job token for api.github.com only; github.com rejects it on downloads.
+      - name: Authenticate curl to api.github.com
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          # shellcheck disable=SC2016 # $* and $GH_API_TOKEN belong to the generated script
+          printf '#!/bin/sh\ncase " $* " in *" https://api.github.com/"*) exec %s -H "Authorization: Bearer $GH_API_TOKEN" "$@" ;; esac\nexec %s "$@"\n' \
+            "$(command -v curl)" "$(command -v curl)" > "$RUNNER_TEMP/bin/curl"
+          chmod +x "$RUNNER_TEMP/bin/curl"
       # Upstream's own test entry point: nextest over the whole workspace, one database per slot.
-      - run: ./coverage.sh run-cov
+      - run: PATH="$RUNNER_TEMP/bin:$PATH" ./coverage.sh run-cov
         env:
           ZO_DATA_DIR: ${{ runner.temp }}/openobserve-sqlite/
+          GH_API_TOKEN: ${{ github.token }}
 
   web-lint:
     needs: changes
@@ -144,7 +159,7 @@ jobs:
 
   web-test:
     needs: changes
-    if: needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.web_test == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

@@ -274,6 +274,18 @@ pub async fn search_multi(
             return res;
         }
     }
+    let rbac = ::search::rbac::authorize_multi(
+        &queries,
+        &multi_req,
+        &org_id,
+        stream_type,
+        user_id,
+        search_type,
+    );
+    if rbac.await.is_err() {
+        return MetaHttpResponse::forbidden("Batch search access denied");
+    }
+
     let queries_len = queries.len();
     let mut vrl_stream_name = "".to_string();
     let mut sqls = vec![];
@@ -794,6 +806,20 @@ pub async fn _search_partition_multi(
 
     if let Err(e) = req.decode() {
         return MetaHttpResponse::bad_request(e);
+    }
+
+    if ::search::rbac::authorize_batch(
+        req.sql.iter().map(String::as_str),
+        &org_id,
+        stream_type,
+        Some(user_id),
+        None,
+        req.query_fn.is_some(),
+    )
+    .await
+    .is_err()
+    {
+        return MetaHttpResponse::forbidden("Batch search access denied");
     }
 
     #[cfg(not(feature = "enterprise"))]
@@ -1462,6 +1488,18 @@ pub async fn search_multi_stream(
         }
     }
 
+    let rbac = ::search::rbac::authorize_multi(
+        &queries,
+        &multi_req,
+        &org_id,
+        stream_type,
+        &user_id,
+        search_type,
+    );
+    if rbac.await.is_err() {
+        return MetaHttpResponse::forbidden("Batch search access denied");
+    }
+
     #[cfg(feature = "enterprise")]
     {
         let sqls = queries
@@ -1510,7 +1548,7 @@ pub async fn search_multi_stream(
     // Pass needs_post_vrl (true only when per_query_response=true AND ResultArray VRL) and
     // the top-level query_fn for post-hoc application. When needs_post_vrl is false,
     // query_fn is already set on individual requests and this param is unused.
-    tokio::spawn(process_search_stream_request_multi(
+    infra::rbac::caller::spawn(process_search_stream_request_multi(
         trace_id.clone(),
         org_id.clone(),
         user_id,
