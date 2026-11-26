@@ -23,15 +23,6 @@ jobs:
     steps:
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-      # The release build outgrows the runner's 16 GB of memory; swap gives it headroom.
-      - name: Add swap
-        run: |
-          dir=/mnt; mountpoint -q /mnt || dir=/
-          sudo fallocate -l 24G "$dir/fork-swap"
-          sudo chmod 600 "$dir/fork-swap"
-          sudo mkswap "$dir/fork-swap"
-          sudo swapon "$dir/fork-swap"
-          free -h; df -h / /mnt || true
       # The server's build script reads the version from this tag.
       - uses: actions/checkout@v7
         with:
@@ -46,8 +37,8 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          # Logged live so the cause shows even if the runner itself is terminated.
-          while sleep 60; do echo "memory: $(free -m | awk 'NR>1 {printf "%s used=%sM ", $1, $3}')top: $(ps -eo rss=,comm= --sort=-rss | head -3 | awk '{printf "%s=%dM ", $2, $1/1024}')"; done &
+          # Without swap an out-of-memory kill leaves the log intact, naming the crate that peaked.
+          while sleep 60; do echo "memory: $(free -m | awk 'NR==2 {printf "used=%sM avail=%sM", $3, $7}') top:$(ps -eo rss=,args= --sort=-rss | head -3 | awk '{n=$2; for (i=1; i<NF; i++) if ($i=="--crate-name") n=$(i+1); printf " %s=%dM", n, $1/1024}')"; done &
           docker build -f deploy/build/Dockerfile -t "$image:$TAG" -t "$image:latest" .
           docker push "$image:$TAG"
           docker push "$image:latest"
