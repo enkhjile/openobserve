@@ -70,7 +70,7 @@ A user may hold several grants; permissions add up within their resources. Strea
 - **Identity:** a search runs as the authenticated caller; a `user_id` header from the client never changes it. The identity follows work into background tasks and to other querier nodes, and is checked again there.
 - **Revocation:** policy is read at each decision, so a revoked grant denies the next request. A request already running is not cancelled.
 
-Not supported yet: 479 of 597 active HTTP operations, listed in [endpoints.md](endpoints.md), return 403 while RBAC is on, even for Admins. This includes public dashboards, generic proxying, and protocols such as `_bulk`, HEC and Loki. Node-to-node RPCs are listed in [rpc.md](rpc.md). Check both against what your installation uses before enabling RBAC.
+Not supported yet: 480 of 598 active HTTP operations, listed in [endpoints.md](endpoints.md), return 403 while RBAC is on, even for Admins. This includes public dashboards, generic proxying, and protocols such as `_bulk`, HEC and Loki. Node-to-node RPCs are listed in [rpc.md](rpc.md). Check both against what your installation uses before enabling RBAC.
 
 ## Scheduled work
 

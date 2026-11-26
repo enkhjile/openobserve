@@ -211,7 +211,7 @@ pub async fn handle_request_as(
     let reported_user = attributed_user(scoped_user.as_ref(), user_email);
     check_ingestion_allowed(org_id, StreamType::Logs, Some(&stream_name)).await?;
     // Refused before the pipelines run: a remote-stream destination writes inside them.
-    #[cfg(feature = "vectorscan")]
+    #[cfg(feature = "enterprise")]
     if let Some(reason) = crate::ingestion::sdr_fail_closed_refusal(
         org_id,
         StreamType::Logs,
@@ -672,7 +672,7 @@ pub async fn handle_request_as(
         return Ok(otlp_export_response(&res, req_type)); // just return
     }
 
-    #[cfg(feature = "vectorscan")]
+    #[cfg(feature = "enterprise")]
     {
         let streams: Vec<(&str, u64)> = json_data_by_stream
             .iter()
@@ -691,7 +691,7 @@ pub async fn handle_request_as(
     }
 
     // A pattern-manager failure must not fail the request; the evidence row says it failed open.
-    #[cfg(feature = "vectorscan")]
+    #[cfg(feature = "enterprise")]
     {
         match o2_enterprise::enterprise::re_patterns::get_pattern_manager().await {
             Ok(pattern_manager) => {

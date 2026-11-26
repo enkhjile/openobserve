@@ -154,6 +154,20 @@ async fn route(req: Request, path: String, public_slug: Option<String>) -> Respo
         let group = Some(RoleGroup::Interactive);
         let payload = QuerierPayload::Empty;
         proxy_by_key(full_path, nodes, &slug, group, &headers, &payload, start).await
+    } else if let Some(org) = resource_search_org(&path, &cfg.common.base_uri)
+        && req.method() == Method::GET
+    {
+        let headers = req.headers().clone();
+        proxy_by_key(
+            full_path,
+            nodes,
+            org,
+            Some(RoleGroup::Interactive),
+            &headers,
+            &QuerierPayload::Empty,
+            start,
+        )
+        .await
     } else if !infra::rbac::enabled()
         && cfg.common.result_cache_enabled
         && is_querier_route_by_body(&path)
@@ -175,6 +189,18 @@ fn forwarded_path(path: &str) -> String {
         .to_owned();
     let path = path.strip_prefix(&base).unwrap_or(path);
     format!("{base}{RBAC_FORWARD_PREFIX}{path}")
+}
+
+fn resource_search_org<'a>(path: &'a str, base_uri: &str) -> Option<&'a str> {
+    let path = path.strip_prefix(base_uri).unwrap_or(path);
+    let parts = extract_path_without_query(path)
+        .trim_start_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["api", org, "resources", "_search"] if !org.is_empty() => Some(org),
+        _ => None,
+    }
 }
 
 /// Resolves the candidate nodes for a given request path.
@@ -962,6 +988,28 @@ mod tests {
         // INGESTER_ROUTES is not a rate-limit list: its consumers are
         // is_querier_route and the cloud trial gate.
         assert!(config::router::INGESTER_ROUTES.contains(&"/services/collector"));
+    }
+
+    #[test]
+    fn resource_search_affinity_uses_only_the_exact_endpoint_organization() {
+        assert_eq!(
+            resource_search_org("/api/acme/resources/_search?q=payment", ""),
+            Some("acme")
+        );
+        assert_eq!(
+            resource_search_org("/o2/api/acme/resources/_search", "/o2"),
+            Some("acme")
+        );
+        assert_eq!(
+            resource_search_org("/api/acme/resources/_search_extra", ""),
+            None
+        );
+        assert_eq!(
+            resource_search_org("/api/acme/streams/resources/_search", ""),
+            None
+        );
+        assert!(is_querier_route("/api/acme/resources/_search?q=payment"));
+        assert!(!is_querier_route("/api/acme/resources/_search_extra"));
     }
 
     #[test]

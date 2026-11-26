@@ -318,6 +318,11 @@ pub fn mask_log_url(url: &str) -> String {
         return path.to_owned();
     }
     let masked = mask_slack_callback_query(&mask_share_tokens(url));
+    if let Some((path, _)) = masked.split_once('?')
+        && path.trim_end_matches('/').ends_with("/resources/_search")
+    {
+        return format!("{path}?…");
+    }
     if !masked.contains("api_key=") {
         return masked;
     }
@@ -452,6 +457,22 @@ mod tests {
     fn oidc_callback_query_is_omitted_from_request_and_referer_logs() {
         let path = "https://example.test/observe/auth/oidc/callback";
         assert_eq!(mask_log_url(&format!("{path}?code=a&state=b")), path);
+    }
+
+    #[test]
+    fn resource_search_query_and_offset_never_enter_url_logs() {
+        for url in [
+            "/api/acme/resources/_search?q=private-name&offset=40",
+            "https://observe.invalid/o2/api/acme/resources/_search?%71=private-name&q=other-name",
+        ] {
+            let masked = mask_log_url(url);
+            assert!(masked.ends_with("?…"));
+            assert!(!masked.contains("private-name"));
+            assert!(!masked.contains("offset"));
+            assert!(!masked.contains("other-name"));
+        }
+        let unrelated = "/api/acme/dashboards?title=overview";
+        assert_eq!(mask_log_url(unrelated), unrelated);
     }
 
     static LOG_LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
